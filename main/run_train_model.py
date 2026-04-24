@@ -75,7 +75,18 @@ def parse_args():
 
     return parser.parse_args()
 
-def init_tokenizer(vocab_file, merge_file, special_tokens=["<|endoftext|>"]):
+def init_tokenizer(vocab_file, merge_file, special_tokens=[
+    "<|endoftext|>",
+    "<|im_start|>",
+    "<|im_end|>",
+    "<|object_ref_start|>",
+    "<|object_ref_end|>",
+    "<|box_start|>",
+    "<|box_end|>",
+    "<|quad_start|>",
+    "<|quad_end|>",
+    "<|file_sep|>"
+]):
     global tokenizer
     tokenizer = Tokenizer.from_files(vocab_file, merge_file, special_tokens)
 
@@ -165,12 +176,12 @@ def main():
         writer = csv.writer(f)
         writer.writerow(["iter", "train_loss", "val_loss", "lr"])
 
-    if tokenizer is None:
-        init_tokenizer(args.tokenizer_vocab, args.tokenizer_merges)
+   
+    init_tokenizer(args.tokenizer_vocab, args.tokenizer_merges)
 
     # use np.memmap to load data in a memory-efficient way
-    train_data = np.memmap(args.train_data, dtype=np.uint16, mode='r') 
-    val_data = np.memmap(args.val_data, dtype=np.uint16, mode='r')
+    train_data = np.memmap(args.train_data, dtype=np.uint32, mode='r') 
+    val_data = np.memmap(args.val_data, dtype=np.uint32, mode='r')
 
     # model, optimizer
     model = Model(d_model=args.d_model, n_head=args.n_head, d_ff=args.d_ff, theta=args.theta, vocab_size=args.vocab_size, context_length=args.context_length, num_layers=args.n_layers, ).to(device)
@@ -265,23 +276,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 

@@ -15,3 +15,8 @@ env/
 # IDE
 .vscode/
 .idea/
+*.bin
+*.txt
+.pt
+*json
+train_logs/
