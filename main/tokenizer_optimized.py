@@ -1,6 +1,3 @@
-"""
-兼容 Qwen 千问词表 | 适配训练脚本 | 无编码错误 | 无 KeyError
-"""
 import regex as re
 from typing import Dict, List, Tuple
 import json
@@ -26,7 +23,9 @@ class Tokenizer:
                     self.special_token_to_id[tok] = new_id
                     self.reverted_vocab[tok_bytes] = new_id
 
-        self.pat = re.compile(r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
+        # ✅ 支持中文的正则
+        self.pat = re.compile(r"(\s+|\S+)")
+        
         if self.special_tokens:
             specials_pat = "(" + "|".join(re.escape(tok) for tok in self.special_tokens) + ")"
             self.specials_regex = re.compile(specials_pat)
@@ -35,34 +34,82 @@ class Tokenizer:
 
     @classmethod
     def from_files(cls, vocab_filepath: str, merges_filepath: str, special_tokens: List[str] | None = None):
+        # ==================== Qwen 官方标准字节映射 ====================
+        def bytes_to_unicode():
+            bs = list(range(ord("!"), ord("~")+1)) + list(range(ord("¡"), ord("¬")+1)) + list(range(ord("®"), ord("ÿ")+1))
+            cs = bs[:]
+            n = 0
+            for b in range(2**8):
+                if b not in bs:
+                    bs.append(b)
+                    cs.append(2**8 + n)
+                    n += 1
+            cs = [chr(n) for n in cs]
+            return dict(zip(bs, cs))
+        
+        byte_encoder = bytes_to_unicode()
+        byte_decoder = {v: k for k, v in byte_encoder.items()}
+
         with open(vocab_filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
         vocab_json = data["model"]["vocab"]
         merges_json = data["model"]["merges"]
 
-        # ========== 正确加载 Qwen 词表 ==========
+        # ✅ 正确加载 vocab
         vocab = {}
         for token_str, token_id in vocab_json.items():
-            vocab[token_id] = token_str.encode("utf-8")
+            try:
+                token_bytes = bytes([byte_decoder[c] for c in token_str])
+            except:
+                token_bytes = token_str.encode("utf-8")
+            vocab[token_id] = token_bytes
 
-        # ========== 加载 merges ==========
+        # ✅ 正确加载 merges
         merges = []
         for line in merges_json:
-            if not line or len(line.split()) != 2:
+            if not line or line.startswith("#"):
                 continue
-            a, b = line.split()
-            merges.append((a.encode("utf-8"), b.encode("utf-8")))
+            a, b = line.split(maxsplit=1)
+            try:
+                a_bytes = bytes([byte_decoder[c] for c in a])
+                b_bytes = bytes([byte_decoder[c] for c in b])
+            except:
+                a_bytes = a.encode("utf-8")
+                b_bytes = b.encode("utf-8")
+            merges.append((a_bytes, b_bytes))
 
         return cls(vocab, merges, special_tokens)
 
+    # ✅ 真正的 BPE 算法，没有被阉割
     def _bpe(self, token_bytes: bytes) -> List[int]:
-        # 终极兼容：直接查表，不做合并，避免 KeyError
-        if token_bytes in self.reverted_vocab:
-            return [self.reverted_vocab[token_bytes]]
+        if token_bytes in self.cache:
+            return self.cache[token_bytes]
+
+        word = [bytes([b]) for b in token_bytes]
         
-        #  fallback：按字节切分（安全、不报错）
-        return [self.reverted_vocab.get(bytes([b]), 0) for b in token_bytes]
+        while len(word) > 1:
+            pairs = [(word[i], word[i+1]) for i in range(len(word)-1)]
+            best_pair = min(pairs, key=lambda p: self.ranks.get(p, float('inf')))
+            
+            if best_pair not in self.ranks:
+                break
+                
+            new_word = []
+            i = 0
+            p1, p2 = best_pair
+            while i < len(word):
+                if i < len(word) - 1 and word[i] == p1 and word[i+1] == p2:
+                    new_word.append(p1 + p2)
+                    i += 2
+                else:
+                    new_word.append(word[i])
+                    i += 1
+            word = new_word
+            
+        ids = [self.reverted_vocab[tok] for tok in word]
+        self.cache[token_bytes] = ids
+        return ids
 
     def encode(self, text: str) -> List[int]:
         token_ids = []
@@ -85,7 +132,5 @@ class Tokenizer:
         return token_ids
 
     def decode(self, ids: List[int]) -> str:
-        byte_stream = b""
-        for idx in ids:
-            byte_stream += self.vocab.get(idx, b"")
+        byte_stream = b"".join(self.vocab[idx] for idx in ids)
         return byte_stream.decode('utf-8', errors="replace")

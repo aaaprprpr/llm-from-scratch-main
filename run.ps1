@@ -1,13 +1,10 @@
-# 强制UTF-8
-chcp 65001 | Out-Null
-$OutputEncoding = [System.Console]::InputEncoding = [System.Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
-[System.Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 
 # 路径配置
-$TRAIN_DATA = "train.bin"
-$VAL_DATA   = "val.bin"
-$VOCAB      = "trained_tokenizer/tokenizer.json"
-$MERGES     = "trained_tokenizer/tokenizer.json"
+$TRAIN_DATA = "data\train.bin"
+$VAL_DATA   = "data\val.bin"
+$VOCAB      = "bpe\outputs\qwen_style_tokenizer.json"
+$MERGES     = "bpe\outputs\qwen_style_tokenizer.json"
 $OUT_ROOT   = "train_logs"
 
 # 纯数字时间戳，无中文无空格
@@ -33,13 +30,13 @@ python main/run_train_model.py `
     --tokenizer_vocab $VOCAB `
     --tokenizer_merges $MERGES `
     --out_dir $OUT_DIR `
-    --batch_size 8 `
-    --max_iters 4200 `
+    --batch_size 16 `
+    --max_iters 1000 `
     --eval_interval 100 `
-    --eval_iters 10 `
+    --eval_iters 20 `
     --log_interval 10 `
-    --vocab_size 151665 `
-    --context_length 128 `
+    --vocab_size 32000 `
+    --context_length 256 `
     --n_head 16 `
     --theta 10000 `
     --n_layers 4 `
@@ -53,4 +50,3 @@ python main/run_train_model.py `
     --lr_decay_iters 3600
 
 Write-Host "`n训练结束"
-Read-Host "press any key to exit"
