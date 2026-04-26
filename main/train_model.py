@@ -6,16 +6,19 @@ from typing import Optional, Callable, Iterable, BinaryIO, IO
 
 def cross_entropy(o_i, y_i):
     """
-    o_i: predicted logits, shape (batch_like, vocab_size)
-    y_i: targets, shape (batch_like,)
-    Requirements:
-    - Subtract the largest element for numerical stability.
-    - Cancel out log and exp whenever possible. 
-    - Handle any additional batch dimensions and return the average across the batch. we assume batch-like dimensions always come first, before the vocabulary size dimension.
+    o_i: 模型输出的原始预测值 logits，形状为 (批次维度, 词表大小)
+    y_i: 真实目标标签，形状为 (批次维度,)
+    要求:
+    - 减去最大值以保证数值计算稳定性（防止指数爆炸）
+    - 尽可能化简抵消 log 和 exp 运算
+    - 兼容任意批次维度，最终返回整个批次的平均损失
+      约定：批次维度永远在前面，词表维度在最后一维
     """
+    # 避免计算爆炸，全变成负值
     o_i = o_i - o_i.max(dim=-1, keepdim=True).values # 算完之后，不要把这个维度删掉，留着当一个长度为 1 的维度。避免错误广播。
     # 如果一个 reduction 的结果还要参与广播运算 → 用 keepdim=True
 
+    # 取出标注的token对应位置的预测值，yi是正确token的索引
     o_y = o_i.gather(dim=-1, index=y_i.unsqueeze(-1)).squeeze(-1) # gather: 从 o_i 的最后一维中，以 y_i 为索引，取出对应的元素。
     # 等价写法： o_y = o_i[torch.arange(o_i.shape[0]), y_i]
     logsumexp = torch.log(torch.exp(o_i).sum(dim=-1))
@@ -171,6 +174,3 @@ def load_checkpoint(src: str | os.PathLike | BinaryIO | IO[bytes],
     model.load_state_dict(obj['model'])
     optimizer.load_state_dict(obj['optimizer'])
     return obj['iteration']
-
-
-

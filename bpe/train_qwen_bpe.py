@@ -22,7 +22,7 @@ tokenizer.decoder = ByteLevelDecoder(add_prefix_space=False)
 # ===================== 2. 训练配置 =====================
 trainer = BpeTrainer(
     # 词表大小：千问 base 是 151851，你可以自己设
-    vocab_size=32000,
+    vocab_size=16384,
     min_frequency=2,
     # 千问官方特殊 token
     special_tokens=[
@@ -37,7 +37,7 @@ trainer = BpeTrainer(
 
 # ===================== 3. 开始训练 =====================
 # 你的语料文件
-files = ["data/owt_subset_128mb.txt"]
+files = ["../data/wiki_cn_clean.txt"]
 tokenizer.train(files=files, trainer=trainer)
 
 # ===================== 4. 保存词表 =====================

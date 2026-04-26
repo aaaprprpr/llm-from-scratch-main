@@ -4,12 +4,12 @@
 
 # 数据必须先完成分词处理 - 否则请先运行分词脚本。
 # 关于分词器训练与实现，可参考：https://github.com/Siyuan-Harry/bpe-optimized-from-scratch
-TRAIN_DATA="tokenized_data/your_train_data.bin" 
-VAL_DATA="tokenized_data/your_val_data.bin" 
+TRAIN_DATA="data\train.bin"
+VAL_DATA=  "data\val.bin"
 
 # 你的分词器词汇表与合并规则文件路径
-VOCAB="trained_tokenizer/vocab_of_your_tokenizer.json" 
-MERGES="trained_tokenizer/merges_of_your_tokenizer.json" 
+VOCAB= "bpe\outputs\qwen_style_tokenizer.json"
+MERGES="bpe\outputs\qwen_style_tokenizer.json"
 
 # 为每一次运行创建输出目录，记录所有输出与日志
 OUT_ROOT="train_logs"
@@ -37,7 +37,7 @@ nohup python -u main/run_train_model.py \
     --eval_interval 100 \
     --eval_iters 20 \
     --log_interval 10 \
-    --vocab_size 10000 \
+    --vocab_size 16384 \
     --context_length 256 \
     --n_head 16 \
     --theta 10000 \
