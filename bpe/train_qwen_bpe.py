@@ -6,8 +6,9 @@ from transformers import PreTrainedTokenizerFast, AutoTokenizer
 from tokenizers.normalizers import NFC
 from tokenizers.decoders import ByteLevel as ByteLevelDecoder
 from tokenizers.processors import ByteLevel as ByteLevelProcessor
+from glob import glob
 # ===================== 1. 初始化 BPE 分词器 =====================
-tokenizer = Tokenizer(BPE(unk_token=None))  # 千问没有 unk token
+tokenizer = Tokenizer(BPE(unk_token=None))  # 没有 unk token
 
 # 预分词：字节级
 qwen_pattern = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
@@ -21,10 +22,10 @@ tokenizer.decoder = ByteLevelDecoder(add_prefix_space=False)
 # tokenizer.post_processor = ByteLevelProcessor(add_prefix_space=False, use_regex=False)
 # ===================== 2. 训练配置 =====================
 trainer = BpeTrainer(
-    # 词表大小：千问 base 是 151851，你可以自己设
+    # 词表大小：base 是 151851，你可以自己设
     vocab_size=16384,
-    min_frequency=2,
-    # 千问官方特殊 token
+    min_frequency=20,
+    # 特殊 token
     special_tokens=[
         "<|endoftext|>",
         "<|im_start|>",
@@ -32,13 +33,20 @@ trainer = BpeTrainer(
     ],
     # 支持中文/全字符
     show_progress=True,
-    initial_alphabet=ByteLevel.alphabet(),  #
+    initial_alphabet=ByteLevel.alphabet(), 
+    continuing_subword_prefix="",
+    num_workers=16,
+    limit_alphabet=500,
+    max_token_length=20,
 )
 
 # ===================== 3. 开始训练 =====================
 # 你的语料文件
-files = ["../data/wiki_cn_clean.txt"]
-tokenizer.train(files=files, trainer=trainer)
+files = glob("data/*.txt")
+tokenizer.train(
+    files=files, 
+    trainer=trainer,
+)
 
 # ===================== 4. 保存词表 =====================
 # 保存格式：vocab.json + merges.txt
@@ -61,15 +69,15 @@ wrapped_tokenizer = PreTrainedTokenizerFast(
 # 保存成可以直接加载的分词器文件夹
 wrapped_tokenizer.save_pretrained("./my_qwen_tokenizer")
 
-print("✅ 千问风格分词器训练完成！")
+print("训练完成！")
 print("词表大小：", wrapped_tokenizer.vocab_size)
 
 
-# 加载你自己训练的千问分词器
+# 加载自己训练的分词器
 tokenizer = AutoTokenizer.from_pretrained("./my_qwen_tokenizer")
 
 # 测试分词
-text = "你好，这是我自己训练的千问风格分词器！"
+text = "你好，这是我自己训练的分词器！"
 tokens = tokenizer.tokenize(text)
 ids = tokenizer.encode(text)
 
