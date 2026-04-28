@@ -13,11 +13,9 @@ import os
 
 if __name__ == '__main__':
     os.makedirs("data", exist_ok=True)
-    os.makedirs("outputs", exist_ok=True)
-
     target_size_mb = 100
     target_size = target_size_mb * 1024 * 1024  # 100MB
-    PATH_OWT = "C:/Users/guojia/PycharmProjects/heima/llm-from-scratch-main/data/cleaned_wiki.txt"
+    PATH_OWT = "data/cleaned_wiki.txt"
 
     file_index = 1
     buffer = b""  # 内存缓存，保存上一次剩下的数据

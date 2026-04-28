@@ -39,26 +39,26 @@ class AdamW(torch.optim.AdamW):
                 loss = closure()
         
         for group in self.param_groups:
-            alpha = group['lr']
-            beta1, beta2 = group['betas']
-            eps = group['eps']
-            lambda_ = group['weight_decay']
+            alpha = group['lr'] # 学习率
+            beta1, beta2 = group['betas']# Adam 的两个动量衰减系数
+            eps = group['eps']# Adam 的数值稳定项
+            lambda_ = group['weight_decay']# AdamW 的权重衰减系数（与学习率一起衰减参数，而不是像 Adam 那样直接在梯度上加一个正则项）
             
-            for theta in group['params']:
+            for theta in group['params']:# theta 是一个参数张量，遍历所有参数
                 if theta.grad is None:
                     continue
 
-                grad = theta.grad.data
-                state = self.state[theta]
+                grad = theta.grad.data#梯度
+                state = self.state[theta]#每个参数对应一个状态字典，存储动量等信息。
 
-                # State initialization
+                # 第一次访问时是空的，所以需要初始化。
                 if len(state) == 0:
                     state['step'] = 0
-                    state['m'] = torch.zeros_like(theta.data) # torch.zeros_like(p.data) creates a new tensor filled with zeros that has the same shape, dtype and device as p.data.
+                    state['m'] = torch.zeros_like(theta.data)
                     state['v'] = torch.zeros_like(theta.data)
 
                 m, v = state['m'], state['v']
-                state['step'] += 1 # begins with 1
+                state['step'] += 1 # 从 1 开始计数
                 t = state['step']
 
                 # Update moments
@@ -85,17 +85,17 @@ class AdamW(torch.optim.AdamW):
 
 def lr_cosine_schedule(t, alpha_max, alpha_min, T_w, T_c):
     """
-    Params:
-        t: current step
-        alpha_max: maximum learning rate
-        alpha_min: minimum (final) learning rate
-        T_w: the number of warm-up iterations
-        T_c: the number of cosine annealing iterations
+    参数：
+        t: 当前步数
+        alpha_max: 最大学习率
+        alpha_min: 最小（最终）学习率
+        T_w: 预热迭代次数
+        T_c: 余弦退火迭代次数
 
-    returns: 
-        learning rate alpha_t at step t
+    返回：
+        第 t 步的学习率 alpha_t
     """
-    if t < T_w:
+    if t < T_w:# 预热阶段，线性增加
         alpha_t = alpha_max * t / T_w
     elif t >= T_w and t <= T_c:
         temp = math.pi * (t-T_w) / (T_c-T_w)
@@ -126,15 +126,15 @@ def gradient_clipping(params: Iterable[torch.nn.Parameter], max_norm: float, eps
 
 def get_batch(data, batch_size, context_length, device):
     """
-    Params:
-        data: the input sequence, a tensor of shape (context_length,)
-        batch_size: the batch size
-        context_length: the context length
-        device: the device to put the data on e.g. 'cpu' or 'cuda:0' or 'mps'
+    参数：
+        data: 输入序列，形状为 (context_length,) 的张量
+        batch_size: 批次大小
+        context_length: 上下文长度
+        device: 数据存放的设备，例如 'cpu'、'cuda:0' 或 'mps'
 
-    Returns:
-        x: a tensor of shape (batch_size, context_length)
-        y: a tensor of shape (batch_size, context_length)
+    返回：
+        x: 形状为 (batch_size, context_length) 的张量
+        y: 形状为 (batch_size, context_length) 的张量
     """
 
     # 随机产生 batch_size 个起始位置
@@ -158,7 +158,7 @@ def get_batch(data, batch_size, context_length, device):
 
 def save_checkpoint(model: torch.nn.Module, optimizer: torch.optim.Optimizer, iteration: int, 
                     out: str | os.PathLike | BinaryIO | IO[bytes]):
-    """dump all the state from the first three parameters into the file-like object out.
+    """将前三个参数的所有状态转储到类文件对象 out 中。
     """
 
     obj = {

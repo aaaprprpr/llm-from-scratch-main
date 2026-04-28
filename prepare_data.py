@@ -64,6 +64,6 @@ def build_bin(input_txt: str, output_bin: str):
 
 # ===================== 执行生成 =====================
 if __name__ == "__main__":
-    build_bin("bpe/data/val_raw.txt", "data/val.bin")
-    build_bin("bpe/data/train_raw.txt", "data/train.bin")    
+    build_bin("data/val_raw.txt", "data/val.bin")
+    build_bin("data/train_raw.txt", "data/train.bin")    
     print("\n🎉 全部完成！可以直接启动训练！")
