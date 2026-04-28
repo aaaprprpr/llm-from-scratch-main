@@ -5,9 +5,9 @@ import torch.nn.functional as F
 from model import Transformer as Model
 from tokenizer_optimized import Tokenizer
 
-model_ckpt = "C:/Users/guojia/PycharmProjects/heima/llm-from-scratch-main/train_logs/run_20260425_011651/ckpt_iter_4199.pt"
-vocab_file = "C:/Users/guojia/PycharmProjects/heima/llm-from-scratch-main/trained_tokenizer/tokenizer.json"
-merge_file = "C:/Users/guojia/PycharmProjects/heima/llm-from-scratch-main/trained_tokenizer/tokenizer.json"
+model_ckpt = "../train_logs/run_20260425_011651/ckpt_iter_4199.pt"
+vocab_file = "../bpe/output/tokenizer.json"
+merge_file = "../bpe/output/tokenizer.json"
 
 device = "cpu"
 if torch.cuda.is_available():
@@ -22,7 +22,7 @@ eos_id = tokenizer.special_token_to_id.get("<|endoftext|>")
 
 # reconstruct model
 model_args = dict(
-    vocab_size=151665, 
+    vocab_size=16384, 
     context_length=128, 
     n_head=16, 
     num_layers=4, 
