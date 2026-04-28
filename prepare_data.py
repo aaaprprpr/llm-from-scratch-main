@@ -48,7 +48,7 @@ def build_bin(input_txt: str, output_bin: str):
 
     with open(output_bin, "wb") as f_out:
         # 3. 多进程并行分词（吃满所有CPU）
-        with ProcessPoolExecutor(max_workers=8,initializer=init_process) as executor:
+        with ProcessPoolExecutor(max_workers=18,initializer=init_process) as executor:
             # 流式生成结果，处理完一个就写一个，不堆积在内存！
             for result in tqdm(
                 executor.map(process_line, lines, chunksize=50),
@@ -64,6 +64,6 @@ def build_bin(input_txt: str, output_bin: str):
 
 # ===================== 执行生成 =====================
 if __name__ == "__main__":
-    build_bin("data/val_raw.txt", "data/val.bin")
+    # build_bin("data/val_raw.txt", "data/val.bin")
     build_bin("data/train_raw.txt", "data/train.bin")    
     print("\n🎉 全部完成！可以直接启动训练！")

@@ -24,8 +24,8 @@ tokenizer.decoder = ByteLevelDecoder(add_prefix_space=False)
 # ===================== 2. 训练配置 =====================
 trainer = BpeTrainer(
     # 词表大小：base 是 151851，你可以自己设
-    vocab_size=16384,
-    min_frequency=20,
+    vocab_size=65536,
+    min_frequency=10,
     # 特殊 token
     special_tokens=[
         "<|endoftext|>",
@@ -44,6 +44,7 @@ trainer = BpeTrainer(
 # ===================== 3. 开始训练 =====================
 # 你的语料文件
 files = glob("data/*.txt")
+# files = ["../data/clean_traditional_wiki.txt"]
 tokenizer.train(
     files=files, 
     trainer=trainer,

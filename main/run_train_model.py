@@ -219,7 +219,7 @@ def main():
         # 每隔一定步数（检查点间隔）从模型生成文本并保存结果
         if (it % (args.eval_interval * 10) == 0 and it > 0) or last_step:
             # generate from model
-            context, temperature, top_p = "Hello, I'm a language model, ", 1.0, 0.9
+            context, temperature, top_p = "Hello, I'm a language model, ", 0.7, 0.95
             full_sentence, new_tokens = generate(
                 model, 
                 tokenizer=tokenizer,

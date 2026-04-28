@@ -12,10 +12,10 @@
 import os
 
 if __name__ == '__main__':
-    os.makedirs("data", exist_ok=True)
+    os.makedirs("bpe/data", exist_ok=True)
     target_size_mb = 100
     target_size = target_size_mb * 1024 * 1024  # 100MB
-    PATH_OWT = "data/cleaned_wiki.txt"
+    PATH_OWT = "data/clean_traditional_wiki.txt"
 
     file_index = 1
     buffer = b""  # 内存缓存，保存上一次剩下的数据
@@ -27,7 +27,7 @@ if __name__ == '__main__':
             if not chunk:
                 # 处理最后剩余的数据
                 if buffer:
-                    output_path = f"data/owt_chunk_{file_index}.txt"
+                    output_path = f"bpe/data/owt_chunk_{file_index}.txt"
                     with open(output_path, "wb") as f_out:
                         f_out.write(buffer)
                     print(f"已生成：{output_path}  大小：{len(buffer) / 1024 / 1024:.2f}MB")
@@ -49,7 +49,7 @@ if __name__ == '__main__':
                 buffer = buffer[split_pos:]  # 剩下的留在缓存，下一轮用
 
                 # 写入
-                output_path = f"data/owt_chunk_{file_index}.txt"
+                output_path = f"bpe/data/owt_chunk_{file_index}.txt"
                 with open(output_path, "wb") as f_out:
                     f_out.write(current_chunk)
 

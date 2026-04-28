@@ -1,42 +1,57 @@
 from datasets import load_dataset
 import ftfy
-
+import glob
+import os
 
 if __name__ == "__main__":
-
-
     # ================= 配置 =================
-    RAW_PATH = r"data\wiki_cn_clean.txt"    # 你的输入文件
-    SAVE_PATH = r"cleaned_wiki.txt"         # 输出文件
-    NUM_THREADS = 8                         # 8线程加速
+    GLOB_PATTERN = r"data/simplified/*.txt"  # 批量输入（改这里）
+    OUTPUT_DIR = r"data/fixed"              # 输出文件夹（自动创建）
+    NUM_THREADS = 16                         # 线程数不变
     # ========================================
 
-    # 加载数据集
-    ds = load_dataset("text", data_files=RAW_PATH, encoding="utf-8")
+    # 自动创建输出文件夹
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # 清洗函数
-    def clean_fn(row):
-        text = ftfy.fix_text(row["text"])
-        text = text.strip()
-        return {"text": text}
+    # 获取所有文件
+    file_list = glob.glob(GLOB_PATTERN)
 
-    # ========== 核心：多线程并行处理 ==========
-    ds = ds.map(
-        clean_fn,
-        num_proc=NUM_THREADS,  # 8线程
-        desc="清洗文本"
-    )
+    # 批量处理
+    for RAW_PATH in file_list:
+        # 输出文件名保持不变，只换文件夹
+        filename = os.path.basename(RAW_PATH)
+        SAVE_PATH = os.path.join(OUTPUT_DIR, filename)
 
-    # 过滤空行、过短行
-    ds = ds.filter(
-        lambda x: len(x["text"]) > 5,
-        num_proc=NUM_THREADS,
-        desc="过滤无效行"
-    )
+        print(f"\n正在处理：{RAW_PATH}")
+        print(f"输出到：{SAVE_PATH}")
 
-    # 导出干净数据
-    with open(SAVE_PATH, "w", encoding="utf-8") as f:
-        # 一次性 join 所有文本，系统级高速写入
-        f.write("\n".join(ds["train"]["text"]) + "\n")
+        # 加载数据集
+        ds = load_dataset("text", data_files=RAW_PATH, encoding="utf-8")
 
-    print(f"✅ 清洗完成！已保存到：{SAVE_PATH}")
+        # 清洗函数
+        def clean_fn(row):
+            text = ftfy.fix_text(row["text"])
+            text = text.strip()
+            return {"text": text}
+
+        # 多线程并行处理
+        ds = ds.map(
+            clean_fn,
+            num_proc=NUM_THREADS,
+            desc="清洗文本"
+        )
+
+        # 过滤空行、过短行（≤5 字符丢掉）
+        ds = ds.filter(
+            lambda x: len(x["text"]) > 5,
+            num_proc=NUM_THREADS,
+            desc="过滤无效行"
+        )
+
+        # 高速写入
+        with open(SAVE_PATH, "w", encoding="utf-8") as f:
+            f.write("\n".join(ds["train"]["text"]) + "\n")
+
+        print(f"✅ 处理完成：{filename}")
+
+    print("\n🎉 所有文件 ftfy 清洗完毕！")

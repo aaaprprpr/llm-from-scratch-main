@@ -1,6 +1,6 @@
 import random
 
-with open("wiki_cn_clean.txt", "r", encoding="utf-8") as f:
+with open("data/clean_traditional_wiki.txt", "r", encoding="utf-8") as f:
     lines = f.readlines()
 random.shuffle(lines)
 
@@ -9,5 +9,5 @@ split = int(0.95 * len(lines))
 train = lines[:split]
 val = lines[split:]
 
-with open("train_raw.txt", "w", encoding="utf-8") as f: f.writelines(train)
-with open("val_raw.txt", "w", encoding="utf-8") as f: f.writelines(val)
+with open("data/train_raw.txt", "w", encoding="utf-8") as f: f.writelines(train)
+with open("data/val_raw.txt", "w", encoding="utf-8") as f: f.writelines(val)

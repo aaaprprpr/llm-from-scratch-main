@@ -5,9 +5,9 @@ import torch.nn.functional as F
 from model import Transformer as Model
 from tokenizer_optimized import Tokenizer
 
-model_ckpt = "../train_logs/run_20260425_011651/ckpt_iter_4199.pt"
-vocab_file = "../bpe/output/tokenizer.json"
-merge_file = "../bpe/output/tokenizer.json"
+model_ckpt = "../train_logs/run_20260428_200749/ckpt_iter_9999.pt"
+vocab_file = "../bpe/outputs/qwen_style_tokenizer.json"
+merge_file = "../bpe/outputs/qwen_style_tokenizer.json"
 
 device = "cpu"
 if torch.cuda.is_available():
@@ -22,7 +22,7 @@ eos_id = tokenizer.special_token_to_id.get("<|endoftext|>")
 
 # reconstruct model
 model_args = dict(
-    vocab_size=16384, 
+    vocab_size=65536, 
     context_length=128, 
     n_head=16, 
     num_layers=4, 
@@ -46,6 +46,9 @@ prompts = [
     "自然语言处理",
     "北京是一座",
     "深度学习是",
+    'hello ,i am',
+    '今天天气',
+    '我今天吃了'
 ]
 
 print("-" * 30)

@@ -1,17 +1,33 @@
 from datasets import load_dataset
 from tqdm import tqdm  # 进度条
 
-# 自动下载 + 自动合并 6 个 parquet 文件
+
+
+DATASET_NAME = "Orphanage/Baidu_Tieba_KangYaBeiGuo"
+OUTPUT_DIR = "data"
+OUTPUT_NAME = "Baidu_Tieba_KangYaBeiGuo"
+#     "kurehamnm/Chinese_Question_Answering_Dataset"     ,split='train'
+#     "SUSTech/ChineseSafe"    ,split='test'
+#     "Hanversion/Tieba-SomeInteresting" ,split='train'
+#     "Orphanage/Baidu_Tieba_KangYaBeiGuo"  ,split='train'
+#     "ticoAg/Belle_train_3.5M_CN"  , split="train"
+#     
+#     
+#     "wikimedia/wikipedia", "20231101.zh", split="train"
+
 print("正在加载数据集...")
-dataset = load_dataset("wikimedia/wikipedia", "20231101.zh", split="train")
+dataset = load_dataset(DATASET_NAME,split='train')
+print(dataset)
+print(dataset[0])
 
-# 导出成纯文本 + 显示进度条
-print("开始导出为 wiki_cn_clean.txt ...")
-with open("wiki_cn_clean.txt", "w", encoding="utf-8") as f:
+
+
+with open( OUTPUT_DIR+'/'+OUTPUT_NAME+'.txt'  ,"w", encoding="utf-8") as f:
     for item in tqdm(dataset, desc="导出文本进度"):
-        f.write(item["text"] + "\n")
-
-print("✅ 导出完成！文件：wiki_cn_clean.txt")
+        f.write(item["标题"] + "\n")
+        f.write(item["楼主内容"] + "\n")
+        for reply in item["回复列表"]:
+            f.write(reply + "\n")
 
 
 

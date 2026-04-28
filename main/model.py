@@ -1,18 +1,7 @@
 import torch
 from torch import nn
 import math
-class Embedding(nn.Module):
-    def __init__(self, num_embeddings, embedding_dim, device=None, dtype=None):
-        super().__init__()
-        self.vocab_size = num_embeddings    # 词表大小 V
-        self.d_model = embedding_dim        # 嵌入维度 C
-        # 创建词嵌入矩阵，形状为 (V, C) 
-        self.weight = nn.Parameter(torch.empty(self.vocab_size, self.d_model, device=device, dtype=dtype))
-        nn.init.trunc_normal_(self.weight, mean=0.0, std=1.0, a=-3, b=3)# 截断正态分布，截断为 [-3, 3]，初始化
-    
-    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
-        # 根据给定的ids，查找对应的嵌入向量
-        return self.weight[token_ids] # pytorch提供的高级索引，逐个元素查表，返回一个张量
+
 
 class RMSNorm(nn.Module):
     def __init__(self, 
@@ -37,19 +26,7 @@ class RMSNorm(nn.Module):
         x = x.to(in_dtype)
         return self.gain * x  # 把 self.gain shape (C,) 广播到 (1, 1, C) 再和 x 逐元素相乘
 
-class Linear(nn.Module):
-    def __init__(self, in_features, out_features, device=None, dtype=None):
-        super().__init__()
-        self.in_features = in_features
-        self.out_features = out_features
-        self.weight = nn.Parameter(
-            torch.empty(out_features, in_features, device=device, dtype=dtype))  # row-major memory ordering (必须这么搞)
 
-        sigma = math.sqrt(2.0 / (in_features + out_features))
-        nn.init.trunc_normal_(self.weight, mean=0.0, std=sigma, a=-3 * sigma, b=3 * sigma)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x @ self.weight.T
 
 class RoPE(nn.Module):
     """
@@ -197,9 +174,9 @@ class CausalSelfAttention_RoPE(nn.Module):
         self.head_dim = d_model // n_head # 每个头的尺寸
 
         # qkv投影，对所有头，但是写成一次矩阵乘法
-        self.qkv_proj = Linear(self.d_model, 3 * self.d_model)
+        self.qkv_proj = nn.Linear(self.d_model, 3 * self.d_model, bias=False)
         # output projection
-        self.out_proj = Linear(self.d_model, self.d_model)
+        self.out_proj = nn.Linear(self.d_model, self.d_model, bias=False)
 
         # RoPE：注意 d_k = head_dim
         self.rope = RoPE(theta=theta, d_k=self.head_dim)
@@ -241,9 +218,9 @@ class SwiGLU(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.d_ff = d_ff
-        self.w1 = Linear(d_model, d_ff, device=device, dtype=dtype) # d_model -> d_ff  gate preact生成“门”
-        self.w3 = Linear(d_model, d_ff, device=device, dtype=dtype) # d_model -> d_ff  value生成“内容”
-        self.w2 = Linear(d_ff, d_model, device=device, dtype=dtype) # d_ff -> d_model projection back把过滤后的内容还原回去
+        self.w1 = nn.Linear(d_model, d_ff, device=device, dtype=dtype, bias=False) # d_model -> d_ff  gate preact生成“门”
+        self.w3 = nn.Linear(d_model, d_ff, device=device, dtype=dtype, bias=False) # d_model -> d_ff  value生成“内容”
+        self.w2 = nn.Linear(d_ff, d_model, device=device, dtype=dtype, bias=False) # d_ff -> d_model projection back把过滤后的内容还原回去
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x shape: (B, T, C)
@@ -402,8 +379,8 @@ class Transformer(nn.Module):
         ])
         self.norm = RMSNorm(d_model)# 层归一化
         self.context_length = context_length # 最大长度
-        self.embedding = Embedding(vocab_size, d_model)# 词嵌入
-        self.lm_head = Linear(d_model, vocab_size)# 语言模型头
+        self.embedding = nn.Embedding(vocab_size, d_model)# 词嵌入
+        self.lm_head = nn.Linear(d_model, vocab_size, bias=False)# 语言模型头
 
     def forward(self, 
             x: torch.Tensor, 
@@ -423,3 +400,60 @@ class Transformer(nn.Module):
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+class Linear(nn.Module):
+    def __init__(self, in_features, out_features, device=None, dtype=None):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = nn.Parameter(
+            torch.empty(out_features, in_features, device=device, dtype=dtype))  # row-major memory ordering (必须这么搞)
+
+        sigma = math.sqrt(2.0 / (in_features + out_features))
+        nn.init.trunc_normal_(self.weight, mean=0.0, std=sigma, a=-3 * sigma, b=3 * sigma)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x @ self.weight.T
+    
+
+class Embedding(nn.Module):
+    def __init__(self, num_embeddings, embedding_dim, device=None, dtype=None):
+        super().__init__()
+        self.vocab_size = num_embeddings    # 词表大小 V
+        self.d_model = embedding_dim        # 嵌入维度 C
+        # 创建词嵌入矩阵，形状为 (V, C) 
+        self.weight = nn.Parameter(torch.empty(self.vocab_size, self.d_model, device=device, dtype=dtype))
+        nn.init.trunc_normal_(self.weight, mean=0.0, std=1.0, a=-3, b=3)# 截断正态分布，截断为 [-3, 3]，初始化
+    
+    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
+        # 根据给定的ids，查找对应的嵌入向量
+        return self.weight[token_ids] # pytorch提供的高级索引，逐个元素查表，返回一个张量

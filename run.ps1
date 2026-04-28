@@ -30,23 +30,23 @@ python main/run_train_model.py `
     --tokenizer_vocab $VOCAB `
     --tokenizer_merges $MERGES `
     --out_dir $OUT_DIR `
-    --batch_size 16 `
-    --max_iters 1000 `
+    --batch_size 32 `
+    --max_iters 10000 `
     --eval_interval 100 `
     --eval_iters 20 `
     --log_interval 10 `
-    --vocab_size 16384 `
+    --vocab_size 65536 `
     --context_length 256 `
     --n_head 16 `
     --theta 10000 `
     --n_layers 4 `
     --d_model 512 `
     --d_ff 1344 `
-    --weight_decay 1e-1 `
+    --weight_decay 1e-4 `
     --max_norm 1.0 `
-    --max_lr 6e-4 `
-    --min_lr 6e-5 `
+    --max_lr 1e-3 `
+    --min_lr 1e-4 `
     --warmup_iters 200 `
-    --lr_decay_iters 3600
+    --lr_decay_iters 8000
 
 Write-Host "`n训练结束"

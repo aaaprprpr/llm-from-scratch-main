@@ -12,7 +12,7 @@ spm.SentencePieceTrainer.train(
     model_prefix="my_qwen_sp_token",   # 输出模型名
     model_type="bpe",                  # BPE 算法（不用你写）
     
-    # 词表大小（和你 HF 代码一致：16384）
+    # 词表大小（和你 HF 代码一致：65536）
     vocab_size=32768,
     
     # 🔥 关键：中文全覆盖 = 无 UNK（和你 unk_token=None 对齐）
