@@ -9,7 +9,6 @@ from tokenizer_optimized import Tokenizer
 # 注意2：如果使用tiktoken，你需要相应地修改`generate`函数
 from train_model import (lr_cosine_schedule, gradient_clipping, get_batch, save_checkpoint, load_checkpoint)
 from model import Transformer as Model
-from model import softmax
 
 device = "cpu"
 if torch.cuda.is_available():
@@ -120,7 +119,7 @@ def generate(model, tokenizer, context, max_new_tokens, temperature=1.0, top_p=0
         # Top-p（核）过滤
         if top_p < 1.0:
             sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
-            cumulative_probs = torch.cumsum(softmax(sorted_logits, dim=-1), dim=-1)
+            cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
             
             # 找到累积概率超过top_p的索引（掩码）
             # 将掩码右移一位，保留刚好超过top_p的那个标记
@@ -134,7 +133,7 @@ def generate(model, tokenizer, context, max_new_tokens, temperature=1.0, top_p=0
                 indices_to_remove = sorted_indices[b][sorted_indices_to_remove[b]]
                 logits[b, indices_to_remove] = -float('Inf')
 
-        probs = softmax(logits, dim=-1)
+        probs = F.softmax(logits, dim=-1)
         idx_next = torch.multinomial(probs, num_samples=1) # (B, 1). Random sampling based on probability distribution, not greedy search for max. B == 1
         generated_tokens.append(idx_next.item())
         

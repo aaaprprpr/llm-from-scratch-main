@@ -1,10 +1,10 @@
 
 
 # 路径配置
-$TRAIN_DATA = "data\train.bin"
-$VAL_DATA   = "data\val.bin"
-$VOCAB      = "bpe\outputs\qwen_style_tokenizer.json"
-$MERGES     = "bpe\outputs\qwen_style_tokenizer.json"
+$TRAIN_DATA = "data/bin/train.bin"
+$VAL_DATA   = "data/bin/val.bin"
+$VOCAB      = "bpe/outputs/qwen_style_tokenizer.json"
+$MERGES     = "bpe/outputs/qwen_style_tokenizer.json"
 $OUT_ROOT   = "train_logs"
 
 # 纯数字时间戳，无中文无空格
@@ -47,6 +47,7 @@ python main/run_train_model.py `
     --max_lr 1e-3 `
     --min_lr 1e-4 `
     --warmup_iters 200 `
-    --lr_decay_iters 8000
+    --lr_decay_iters 8000 `
+    2>&1
 
 Write-Host "`n训练结束"
