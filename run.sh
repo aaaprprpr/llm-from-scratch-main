@@ -37,11 +37,11 @@ nohup python -u main/run_train_model.py \
     --eval_interval 100 \
     --eval_iters 20 \
     --log_interval 10 \
-    --vocab_size 65536 \
+    --vocab_size 8192 \
     --context_length 256 \
     --n_head 16 \
     --theta 10000 \
-    --n_layers 4 \
+    --n_layers 12 \
     --d_model 512 \
     --d_ff 1344 \
     --weight_decay 1e-1 \

@@ -9,20 +9,19 @@ model_ckpt = r"../train_logs\run_20260429_124342\ckpt_iter_3000.pt"
 vocab_file = "../bpe/outputs/qwen_style_tokenizer.json"
 merge_file = "../bpe/outputs/qwen_style_tokenizer.json"
 
-device = "cpu"
+
 if torch.cuda.is_available():
     device = "cuda"
-elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-    device = "mps"
+else:
+    device = "cpu"
 print(f"using device: {device}")
 
 # init Tokenizer
-tokenizer = Tokenizer.from_files(vocab_file, merge_file, special_tokens=["<|endoftext|>"])
-eos_id = tokenizer.special_token_to_id.get("<|endoftext|>")
+tokenizer = Tokenizer(vocab_file)
 
 # reconstruct model
 model_args = dict(
-    vocab_size=65536, 
+    vocab_size=8192, 
     context_length=128, 
     n_head=16, 
     num_layers=4, 
@@ -60,7 +59,7 @@ for p in prompts:
                               max_new_tokens=50, 
                               temperature=0.8, 
                               top_p=0.9, 
-                              eos_id=tokenizer.special_token_to_id.get("<|endoftext|>"), 
+                              eos_id=tokenizer.eos_token_id, 
                               context_length=128, 
                               device=device)
     print(f"Generated: {full_output}")

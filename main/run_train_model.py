@@ -10,11 +10,11 @@ from tokenizer_optimized import Tokenizer
 from train_model import (lr_cosine_schedule, gradient_clipping, get_batch, save_checkpoint, load_checkpoint)
 from model import Transformer as Model
 
-device = "cpu"
+
 if torch.cuda.is_available():
     device = "cuda"
-elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available(): # macOS M-series GPU
-    device = "mps"
+else:
+    device = "cpu"
 print(f"using device: {device}")
 
 def parse_args():
@@ -60,20 +60,9 @@ def parse_args():
 
     return parser.parse_args()
 
-def init_tokenizer(vocab_file, merge_file, special_tokens=[
-    "<|endoftext|>",
-    "<|im_start|>",
-    "<|im_end|>",
-    # "<|object_ref_start|>",
-    # "<|object_ref_end|>",
-    # "<|box_start|>",
-    # "<|box_end|>",
-    # "<|quad_start|>",
-    # "<|quad_end|>",
-    # "<|file_sep|>"
-]):
+def init_tokenizer(vocab_file):
     global tokenizer
-    tokenizer = Tokenizer.from_files(vocab_file, merge_file, special_tokens)
+    tokenizer = Tokenizer(vocab_file)
 
 @torch.no_grad()
 def estimate_loss(model, data, batch_size, context_length, device, eval_iters):
@@ -162,7 +151,7 @@ def main():
         writer.writerow(["iter", "train_loss", "val_loss", "lr"])
 
    
-    init_tokenizer(args.tokenizer_vocab, args.tokenizer_merges)
+    init_tokenizer(args.tokenizer_vocab)
 
     # 使用np.memmap以高效内存的方式加载数据
     train_data = np.memmap(args.train_data, dtype=np.uint32, mode='r') 

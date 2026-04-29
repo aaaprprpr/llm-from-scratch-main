@@ -178,109 +178,6 @@ class SwiGLU(nn.Module):
         x = self.w2(x)
         return x
 
-class RoPE_llama(nn.Module):
-    """Rotary Position Embeddings (RoPE) for queries/keys. This is the Llama-style RoPE (precomputed cache version), which is more traditional.
-
-    Inputs:
-      x: (..., seq_len, d_k)
-      token_positions: (..., seq_len) or (seq_len,) or (batch, seq_len)
-    Outputs:
-      Same shape as x: (..., seq_len, d_k)
-    """
-    def __init__(self, theta: float, d_k: int, max_seq_len: int, device=None):
-        """
-        - theta: float Θ value for the RoPE
-        - d_k: int dimension of query and key vectors
-        - max_seq_len: int Maximum sequence length that will be inputted
-        - device: torch.device | None = None Device to store the buffer on
-        """
-        super().__init__()
-        assert d_k % 2 == 0, "RoPE requires d_k to be even."
-        self.theta = float(theta)
-        self.d_k = int(d_k)
-        self.max_seq_len = int(max_seq_len)
-        self.device = device
-
-        p = torch.arange(0, d_k // 2, dtype=torch.float64, device=device)
-        inv_freq = 1.0 / (self.theta ** (2.0 * p / d_k))
-
-        # Key fix: register_buffer before converting to float32, otherwise it cannot run on mps
-        inv_freq = inv_freq.to(torch.float32)
-        
-        # positions: 0..max_seq_len-1
-        positions = torch.arange(max_seq_len, dtype=torch.float32, device=device)  # (L,)
-        angles = torch.einsum("i,j->ij", positions, inv_freq)  # (L, d_k/2)
-
-        # Precompute and cache; persistent=False means not saved in state_dict (not saved to checkpoint files - because it can be recomputed anytime)
-        self.register_buffer("cos_cached", angles.cos(), persistent=False)  # (L, d_k/2)
-        self.register_buffer("sin_cached", angles.sin(), persistent=False)  # (L, d_k/2)
-    
-    @staticmethod
-    def _apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
-        """
-        x:   (..., seq_len, d_k)
-        cos: (..., seq_len, d_k/2)  (already aligned to batch/seq dims)
-        sin: (..., seq_len, d_k/2)
-
-        Treat (x_even, x_odd) as 2D vectors and rotate:
-          [x_even'] = x_even*cos - x_odd*sin
-          [x_odd' ] = x_even*sin + x_odd*cos
-        """
-        # Python slicing syntax: start:stop:step
-        x_even = x[..., 0::2]  # (..., seq_len, d_k/2). Ellipsis means all preceding dimensions are retained. Take all even positions. 
-        x_odd  = x[..., 1::2]  # (..., seq_len, d_k/2) Take all odd positions. 
-
-        out_even = x_even * cos - x_odd * sin
-        out_odd  = x_even * sin + x_odd * cos
-
-        # Interleave back to (..., seq_len, d_k)
-        out = torch.empty_like(x)
-        out[..., 0::2] = out_even
-        out[..., 1::2] = out_odd
-        return out
-
-    def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
-        """This function mainly performs the computation in _apply_rope, and itself is only responsible for handling the shape and type conversion of inputs and outputs.
-        x: (..., seq_len, d_k)
-        token_positions: shape can be
-          - (seq_len,)
-          - (..., seq_len)  (e.g., (batch, seq_len) or more batch dims)
-        """
-        assert x.size(-1) == self.d_k, f"Expected last dim d_k={self.d_k}, got {x.size(-1)}"
-        seq_len = x.size(-2)
-
-        # token_positions converted to long for indexing
-        if token_positions is None:
-            token_positions = torch.arange(seq_len, device=x.device, dtype=torch.long)
-        else:
-            token_positions = token_positions.to(device=x.device, dtype=torch.long)
-        
-        # Check that the maximum position does not exceed the precomputed length (torch.numel() returns the total number of elements in an input tensor.)
-        max_pos = int(token_positions.max().item()) if token_positions.numel() > 0 else 0 
-        if max_pos >= self.max_seq_len:
-            raise ValueError(
-                f"token_positions has max={max_pos}, but max_seq_len={self.max_seq_len}. "
-                "Please increase max_seq_len in RoPE init."
-            )
-        
-        # Fetch cos/sin from cache
-        cos = self.cos_cached.index_select(0, token_positions.reshape(-1)).reshape(*token_positions.shape, -1)
-        sin = self.sin_cached.index_select(0, token_positions.reshape(-1)).reshape(*token_positions.shape, -1)
-        
-        # Align batch dims of cos/sin with x: target shape should be x.shape[:-1] with last dim d_k/2
-        if cos.shape[-2] != seq_len:
-            raise ValueError(f"token_positions seq dim {cos.shape[-2]} != x seq_len {seq_len}")
-        
-        # dtype alignment
-        cos = cos.to(dtype=x.dtype)
-        sin = sin.to(dtype=x.dtype)
-
-        return self._apply_rope(x, cos, sin)
-
-
-
-
-
 class Block(nn.Module):
     def __init__(self, d_model: int, n_head: int, d_ff: int, theta: float = 10000.0):
         super().__init__()
@@ -460,7 +357,104 @@ class Transformer(nn.Module):
 
 
 
+# class RoPE_llama(nn.Module):
+#     """Rotary Position Embeddings (RoPE) for queries/keys. This is the Llama-style RoPE (precomputed cache version), which is more traditional.
 
+#     Inputs:
+#       x: (..., seq_len, d_k)
+#       token_positions: (..., seq_len) or (seq_len,) or (batch, seq_len)
+#     Outputs:
+#       Same shape as x: (..., seq_len, d_k)
+#     """
+#     def __init__(self, theta: float, d_k: int, max_seq_len: int, device=None):
+#         """
+#         - theta: float Θ value for the RoPE
+#         - d_k: int dimension of query and key vectors
+#         - max_seq_len: int Maximum sequence length that will be inputted
+#         - device: torch.device | None = None Device to store the buffer on
+#         """
+#         super().__init__()
+#         assert d_k % 2 == 0, "RoPE requires d_k to be even."
+#         self.theta = float(theta)
+#         self.d_k = int(d_k)
+#         self.max_seq_len = int(max_seq_len)
+#         self.device = device
+
+#         p = torch.arange(0, d_k // 2, dtype=torch.float64, device=device)
+#         inv_freq = 1.0 / (self.theta ** (2.0 * p / d_k))
+
+#         # Key fix: register_buffer before converting to float32, otherwise it cannot run on mps
+#         inv_freq = inv_freq.to(torch.float32)
+        
+#         # positions: 0..max_seq_len-1
+#         positions = torch.arange(max_seq_len, dtype=torch.float32, device=device)  # (L,)
+#         angles = torch.einsum("i,j->ij", positions, inv_freq)  # (L, d_k/2)
+
+#         # Precompute and cache; persistent=False means not saved in state_dict (not saved to checkpoint files - because it can be recomputed anytime)
+#         self.register_buffer("cos_cached", angles.cos(), persistent=False)  # (L, d_k/2)
+#         self.register_buffer("sin_cached", angles.sin(), persistent=False)  # (L, d_k/2)
+    
+#     @staticmethod
+#     def _apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+#         """
+#         x:   (..., seq_len, d_k)
+#         cos: (..., seq_len, d_k/2)  (already aligned to batch/seq dims)
+#         sin: (..., seq_len, d_k/2)
+
+#         Treat (x_even, x_odd) as 2D vectors and rotate:
+#           [x_even'] = x_even*cos - x_odd*sin
+#           [x_odd' ] = x_even*sin + x_odd*cos
+#         """
+#         # Python slicing syntax: start:stop:step
+#         x_even = x[..., 0::2]  # (..., seq_len, d_k/2). Ellipsis means all preceding dimensions are retained. Take all even positions. 
+#         x_odd  = x[..., 1::2]  # (..., seq_len, d_k/2) Take all odd positions. 
+
+#         out_even = x_even * cos - x_odd * sin
+#         out_odd  = x_even * sin + x_odd * cos
+
+#         # Interleave back to (..., seq_len, d_k)
+#         out = torch.empty_like(x)
+#         out[..., 0::2] = out_even
+#         out[..., 1::2] = out_odd
+#         return out
+
+#     def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
+#         """This function mainly performs the computation in _apply_rope, and itself is only responsible for handling the shape and type conversion of inputs and outputs.
+#         x: (..., seq_len, d_k)
+#         token_positions: shape can be
+#           - (seq_len,)
+#           - (..., seq_len)  (e.g., (batch, seq_len) or more batch dims)
+#         """
+#         assert x.size(-1) == self.d_k, f"Expected last dim d_k={self.d_k}, got {x.size(-1)}"
+#         seq_len = x.size(-2)
+
+#         # token_positions converted to long for indexing
+#         if token_positions is None:
+#             token_positions = torch.arange(seq_len, device=x.device, dtype=torch.long)
+#         else:
+#             token_positions = token_positions.to(device=x.device, dtype=torch.long)
+        
+#         # Check that the maximum position does not exceed the precomputed length (torch.numel() returns the total number of elements in an input tensor.)
+#         max_pos = int(token_positions.max().item()) if token_positions.numel() > 0 else 0 
+#         if max_pos >= self.max_seq_len:
+#             raise ValueError(
+#                 f"token_positions has max={max_pos}, but max_seq_len={self.max_seq_len}. "
+#                 "Please increase max_seq_len in RoPE init."
+#             )
+        
+#         # Fetch cos/sin from cache
+#         cos = self.cos_cached.index_select(0, token_positions.reshape(-1)).reshape(*token_positions.shape, -1)
+#         sin = self.sin_cached.index_select(0, token_positions.reshape(-1)).reshape(*token_positions.shape, -1)
+        
+#         # Align batch dims of cos/sin with x: target shape should be x.shape[:-1] with last dim d_k/2
+#         if cos.shape[-2] != seq_len:
+#             raise ValueError(f"token_positions seq dim {cos.shape[-2]} != x seq_len {seq_len}")
+        
+#         # dtype alignment
+#         cos = cos.to(dtype=x.dtype)
+#         sin = sin.to(dtype=x.dtype)
+
+#         return self._apply_rope(x, cos, sin)
 
 
 
