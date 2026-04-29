@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from model import Transformer as Model
 from tokenizer_optimized import Tokenizer
 
-model_ckpt = "../train_logs/run_20260428_200749/ckpt_iter_9999.pt"
+model_ckpt = r"../train_logs\run_20260429_124342\ckpt_iter_3000.pt"
 vocab_file = "../bpe/outputs/qwen_style_tokenizer.json"
 merge_file = "../bpe/outputs/qwen_style_tokenizer.json"
 

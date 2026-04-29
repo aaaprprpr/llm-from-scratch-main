@@ -64,13 +64,13 @@ def init_tokenizer(vocab_file, merge_file, special_tokens=[
     "<|endoftext|>",
     "<|im_start|>",
     "<|im_end|>",
-    "<|object_ref_start|>",
-    "<|object_ref_end|>",
-    "<|box_start|>",
-    "<|box_end|>",
-    "<|quad_start|>",
-    "<|quad_end|>",
-    "<|file_sep|>"
+    # "<|object_ref_start|>",
+    # "<|object_ref_end|>",
+    # "<|box_start|>",
+    # "<|box_end|>",
+    # "<|quad_start|>",
+    # "<|quad_end|>",
+    # "<|file_sep|>"
 ]):
     global tokenizer
     tokenizer = Tokenizer.from_files(vocab_file, merge_file, special_tokens)
@@ -218,7 +218,7 @@ def main():
         # 每隔一定步数（检查点间隔）从模型生成文本并保存结果
         if (it % (args.eval_interval * 10) == 0 and it > 0) or last_step:
             # generate from model
-            context, temperature, top_p = "Hello, I'm a language model, ", 0.7, 0.95
+            context, temperature, top_p = "你好，我是", 0.7, 0.95
             full_sentence, new_tokens = generate(
                 model, 
                 tokenizer=tokenizer,

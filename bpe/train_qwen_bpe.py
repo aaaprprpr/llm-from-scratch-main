@@ -43,8 +43,8 @@ trainer = BpeTrainer(
 
 # ===================== 3. 开始训练 =====================
 # 你的语料文件
-files = glob("data/*.txt")
-# files = ["../data/clean_traditional_wiki.txt"]
+# files = glob("data/*.txt")
+files = ["../data/val.txt"]
 tokenizer.train(
     files=files, 
     trainer=trainer,

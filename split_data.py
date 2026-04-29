@@ -8,7 +8,7 @@ from multiprocessing import Pool, cpu_count
 GLOB_PATTERN = "data/simplified/*.txt"
 TRAIN_PATH = "data/train.txt"
 VAL_PATH =   "data/val.txt"
-TRAIN_RATIO = 0.9
+TRAIN_RATIO = 0.95
 BATCH_SIZE = 20000  # 每批 2 万行（内存极低）
 PROC_NUM = cpu_count()
 # ========================================

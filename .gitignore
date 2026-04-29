@@ -18,5 +18,4 @@ env/
 *.bin
 *.txt
 .pt
-*json
 train_logs/
