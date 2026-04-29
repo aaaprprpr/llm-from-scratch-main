@@ -5,9 +5,9 @@ import torch.nn.functional as F
 from model import Transformer as Model
 from tokenizer_optimized import Tokenizer
 
-model_ckpt = r"../train_logs\run_20260429_124342\ckpt_iter_3000.pt"
-vocab_file = "../bpe/outputs/qwen_style_tokenizer.json"
-merge_file = "../bpe/outputs/qwen_style_tokenizer.json"
+model_ckpt = r"../train_logs\run_20260429_193122\ckpt_iter_19999.pt"
+vocab_file = "../bpe/tokenizer"
+merge_file = "../bpe/tokenizer/qwen_style_tokenizer.json"
 
 
 if torch.cuda.is_available():
@@ -24,7 +24,7 @@ model_args = dict(
     vocab_size=8192, 
     context_length=128, 
     n_head=16, 
-    num_layers=4, 
+    num_layers=12, 
     d_model=512, 
     d_ff=1344,
     theta=10000.0
@@ -47,7 +47,9 @@ prompts = [
     "深度学习是",
     'hello ,i am',
     '今天天气',
-    '我今天吃了'
+    '我今天吃了',
+    '打个胶先，',
+    '你是一个可爱的小傻逼，回答问题：你是傻逼吗？答：'
 ]
 
 print("-" * 30)
@@ -57,9 +59,9 @@ for p in prompts:
                               tokenizer=tokenizer, 
                               context=p, 
                               max_new_tokens=50, 
-                              temperature=0.8, 
+                              temperature=0.6, 
                               top_p=0.9, 
-                              eos_id=tokenizer.eos_token_id, 
+                              eos_id=tokenizer.special_token_to_id.get("<|endoftext|>"),
                               context_length=128, 
                               device=device)
     print(f"Generated: {full_output}")

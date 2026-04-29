@@ -23,15 +23,15 @@ Write-Host "输出目录: $OUT_DIR"
 Write-Host "日志文件: $LOG_FILE"
 Write-Host "====================================================="
 
-# 核心：前台直接运行python，不跳转、不后台、不吞报错
+
 python main/run_train_model.py `
     --train_data $TRAIN_DATA `
     --val_data $VAL_DATA `
     --tokenizer_vocab $VOCAB `
     --tokenizer_merges $MERGES `
     --out_dir $OUT_DIR `
-    --batch_size 16 `
-    --max_iters 20 `
+    --batch_size 64 `
+    --max_iters 20000 `
     --eval_interval 100 `
     --eval_iters 20 `
     --log_interval 10 `
@@ -42,12 +42,12 @@ python main/run_train_model.py `
     --n_layers 12 `
     --d_model 512 `
     --d_ff 1344 `
-    --weight_decay 1e-4 `
+    --weight_decay 1e-5 `
     --max_norm 1.0 `
     --max_lr 1e-3 `
-    --min_lr 1e-4 `
+    --min_lr 1e-5 `
     --warmup_iters 200 `
-    --lr_decay_iters 8000 `
+    --lr_decay_iters 15000 `
     2>&1
 
 Write-Host "`n训练结束"

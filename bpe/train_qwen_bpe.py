@@ -32,12 +32,12 @@ trainer = BpeTrainer(
     continuing_subword_prefix="",
     num_workers=16,
     # limit_alphabet=500,
-    # max_token_length=20,
+    max_token_length=20,
 )
 
 # ===================== 3. 开始训练 =====================
-files = glob("../data/simplified/*.txt")
-# files = [r"../data\simplified\ChineseSafe.txt"]
+# files = glob("../data/simplified/*.txt")
+files = ["../data/val.txt"]
 tokenizer.train(files=files, trainer=trainer)
 
 # ===================== 4. 保存词表 =====================
