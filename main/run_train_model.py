@@ -231,7 +231,7 @@ def main():
         loss = F.cross_entropy(logits.view(-1, logits.size(-1)), Y.view(-1)) 
         optimizer.zero_grad(set_to_none=True)
         loss.backward() 
-        grad_norm = gradient_clipping(model.parameters(), args.max_norm) 
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_norm) 
         optimizer.step() 
         # --------------------------------------------
 
