@@ -29,7 +29,7 @@ def process_line(line):
         return None
     tokens = tokenizer.encode(line)
     tokens.append(EOS_TOKEN_ID)
-    return np.array(tokens, dtype=np.uint32)
+    return np.array(tokens, dtype=np.uint16)
 
 
 # ===================== 生成 bin 文件 =====================

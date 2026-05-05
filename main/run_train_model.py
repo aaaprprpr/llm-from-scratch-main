@@ -154,8 +154,8 @@ def main():
     init_tokenizer(args.tokenizer_vocab)
 
     # 使用np.memmap以高效内存的方式加载数据
-    train_data = np.memmap(args.train_data, dtype=np.uint32, mode='r') 
-    val_data = np.memmap(args.val_data, dtype=np.uint32, mode='r')
+    train_data = np.memmap(args.train_data, dtype=np.uint16, mode='r') 
+    val_data = np.memmap(args.val_data, dtype=np.uint16, mode='r')
 
     # model, optimizer  优化器手写换官方了
     model = Model(d_model=args.d_model, n_head=args.n_head, d_ff=args.d_ff, theta=args.theta, vocab_size=args.vocab_size, context_length=args.context_length, num_layers=args.n_layers, ).to(device)

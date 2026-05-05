@@ -30,8 +30,8 @@ python main/run_train_model.py `
     --tokenizer_vocab $VOCAB `
     --tokenizer_merges $MERGES `
     --out_dir $OUT_DIR `
-    --batch_size 16 `
-    --max_iters 20 `
+    --batch_size 32 `
+    --max_iters 20000 `
     --eval_interval 100 `
     --eval_iters 20 `
     --log_interval 10 `
