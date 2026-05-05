@@ -31,7 +31,7 @@ def process_chunk(lines):
     if not all_tokens:
         return None
     # 词表 < 65536 建议用 uint16，否则用 uint32
-    return np.array(all_tokens, dtype=np.uint32)
+    return np.array(all_tokens, dtype=np.uint16)
 
 def line_batch_generator(file_path, batch_size):
     """生成器：按块读取文件内容"""
