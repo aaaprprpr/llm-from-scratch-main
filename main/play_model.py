@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from model import Transformer as Model
 from tokenizer_optimized import Tokenizer
 
-model_ckpt = r"../train_logs\run_20260429_193122\ckpt_iter_19999.pt"
+model_ckpt = r"../train_logs\run_20260508_194017\ckpt_iter_49999.pt"
 vocab_file = "../bpe/tokenizer"
 merge_file = "../bpe/tokenizer/qwen_style_tokenizer.json"
 
@@ -23,10 +23,10 @@ tokenizer = Tokenizer(vocab_file)
 model_args = dict(
     vocab_size=8192, 
     context_length=128, 
-    n_head=16, 
+    n_head=8, 
     num_layers=12, 
     d_model=512, 
-    d_ff=1344,
+    d_ff=2048,
     theta=10000.0
 )
 
@@ -41,7 +41,7 @@ model.eval()
 
 # 开始调戏模型
 prompts = [
-   "中国的首都是",
+    "中国的首都是",
     "自然语言处理",
     "北京是一座",
     "深度学习是",
@@ -49,7 +49,9 @@ prompts = [
     '今天天气',
     '我今天吃了',
     '打个胶先，',
-    '你是一个可爱的小傻逼，回答问题：你是傻逼吗？答：'
+    '你是一个可爱的小傻逼，回答问题：你是傻逼吗？答：',
+    '上路被三人越塔，',
+    '乌兹，永远的'
 ]
 
 print("-" * 30)

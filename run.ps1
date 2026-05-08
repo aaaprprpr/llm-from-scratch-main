@@ -1,10 +1,7 @@
-
-
 # 路径配置
 $TRAIN_DATA = "data/train.bin"
 $VAL_DATA   = "data/val.bin"
 $VOCAB      = "bpe/tokenizer"
-$MERGES     = "bpe/tokenizer"
 $OUT_ROOT   = "train_logs"
 
 # 纯数字时间戳，无中文无空格
@@ -18,9 +15,9 @@ if (-not (Test-Path $OUT_DIR)){
 }
 
 Write-Host "====================================================="
-Write-Host "工作目录: $(Get-Location)"
-Write-Host "输出目录: $OUT_DIR"
-Write-Host "日志文件: $LOG_FILE"
+Write-Host "work dir: $(Get-Location)"
+Write-Host "out dir: $OUT_DIR"
+Write-Host "log files: $LOG_FILE"
 Write-Host "====================================================="
 
 
@@ -28,26 +25,25 @@ python main/run_train_model.py `
     --train_data $TRAIN_DATA `
     --val_data $VAL_DATA `
     --tokenizer_vocab $VOCAB `
-    --tokenizer_merges $MERGES `
     --out_dir $OUT_DIR `
     --batch_size 64 `
-    --max_iters 20000 `
+    --max_iters 50000 `
     --eval_interval 100 `
     --eval_iters 20 `
     --log_interval 10 `
     --vocab_size 8192 `
     --context_length 256 `
-    --n_head 16 `
+    --n_head 8 `
     --theta 10000 `
     --n_layers 12 `
     --d_model 512 `
-    --d_ff 1344 `
-    --weight_decay 1e-5 `
+    --d_ff 2048 `
+    --weight_decay 1e-2 `
     --max_norm 1.0 `
     --max_lr 1e-3 `
     --min_lr 1e-5 `
-    --warmup_iters 200 `
-    --lr_decay_iters 15000 `
+    --warmup_iters 1000 `
+    --lr_decay_iters 48000 `
     2>&1
 
-Write-Host "`n训练结束"
+Write-Host "`ntrain done"

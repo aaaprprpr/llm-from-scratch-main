@@ -7,14 +7,11 @@ from tokenizer_optimized import Tokenizer
 # tokenizer = tiktoken.get_encoding("gpt2") 
 # 注意1：确保分词器词汇表大小与模型的词汇表大小一致（GPT2为50257）- 请在`run.sh`文件中设置
 # 注意2：如果使用tiktoken，你需要相应地修改`generate`函数
-from train_model import (lr_cosine_schedule, gradient_clipping, get_batch, save_checkpoint, load_checkpoint)
+from train_model import (lr_cosine_schedule, get_batch, save_checkpoint, load_checkpoint)
 from model import Transformer as Model
 
 
-if torch.cuda.is_available():
-    device = "cuda"
-else:
-    device = "cpu"
+device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"using device: {device}")
 
 def parse_args():
@@ -24,7 +21,6 @@ def parse_args():
     parser.add_argument('--train_data', type=str, required=True, help='Path to train.bin (np.memmap)')
     parser.add_argument('--val_data', type=str, required=True, help='Path to val.bin (np.memmap)')
     parser.add_argument('--tokenizer_vocab', type=str, required=True, help='Path to tokenizer vocab file (json)')
-    parser.add_argument('--tokenizer_merges', type=str, required=True, help='Path to tokenizer merges file (txt)')
     parser.add_argument('--out_dir', type=str, default='out', help='Directory to save checkpoints')
     
     # 训练超参数

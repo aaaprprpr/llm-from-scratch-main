@@ -1,9 +1,10 @@
 import torch
+from torch.utils.data import Dataset,DataLoader
 import numpy as np
 import math
 import os
 from typing import Optional, Callable, Iterable, BinaryIO, IO
-
+'''
 # def cross_entropy(o_i, y_i):
 #     """
 #     o_i: 模型输出的原始预测值 logits，形状为 (批次维度, 词表大小)
@@ -27,61 +28,82 @@ from typing import Optional, Callable, Iterable, BinaryIO, IO
 #     ce = ce.mean()           # scalar批次的平均损失
 #     return ce
 
-class AdamW(torch.optim.AdamW):
-    def __init__(self, params, lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=0):
-        super().__init__(params, lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
+# class AdamW(torch.optim.AdamW):
+#     def __init__(self, params, lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=0):
+#         super().__init__(params, lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
     
-    @torch.no_grad() # 根据梯度挪动参数一步，本身这一步不需要求导。
-    def step(self, closure: Optional[Callable] = None):
-        loss = None
-        if closure is not None:
-            with torch.enable_grad(): # 闭包通常需要重新计算梯度
-                loss = closure()
+#     @torch.no_grad() # 根据梯度挪动参数一步，本身这一步不需要求导。
+#     def step(self, closure: Optional[Callable] = None):
+#         loss = None
+#         if closure is not None:
+#             with torch.enable_grad(): # 闭包通常需要重新计算梯度
+#                 loss = closure()
         
-        for group in self.param_groups:
-            alpha = group['lr'] # 学习率
-            beta1, beta2 = group['betas']# Adam 的两个动量衰减系数
-            eps = group['eps']# Adam 的数值稳定项
-            lambda_ = group['weight_decay']# AdamW 的权重衰减系数（与学习率一起衰减参数，而不是像 Adam 那样直接在梯度上加一个正则项）
+#         for group in self.param_groups:
+#             alpha = group['lr'] # 学习率
+#             beta1, beta2 = group['betas']# Adam 的两个动量衰减系数
+#             eps = group['eps']# Adam 的数值稳定项
+#             lambda_ = group['weight_decay']# AdamW 的权重衰减系数（与学习率一起衰减参数，而不是像 Adam 那样直接在梯度上加一个正则项）
             
-            for theta in group['params']:# theta 是一个参数张量，遍历所有参数
-                if theta.grad is None:
-                    continue
+#             for theta in group['params']:# theta 是一个参数张量，遍历所有参数
+#                 if theta.grad is None:
+#                     continue
 
-                grad = theta.grad.data#梯度
-                state = self.state[theta]#每个参数对应一个状态字典，存储动量等信息。
+#                 grad = theta.grad.data#梯度
+#                 state = self.state[theta]#每个参数对应一个状态字典，存储动量等信息。
 
-                # 第一次访问时是空的，所以需要初始化。
-                if len(state) == 0:
-                    state['step'] = 0
-                    state['m'] = torch.zeros_like(theta.data)
-                    state['v'] = torch.zeros_like(theta.data)
+#                 # 第一次访问时是空的，所以需要初始化。
+#                 if len(state) == 0:
+#                     state['step'] = 0
+#                     state['m'] = torch.zeros_like(theta.data)
+#                     state['v'] = torch.zeros_like(theta.data)
 
-                m, v = state['m'], state['v']
-                state['step'] += 1 # 从 1 开始计数
-                t = state['step']
+#                 m, v = state['m'], state['v']
+#                 state['step'] += 1 # 从 1 开始计数
+#                 t = state['step']
 
-                # Update moments
-                # m_t = beta1 * m_{t-1} + (1 - beta1) * g_t
-                m.mul_(beta1).add_(grad, alpha=1 - beta1) # mul_ 带下划线是 in-place 乘法，相比起 m = m * beta1 显著节省内存 (不产生新的张量)
-                # v_t = beta2 * v_{t-1} + (1 - beta2) * g_t^2
-                v.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+#                 # Update moments
+#                 # m_t = beta1 * m_{t-1} + (1 - beta1) * g_t
+#                 m.mul_(beta1).add_(grad, alpha=1 - beta1) # mul_ 带下划线是 in-place 乘法，相比起 m = m * beta1 显著节省内存 (不产生新的张量)
+#                 # v_t = beta2 * v_{t-1} + (1 - beta2) * g_t^2
+#                 v.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
 
-                # compute adjusted alpha for iteration t
-                bias_correction1 = 1 - beta1 ** t
-                bias_correction2 = 1 - beta2 ** t
-                alpha_t = alpha * math.sqrt(bias_correction2) / bias_correction1
+#                 # compute adjusted alpha for iteration t
+#                 bias_correction1 = 1 - beta1 ** t
+#                 bias_correction2 = 1 - beta2 ** t
+#                 alpha_t = alpha * math.sqrt(bias_correction2) / bias_correction1
 
-                # update parameters
-                denom = v.sqrt().add_(eps)
-                theta.addcdiv_(m, denom, value=-alpha_t)
+#                 # update parameters
+#                 denom = v.sqrt().add_(eps)
+#                 theta.addcdiv_(m, denom, value=-alpha_t)
 
-                # apply weight decay 这是 AdamW 的核心。
-                if lambda_ != 0:
-                    theta.mul_(1 - alpha * lambda_)
-                    # theta = theta - alpha * lambda_ * theta   <- # 等价写法，但会多占用内存
+#                 # apply weight decay 这是 AdamW 的核心。
+#                 if lambda_ != 0:
+#                     theta.mul_(1 - alpha * lambda_)
+#                     # theta = theta - alpha * lambda_ * theta   <- # 等价写法，但会多占用内存
 
-        return loss
+#         return loss
+
+# def gradient_clipping(params: Iterable[torch.nn.Parameter], max_norm: float, eps: float=1e-6):
+#     grads = [p.grad.detach().flatten() for p in params if p.grad is not None]
+#     if len(grads) == 0:
+#         return
+    
+#     # 将所有梯度拼接成一个长向量 g
+#     g = torch.cat(grads)
+
+#     g_norm = torch.linalg.norm(g)
+
+#     if g_norm >= max_norm:
+#         clip_coef = max_norm / (g_norm + eps)
+#         for p in params:
+#             if p.grad is not None:
+#                 p.grad.detach().mul_(clip_coef) # remember this mul_ (原地缩放)
+    
+#     return g_norm # 通常返回 norm 以便监控
+
+'''
+
 
 def lr_cosine_schedule(t, alpha_max, alpha_min, T_w, T_c):
     """
@@ -106,59 +128,62 @@ def lr_cosine_schedule(t, alpha_max, alpha_min, T_w, T_c):
 
     return alpha_t
     
-# def gradient_clipping(params: Iterable[torch.nn.Parameter], max_norm: float, eps: float=1e-6):
-#     grads = [p.grad.detach().flatten() for p in params if p.grad is not None]
-#     if len(grads) == 0:
-#         return
-    
-#     # 将所有梯度拼接成一个长向量 g
-#     g = torch.cat(grads)
 
-#     g_norm = torch.linalg.norm(g)
+class TextDataset(Dataset):
+    def __init__(self, data, context_length):
+        self.data = data
+        self.context_length = context_length
 
-#     if g_norm >= max_norm:
-#         clip_coef = max_norm / (g_norm + eps)
-#         for p in params:
-#             if p.grad is not None:
-#                 p.grad.detach().mul_(clip_coef) # remember this mul_ (原地缩放)
-    
-#     return g_norm # 通常返回 norm 以便监控
+    def __len__(self):
+        return len(self.data) - self.context_length - 1
+
+    def __getitem__(self, i):
+        x = torch.from_numpy(self.data[i:i+self.context_length].astype(np.int64))
+        y = torch.from_numpy(self.data[i+1:i+self.context_length+1].astype(np.int64))
+        return x, y
+
+
+
+_current_step_pos = 0
 
 def get_batch(data, batch_size, context_length, device):
-    """
-    参数：
-        data: 输入序列，形状为 (context_length,) 的张量
-        batch_size: 批次大小
-        context_length: 上下文长度
-        device: 数据存放的设备，例如 'cpu'、'cuda:0' 或 'mps'
+    global _current_step_pos
+    
+    # 1. 计算总共有多少个合法的起始位置
+    total_samples = len(data) - context_length - 1
+    
+    # 2. 生成 batch_size 个索引
+    # 不再是 randint，而是从当前位置开始往后排
+    # 比如：[pos, pos + context_length, pos + 2*context_length, ...]
+    # 这样能保证数据被地毯式扫过
+    ix = []
+    for _ in range(batch_size):
+        if _current_step_pos > total_samples:
+            _current_step_pos = 0 # 扫完了，回到开头
+        ix.append(_current_step_pos)
+        _current_step_pos += context_length # 步长等于上下文长度，无缝衔接
 
-    返回：
-        x: 形状为 (batch_size, context_length) 的张量
-        y: 形状为 (batch_size, context_length) 的张量
-    """
-
-    # 随机产生 batch_size 个起始位置
-    ix = torch.randint(0, len(data) - context_length, (batch_size,))
-
-    # 根据起始位置提取 x，以及 x 的下一个位置 (若 data 是 np.memmap 则只有被切到的那部分数据才会被从磁盘加载到内存中)
+    # 3. 提取数据（保持你原来的 memmap 逻辑）
     x_list = [data[i : i + context_length].astype(np.int64) for i in ix]
     y_list = [data[i + 1 : i + context_length + 1].astype(np.int64) for i in ix]
 
-    # 为保障 memmap，最后再转换为 Tensor 并堆叠 
-    x = torch.from_numpy(np.stack(x_list)).to(device) # or torch.tensor(data)
+    # 4. 堆叠并转 Tensor
+    x = torch.from_numpy(np.stack(x_list)).to(device)
     y = torch.from_numpy(np.stack(y_list)).to(device)
 
-    return x.to(device), y.to(device)
+    return x, y
 
-"""
-在目前的 get_batch 中，虽然逻辑正确，但由于它是纯随机的，可能会导致在一个 Epoch 里有些数据被重复读，有些没读到。
-进阶技巧：随机打乱索引 (Shuffled Indices). 可以先生成一组所有可能的索引 range(0, len(data) - context_length)，将其 Shuffle，然后按顺序取这些打乱后的索引。
-这样既保证了随机性，又保证了在一个周期内遍历了所有数据。
-"""
 
-def save_checkpoint(model: torch.nn.Module, optimizer: torch.optim.Optimizer, iteration: int, 
-                    out: str | os.PathLike | BinaryIO | IO[bytes]):
-    """将前三个参数的所有状态转储到类文件对象 out 中。
+
+
+
+
+
+
+
+def save_checkpoint(model: torch.nn.Module, optimizer: torch.optim.Optimizer, iteration: int, out: str | os.PathLike | BinaryIO | IO[bytes]):
+    """
+    将前三个参数的所有状态转储到类文件对象 out 中。
     """
 
     obj = {
@@ -168,8 +193,7 @@ def save_checkpoint(model: torch.nn.Module, optimizer: torch.optim.Optimizer, it
     }
     torch.save(obj, out)
     
-def load_checkpoint(src: str | os.PathLike | BinaryIO | IO[bytes], 
-                    model: torch.nn.Module, optimizer: torch.optim.Optimizer):
+def load_checkpoint(src: str | os.PathLike | BinaryIO | IO[bytes], model: torch.nn.Module, optimizer: torch.optim.Optimizer):
     obj = torch.load(src)
     model.load_state_dict(obj['model'])
     optimizer.load_state_dict(obj['optimizer'])
