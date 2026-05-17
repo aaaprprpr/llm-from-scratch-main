@@ -1,5 +1,3 @@
-# infrence from trained model
-from run_train_model import generate
 import torch
 import torch.nn.functional as F
 from model import Transformer as Model
@@ -10,16 +8,11 @@ vocab_file = "../bpe/tokenizer"
 merge_file = "../bpe/tokenizer/qwen_style_tokenizer.json"
 
 
-if torch.cuda.is_available():
-    device = "cuda"
-else:
-    device = "cpu"
+device = "cuda" if torch.cuda.is_available() else  "cpu"
 print(f"using device: {device}")
+print(f"Loading model from {model_ckpt}...")
 
-# init Tokenizer
 tokenizer = Tokenizer(vocab_file)
-
-# reconstruct model
 model_args = dict(
     vocab_size=8192, 
     context_length=128, 
@@ -29,11 +22,7 @@ model_args = dict(
     d_ff=2048,
     theta=10000.0
 )
-
-print(f"Loading model from {model_ckpt}...")
 model = Model(**model_args).to(device)
-
-# load weights
 checkpoint = torch.load(model_ckpt, map_location=device)
 state_dict = checkpoint['model'] # it has keys: "model", "optimizer", "iteration".
 model.load_state_dict(state_dict)
@@ -57,14 +46,14 @@ prompts = [
 print("-" * 30)
 for p in prompts:
     print(f"Prompt: {p}")
-    full_output, _ = generate(model, 
-                              tokenizer=tokenizer, 
-                              context=p, 
+    idx=tokenizer.idx(p,device=device)
+    full_output,_ = model.generate( 
+                              idx, 
                               max_new_tokens=50, 
                               temperature=0.6, 
                               top_p=0.9, 
                               eos_id=tokenizer.special_token_to_id.get("<|endoftext|>"),
                               context_length=128, 
                               device=device)
-    print(f"Generated: {full_output}")
+    print(f"Generated: {tokenizer.text(full_output,device=device)}")
     print("=" * 80)

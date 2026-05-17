@@ -1,0 +1,19 @@
+{
+  "architectures": [
+    "MyCustomLLMForCausalLM"
+  ],
+  "auto_map": {
+    "AutoConfig": "hf_wrapper.MyCustomLLMConfig",
+    "AutoModelForCausalLM": "hf_wrapper.MyCustomLLMForCausalLM"
+  },
+  "context_length": 256,
+  "d_ff": 2048,
+  "d_model": 512,
+  "dtype": "float32",
+  "model_type": "my_custom_llm",
+  "n_head": 8,
+  "num_layers": 12,
+  "theta": 10000.0,
+  "transformers_version": "5.5.3",
+  "vocab_size": 8192
+}

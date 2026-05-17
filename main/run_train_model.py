@@ -67,69 +67,12 @@ def estimate_loss(model, data, batch_size, context_length, device, eval_iters):
     losses = torch.zeros(eval_iters)
     for k in range(eval_iters):
         X, Y = get_batch(data, batch_size, context_length, device) # (B, T)
-        logits = model(X) # logits size (B, T, V)
+        logits ,_= model(X,use_cache=False) # logits size (B, T, V)
         loss = F.cross_entropy(logits.view(-1, logits.size(-1)), Y.view(-1)) # 等同于 (B*T, V) 以及 (B*T, )
         losses[k] = loss.item()
     model.train()
     return losses.mean()
 
-@torch.no_grad()
-def generate(model, tokenizer, context, max_new_tokens, temperature=1.0, top_p=0.9, eos_id=None, context_length=256, device=None):
-    """
-    参数说明：
-        model, tokenizer: 已训练的模型与分词器
-        context: 输入上下文文本
-        max_new_tokens: 最大生成长度
-        temperature: 温度缩放参数（1.0 = 无效果，<1.0 = 更确定性，>1.0 = 更随机）
-        top_p: 核采样阈值（取值范围 0.0 ~ 1.0）
-        eos_id: 序列结束标记的ID
-        context_length: 模型支持的最大上下文长度
-    """
-    model.eval()
-    
-    # 编码上下文
-    idx = torch.tensor(tokenizer.encode(context), dtype=torch.long, device=device).unsqueeze(0) # (1, T)
-    generated_tokens = []
-
-    for _ in range(max_new_tokens):
-        # 如果当前序列长度超过模型的context_length，从开头截断
-        idx_cond = idx if idx.size(1) <= context_length else idx[:, -context_length:]
-
-        logits = model(idx_cond)
-        logits = logits[:, -1, :] # (B, V)
-
-        # 温度缩放
-        logits = logits / max(temperature, 1e-5)
-
-        # Top-p（核）过滤
-        if top_p < 1.0:
-            sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
-            cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-            
-            # 找到累积概率超过top_p的索引（掩码）
-            # 将掩码右移一位，保留刚好超过top_p的那个标记
-            # 强制保留概率最高的第一个标记，避免因第一个标记概率超过p而移除所有标记
-            sorted_indices_to_remove = cumulative_probs > top_p
-            sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-            sorted_indices_to_remove[..., 0] = 0
-            
-            # 将需要移除的标记的逻辑值设为负无穷
-            for b in range(logits.size(0)):
-                indices_to_remove = sorted_indices[b][sorted_indices_to_remove[b]]
-                logits[b, indices_to_remove] = -float('Inf')
-
-        probs = F.softmax(logits, dim=-1)
-        idx_next = torch.multinomial(probs, num_samples=1) # (B, 1). Random sampling based on probability distribution, not greedy search for max. B == 1
-        generated_tokens.append(idx_next.item())
-        
-        # idx 代表完整的序列
-        idx = torch.cat((idx, idx_next), dim=1)
-        
-        if eos_id is not None and (idx_next.item() == eos_id):
-            break
-
-    return tokenizer.decode(idx[0].tolist()), tokenizer.decode(generated_tokens)
-    # (full_sentence, generated_new_tokens)
 
 def main():
     args = parse_args()
@@ -204,10 +147,9 @@ def main():
         if (it % (args.eval_interval * 10) == 0 and it > 0) or last_step:
             # generate from model
             context, temperature, top_p = "你好，我是", 0.7, 0.95
-            full_sentence, new_tokens = generate(
-                model, 
-                tokenizer=tokenizer,
-                context=context, 
+            idx=tokenizer.idx(context,device=device)
+            full_sentence = model.generate(
+                idx,
                 max_new_tokens=100, 
                 temperature=temperature, 
                 top_p=top_p, 
@@ -215,6 +157,7 @@ def main():
                 context_length=args.context_length,
                 device=device
             )
+            full_sentence=tokenizer.text(full_sentence,device=device)
             print(f"[Generated at iter {it}, temperature {temperature}, top_p {top_p}]: {full_sentence}")
 
 
@@ -223,7 +166,7 @@ def main():
         
         # --------------------------------------------
         # Train for one step
-        logits = model(X) 
+        logits ,_= model(X) 
         loss = F.cross_entropy(logits.view(-1, logits.size(-1)), Y.view(-1)) 
         optimizer.zero_grad(set_to_none=True)
         loss.backward() 

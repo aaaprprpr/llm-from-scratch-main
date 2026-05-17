@@ -1,6 +1,6 @@
 from typing import  List
 from transformers import PreTrainedTokenizerFast, AutoTokenizer
-
+import torch
 class Tokenizer:
     def __init__(self, file_path:str):
         if file_path.endswith(".json"):
@@ -18,3 +18,8 @@ class Tokenizer:
     def tokenize(self,text: str) -> List[str]:
         print(self.tokenizer.tokenize(text, add_special_tokens=False))
         return self.tokenizer.tokenize(text, add_special_tokens=False)
+    
+    def idx(self,text:str,device):
+        return torch.tensor(self.encode(text),dtype=torch.long,device=device).unsqueeze(0)
+    def text(self,idx,device):
+        return self.decode(idx[0].tolist())
