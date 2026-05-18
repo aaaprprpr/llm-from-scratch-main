@@ -19,3 +19,6 @@ env/
 *.txt
 .pt
 train_logs/
+main/my_sft_complete_model
+main/my_hf_model
+ceval_all_local
