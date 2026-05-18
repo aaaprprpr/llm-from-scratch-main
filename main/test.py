@@ -6,11 +6,19 @@ import torch
 tokenizer = Tokenizer("../bpe/tokenizer")
 eos_id = tokenizer.special_token_to_id.get("<|endoftext|>", 0)
 
-model = AutoModelForCausalLM.from_pretrained("./my_hf_model", trust_remote_code=True).to("cuda" if torch.cuda.is_available() else "cpu")
+model = AutoModelForCausalLM.from_pretrained("./my_sft_complete_model", trust_remote_code=True).to("cuda" if torch.cuda.is_available() else "cpu")
 model.eval()
-
+test_prompt = (
+    "以下是单项选择题，请选出正确答案。\n"
+    "题目：中国的首都是哪里？\n"
+    "A. 上海\n"
+    "B. 北京\n"
+    "C. 广州\n"
+    "D. 深圳\n"
+    "答案："
+)
 # 2. 编码输入
-inputs = torch.tensor([tokenizer.encode("中国的首都是")], dtype=torch.long, device=model.device)
+inputs = torch.tensor([tokenizer.encode(test_prompt)], dtype=torch.long, device=model.device)
 
 # 3. 玩点高级配置：比如核采样 + 重复词惩罚 + 长度限制
 gen_config = GenerationConfig(
