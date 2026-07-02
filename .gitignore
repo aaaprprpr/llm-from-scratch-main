@@ -24,3 +24,6 @@ main/my_hf_model
 main/my_sft_model
 ceval_all_local
 model
+main/alpaca_zh_local
+
+main/my_hf_model

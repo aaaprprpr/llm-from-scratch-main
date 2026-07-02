@@ -1,26 +1,29 @@
 from tokenizers import Tokenizer
 from tokenizers.models import BPE
 from tokenizers.trainers import BpeTrainer
-from tokenizers.pre_tokenizers import  ByteLevel, Split, Sequence
+from tokenizers.pre_tokenizers import ByteLevel, Split, Sequence
 from transformers import PreTrainedTokenizerFast, AutoTokenizer
 from tokenizers.normalizers import NFC
 from tokenizers.decoders import ByteLevel as ByteLevelDecoder
 from tokenizers.processors import ByteLevel as ByteLevelProcessor
 from glob import glob
 import os
+
 # ===================== 1. 初始化 BPE 分词器 =====================
 tokenizer = Tokenizer(BPE(unk_token=None))  # 没有 unk token
-qwen_pattern = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"# 预分词：字节级
-tokenizer.pre_tokenizer = Sequence([
-    Split(pattern=qwen_pattern, behavior="isolated"),
-    ByteLevel(add_prefix_space=False, use_regex=False)
-])
+qwen_pattern = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"  # 预分词：字节级
+tokenizer.pre_tokenizer = Sequence(
+    [
+        Split(pattern=qwen_pattern, behavior="isolated"),
+        ByteLevel(add_prefix_space=False, use_regex=False),
+    ]
+)
 tokenizer.normalizer = NFC()
 tokenizer.decoder = ByteLevelDecoder(add_prefix_space=False)
 tokenizer.post_processor = ByteLevelProcessor(add_prefix_space=False, use_regex=False)
 # ===================== 2. 训练配置 =====================
 trainer = BpeTrainer(
-    vocab_size=8192,# 词表大小：base 是 151851，你可以自己设
+    vocab_size=8192,  # 词表大小：base 是 151851，你可以自己设
     min_frequency=10,
     special_tokens=[
         "<|endoftext|>",
@@ -28,7 +31,7 @@ trainer = BpeTrainer(
         "<|im_end|>",
     ],
     show_progress=True,
-    initial_alphabet=ByteLevel.alphabet(), 
+    initial_alphabet=ByteLevel.alphabet(),
     continuing_subword_prefix="",
     num_workers=16,
     # limit_alphabet=500,
@@ -53,7 +56,7 @@ wrapped_tokenizer = PreTrainedTokenizerFast(
     unk_token=None,
     pad_token="<|endoftext|>",
     additional_special_tokens=["<|im_start|>", "<|im_end|>"],
-    model_input_names=["input_ids", "attention_mask"]
+    model_input_names=["input_ids", "attention_mask"],
 )
 
 # 保存成可以直接加载的分词器文件夹
