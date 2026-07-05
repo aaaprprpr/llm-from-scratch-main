@@ -1,80 +1,90 @@
 import torch
-from torch.utils.data import Dataset
 import numpy as np
 import math
 import os
 from typing import BinaryIO, IO
 
 
-def lr_cosine_schedule(t, alpha_max, alpha_min, T_w, T_c):
-    """
-    参数：
-        t: 当前步数
-        alpha_max: 最大学习率
-        alpha_min: 最小（最终）学习率
-        T_w: 预热迭代次数
-        T_c: 余弦退火迭代次数
+def lr_cosine_schedule(
+    step,
+    max_lr,
+    min_lr,
+    warmup_steps,
+    decay_end_step,
+):
+    if step < 0:
+        raise ValueError(f"step must be non-negative, got {step}")
 
-    返回：
-        第 t 步的学习率 alpha_t
-    """
-    if t < T_w:  # 预热阶段，线性增加
-        alpha_t = alpha_max * t / T_w
-    elif t >= T_w and t <= T_c:
-        temp = math.pi * (t - T_w) / (T_c - T_w)
-        alpha_t = alpha_min + 1 / 2 * (1 + math.cos(temp)) * (alpha_max - alpha_min)
-        # 草。这么算的意义是什么？看下论文去
-    elif t > T_c:
-        alpha_t = alpha_min
+    if warmup_steps < 0:
+        raise ValueError(f"warmup_steps must be non-negative, got {warmup_steps}")
 
-    return alpha_t
+    if decay_end_step <= warmup_steps:
+        raise ValueError("decay_end_step must be greater than warmup_steps")
+
+    if not 0 <= min_lr <= max_lr:
+        raise ValueError(f"Expected 0 <= min_lr <= max_lr, got {min_lr}, {max_lr}")
+
+    # step 从 0 开始，第一步使用非零学习率
+    if warmup_steps > 0 and step < warmup_steps:
+        return max_lr * (step + 1) / warmup_steps
+
+    if step >= decay_end_step:
+        return min_lr
+
+    decay_ratio = (step - warmup_steps) / (decay_end_step - warmup_steps)
+    cosine = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+
+    return min_lr + cosine * (max_lr - min_lr)
 
 
-class TextDataset(Dataset):
-    def __init__(self, data, context_length):
-        self.data = data
-        self.context_length = context_length
+def get_batch(
+    data,
+    batch_size,
+    context_length,
+    device,
+    position,
+):
+    if batch_size <= 0:
+        raise ValueError(f"batch_size must be positive, got {batch_size}")
 
-    def __len__(self):
-        return len(self.data) - self.context_length - 1
+    if context_length <= 0:
+        raise ValueError(f"context_length must be positive, got {context_length}")
 
-    def __getitem__(self, i):
-        x = torch.from_numpy(self.data[i : i + self.context_length].astype(np.int64))
-        y = torch.from_numpy(
-            self.data[i + 1 : i + self.context_length + 1].astype(np.int64)
+    if len(data) <= context_length:
+        raise ValueError(
+            f"data must contain at least {context_length + 1} tokens, "
+            f"got {len(data)}"
         )
-        return x, y
 
-
-_current_step_pos = 0
-
-
-def get_batch(data, batch_size, context_length, device):
-    global _current_step_pos
+    if position < 0:
+        raise ValueError(f"position must be non-negative, got {position}")
 
     # 1. 计算总共有多少个合法的起始位置
-    total_samples = len(data) - context_length - 1
+    max_start = len(data) - context_length - 1
 
     # 2. 生成 batch_size 个索引
     # 不再是 randint，而是从当前位置开始往后排
     # 比如：[pos, pos + context_length, pos + 2*context_length, ...]
     # 这样能保证数据被地毯式扫过
-    ix = []
+    indices = []
+
     for _ in range(batch_size):
-        if _current_step_pos > total_samples:
-            _current_step_pos = 0  # 扫完了，回到开头
-        ix.append(_current_step_pos)
-        _current_step_pos += context_length  # 步长等于上下文长度，无缝衔接
+        if position > max_start:
+            position = 0  # 扫完了，回到开头
+        indices.append(position)
+        position += context_length  # 步长等于上下文长度，无缝衔接
 
-    # 3. 提取数据（保持你原来的 memmap 逻辑）
-    x_list = [data[i : i + context_length].astype(np.int64) for i in ix]
-    y_list = [data[i + 1 : i + context_length + 1].astype(np.int64) for i in ix]
+    x = torch.from_numpy(
+        np.stack([data[i : i + context_length].astype(np.int64) for i in indices])
+    ).to(device)
 
-    # 4. 堆叠并转 Tensor
-    x = torch.from_numpy(np.stack(x_list)).to(device)
-    y = torch.from_numpy(np.stack(y_list)).to(device)
+    y = torch.from_numpy(
+        np.stack(
+            [data[i + 1 : i + context_length + 1].astype(np.int64) for i in indices]
+        )
+    ).to(device)
 
-    return x, y
+    return x, y, position
 
 
 def save_checkpoint(
@@ -82,6 +92,7 @@ def save_checkpoint(
     optimizer: torch.optim.Optimizer,
     iteration: int,
     out: str | os.PathLike | BinaryIO | IO[bytes],
+    train_position=None,
 ):
     """
     将前三个参数的所有状态转储到类文件对象 out 中。
@@ -92,6 +103,8 @@ def save_checkpoint(
         "optimizer": optimizer.state_dict(),
         "iteration": iteration,
     }
+    if train_position is not None:
+        obj["train_position"] = train_position
     torch.save(obj, out)
 
 
@@ -99,8 +112,13 @@ def load_checkpoint(
     src: str | os.PathLike | BinaryIO | IO[bytes],
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
+    map_location="cpu",
 ):
-    obj = torch.load(src)
+    obj = torch.load(
+        src,
+        map_location=map_location,
+        weights_only=True,
+    )
     model.load_state_dict(obj["model"])
     optimizer.load_state_dict(obj["optimizer"])
-    return obj["iteration"]
+    return obj["iteration"], obj.get("train_position", 0)

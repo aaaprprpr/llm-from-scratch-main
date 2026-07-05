@@ -30,7 +30,6 @@ nohup python -u main/run_train_model.py \
     --train_data $TRAIN_DATA \
     --val_data $VAL_DATA \
     --tokenizer_vocab $VOCAB \
-    --tokenizer_merges $MERGES \
     --out_dir $OUT_DIR \
     --batch_size 64 \
     --max_iters 4200 \

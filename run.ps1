@@ -27,9 +27,9 @@ python main/run_train_model.py `
     --tokenizer_vocab $VOCAB `
     --out_dir $OUT_DIR `
     --batch_size 64 `
-    --max_iters 50000 `
-    --eval_interval 100 `
-    --eval_iters 20 `
+    --max_iters 130000 `
+    --eval_interval 1000 `
+    --eval_iters 10 `
     --log_interval 10 `
     --vocab_size 8192 `
     --context_length 256 `
@@ -43,7 +43,6 @@ python main/run_train_model.py `
     --max_lr 1e-3 `
     --min_lr 1e-5 `
     --warmup_iters 1000 `
-    --lr_decay_iters 48000 `
-    2>&1
-
+    --lr_decay_iters 130000 `
+    2>&1 
 Write-Host "`ntrain done"

@@ -1,11 +1,9 @@
 import torch
-import torch.nn.functional as F
 from model import Transformer as Model
 from tokenizer_optimized import Tokenizer
 
 model_ckpt = r"../train_logs\run_20260508_194017\ckpt_iter_49999.pt"
 vocab_file = "../bpe/tokenizer"
-merge_file = "../bpe/tokenizer/qwen_style_tokenizer.json"
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -15,7 +13,7 @@ print(f"Loading model from {model_ckpt}...")
 tokenizer = Tokenizer(vocab_file)
 model_args = dict(
     vocab_size=8192,
-    context_length=128,
+    context_length=256,
     n_head=8,
     num_layers=12,
     d_model=512,
@@ -23,9 +21,19 @@ model_args = dict(
     theta=10000.0,
 )
 model = Model(**model_args).to(device)
-checkpoint = torch.load(model_ckpt, map_location=device)
-state_dict = checkpoint["model"]  # it has keys: "model", "optimizer", "iteration".
-model.load_state_dict(state_dict)
+checkpoint = torch.load(
+    model_ckpt,
+    map_location="cpu",
+    weights_only=True,
+    mmap=True,
+)
+model.load_state_dict(
+    checkpoint["model"],
+    strict=True,
+)
+del checkpoint
+
+model = model.to(device)
 model.eval()
 
 # 开始调戏模型
@@ -47,7 +55,7 @@ print("-" * 30)
 for p in prompts:
     print(f"Prompt: {p}")
     idx = tokenizer.idx(p, device=device)
-    full_output= model.generate(
+    full_output = model.generate(
         idx,
         max_new_tokens=50,
         temperature=0.6,

@@ -11,9 +11,6 @@ from tokenizer_optimized import Tokenizer
 from train_model import lr_cosine_schedule, get_batch, save_checkpoint, load_checkpoint
 from model import Transformer as Model
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"using device: {device}")
-
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a model on user-provided data")
@@ -117,28 +114,47 @@ def parse_args():
     return parser.parse_args()
 
 
-def init_tokenizer(vocab_file):
-    global tokenizer
-    tokenizer = Tokenizer(vocab_file)
-
-
 @torch.no_grad()
-def estimate_loss(model, data, batch_size, context_length, device, eval_iters):
-    """评估模型在训练集或验证集上的平均 Loss"""
+def estimate_loss(
+    model,
+    data,
+    batch_size,
+    context_length,
+    device,
+    eval_iters,
+    start_position=0,
+):
+    """在固定数据窗口上计算平均 loss，不修改训练游标。"""
+    if eval_iters <= 0:
+        raise ValueError(f"eval_iters must be positive, got {eval_iters}")
+    was_training = model.training
+    position = start_position
+    total_loss = torch.zeros((), device=device)
+
     model.eval()
-    losses = torch.zeros(eval_iters)
-    for k in range(eval_iters):
-        X, Y = get_batch(data, batch_size, context_length, device)  # (B, T)
-        logits, _ = model(X, use_cache=False)  # logits size (B, T, V)
-        loss = F.cross_entropy(
-            logits.view(-1, logits.size(-1)), Y.view(-1)
-        )  # 等同于 (B*T, V) 以及 (B*T, )
-        losses[k] = loss.item()
-    model.train()
-    return losses.mean()
+    try:
+        for _ in range(eval_iters):
+            x, y, position = get_batch(
+                data,
+                batch_size,
+                context_length,
+                device,
+                position,
+            )  # (B, T)
+            logits, _ = model(x, use_cache=False)  # logits size (B, T, V)
+            loss = F.cross_entropy(
+                logits.reshape(-1, logits.size(-1)),
+                y.reshape(-1),
+            )  # 等同于 (B*T, V) 以及 (B*T, )
+            total_loss += loss
+        return (total_loss / eval_iters).item()
+    finally:
+        model.train(was_training)
 
 
 def main():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"using device: {device}")
     args = parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
 
@@ -149,11 +165,15 @@ def main():
     print("=" * 65)
 
     metrics_path = os.path.join(args.out_dir, "metrics.csv")
-    with open(metrics_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["iter", "train_loss", "val_loss", "lr"])
+    write_header = not (args.resume and os.path.exists(metrics_path))
+    mode = "w" if write_header else "a"
 
-    init_tokenizer(args.tokenizer_vocab)
+    with open(metrics_path, mode, newline="") as f:
+        writer = csv.writer(f)
+        if write_header:
+            writer.writerow(["step", "train_loss", "val_loss", "lr"])
+
+    tokenizer = Tokenizer(args.tokenizer_vocab)
 
     # 使用np.memmap以高效内存的方式加载数据
     train_data = np.memmap(args.train_data, dtype=np.uint16, mode="r")
@@ -175,19 +195,19 @@ def main():
 
     # 检查点恢复
     start_iter = 0
+    train_position = 0
     if args.resume:
-        start_iter = load_checkpoint(args.resume, model, optimizer)
-        print(f"Resuming from iteration {start_iter}")
+        start_iter, train_position = load_checkpoint(args.resume, model, optimizer)
+        print(f"Resuming from iteration {start_iter}, train_position {train_position}")
 
     # initialize wandb
     if args.use_wandb:
         wandb.init(project="training-260114-orig", config=args)
 
+    # ==============================
     # 训练循环
-    X, Y = get_batch(
-        train_data, args.batch_size, args.context_length, device
-    )  # initial batch
-    t0 = time.time()
+    last_log_time = time.time()
+    last_log_step = start_iter
 
     for it in range(start_iter, args.max_iters):
 
@@ -198,9 +218,46 @@ def main():
         for param_group in optimizer.param_groups:
             param_group["lr"] = lr
 
+        # 当前 iteration 的 batch 完整地在循环内部产生和消费
+        x, y, train_position = get_batch(
+            train_data,
+            args.batch_size,
+            args.context_length,
+            device,
+            train_position,
+        )
+
+        optimizer.zero_grad(set_to_none=True)
+
+        logits, _ = model(x, use_cache=False)
+        loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
+
+        loss.backward()
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
+        optimizer.step()
+        # 到这里才算真正完成一次更新
+        completed_steps = it + 1
+        last_step = completed_steps == args.max_iters
+
+        # 每隔一定步数（日志间隔）打印训练进度
+        if completed_steps % args.log_interval == 0 or last_step:
+            now = time.time()
+            elapsed = now - last_log_time
+            steps_since_log = completed_steps - last_log_step
+            ms_per_step = elapsed * 1000 / steps_since_log
+
+            print(
+                f"step {completed_steps}: "
+                f"loss {loss.item():.4f}, "
+                f"time {ms_per_step:.2f}ms/step, "
+                f"grad_norm {grad_norm.item():.4f}"
+            )
+
+            last_log_time = now
+            last_log_step = completed_steps
+
         # 每隔一定步数（评估间隔）执行评估并记录日志
-        last_step = it == args.max_iters - 1
-        if (it % args.eval_interval == 0) or last_step:
+        if completed_steps % args.eval_interval == 0 or last_step:
             train_loss = estimate_loss(
                 model,
                 train_data,
@@ -218,13 +275,16 @@ def main():
                 args.eval_iters,
             )
             print(
-                f"Iter {it}: train loss {train_loss:.4f}, val loss {val_loss:.4f}, lr {lr:.2e}"
+                f"Step {completed_steps}: "
+                f"train loss {train_loss:.4f}, "
+                f"val loss {val_loss:.4f}, "
+                f"lr {lr:.2e}"
             )
 
             if args.use_wandb:
                 wandb.log(
                     {
-                        "iter": it,
+                        "step": completed_steps,
                         "train/loss": train_loss,
                         "val/loss": val_loss,
                         "lr": lr,
@@ -235,7 +295,7 @@ def main():
                 writer = csv.writer(f)
                 writer.writerow(
                     [
-                        it,
+                        completed_steps,
                         (
                             train_loss.item()
                             if torch.is_tensor(train_loss)
@@ -247,50 +307,33 @@ def main():
                 )
 
         # 每隔一定步数（检查点间隔）从模型生成文本并保存结果
-        if (it % (args.eval_interval * 10) == 0 and it > 0) or last_step:
-            # generate from model
+        checkpoint_interval = args.eval_interval * 10
+        if completed_steps % checkpoint_interval == 0 or last_step:
+
             context, temperature, top_p = "你好，我是", 0.7, 0.95
             idx = tokenizer.idx(context, device=device)
-            full_sentence = model.generate(
-                idx,
-                max_new_tokens=100,
-                temperature=temperature,
-                top_p=top_p,
-                eos_id=tokenizer.special_token_to_id.get("<|endoftext|>"),
-                context_length=args.context_length,
-            )
+            with torch.inference_mode():
+                full_sentence = model.generate(
+                    idx,
+                    max_new_tokens=100,
+                    temperature=temperature,
+                    top_p=top_p,
+                    eos_id=tokenizer.special_token_to_id.get("<|endoftext|>"),
+                    context_length=args.context_length,
+                )
             full_sentence = tokenizer.text(full_sentence, device=device)
             print(
-                f"[Generated at iter {it}, temperature {temperature}, top_p {top_p}]: {full_sentence}"
+                f"[Generated at iter {completed_steps}, temperature {temperature}, top_p {top_p}]: {full_sentence}"
             )
 
-            ckpt_path = os.path.join(args.out_dir, f"ckpt_iter_{it}.pt")
-            save_checkpoint(model, optimizer, it, ckpt_path)
-
-        # --------------------------------------------
-        # Train for one step
-        logits, _ = model(X)
-        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), Y.view(-1))
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
-        optimizer.step()
-        # --------------------------------------------
-
-        # 获取下一个 batch
-        X, Y = get_batch(train_data, args.batch_size, args.context_length, device)
-
-        # 每隔一定步数（日志间隔）打印训练进度
-        if it % args.log_interval == 0:
-            t1 = time.time()
-            dt = t1 - t0
-            t0 = t1
-            print(
-                f"iter {it}: loss {loss.item():.4f}, time {dt*1000:.2f}ms, grad_norm {grad_norm:.4f}"
+            ckpt_path = os.path.join(args.out_dir, f"ckpt_step_{completed_steps}.pt")
+            save_checkpoint(
+                model,
+                optimizer,
+                completed_steps,
+                ckpt_path,
+                train_position=train_position,
             )
-
-    # 最终保存 - 无需执行。因为循环中的最后一步已完成该操作
-    # save_checkpoint(model, optimizer, args.max_iters, os.path.join(args.out_dir, "final_model.pt"))
 
 
 if __name__ == "__main__":
