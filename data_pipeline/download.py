@@ -10,12 +10,28 @@ from typing import Any
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Download a Hugging Face dataset and save it locally.")
-    parser.add_argument("--dataset", required=True, help="Dataset id, for example llamafactory/alpaca_zh.")
-    parser.add_argument("--config", default=None, help="Optional dataset configuration name.")
-    parser.add_argument("--split", default=None, help="Optional split passed to load_dataset().")
-    parser.add_argument("--revision", default=None, help="Optional Hub revision for reproducible downloads.")
-    parser.add_argument("--output", type=Path, required=True, help="Output directory or text file.")
+    parser = argparse.ArgumentParser(
+        description="Download a Hugging Face dataset and save it locally."
+    )
+    parser.add_argument(
+        "--dataset",
+        required=True,
+        help="Dataset id, for example llamafactory/alpaca_zh.",
+    )
+    parser.add_argument(
+        "--config", default=None, help="Optional dataset configuration name."
+    )
+    parser.add_argument(
+        "--split", default=None, help="Optional split passed to load_dataset()."
+    )
+    parser.add_argument(
+        "--revision",
+        default=None,
+        help="Optional Hub revision for reproducible downloads.",
+    )
+    parser.add_argument(
+        "--output", type=Path, required=True, help="Output directory or text file."
+    )
     parser.add_argument(
         "--format",
         choices=("disk", "text"),
@@ -28,8 +44,14 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Columns to export in text mode. Defaults to the 'text' column when available.",
     )
-    parser.add_argument("--column-separator", default=" ", help="Separator used to join text columns.")
-    parser.add_argument("--overwrite", action="store_true", help="Allow replacing an existing text output.")
+    parser.add_argument(
+        "--column-separator", default=" ", help="Separator used to join text columns."
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Allow replacing an existing text output.",
+    )
     return parser.parse_args()
 
 
@@ -47,9 +69,17 @@ def _normalize_field(value: Any) -> str:
     return " ".join(str(value).split())
 
 
-def export_text(dataset: Any, output: Path, columns: list[str] | None, separator: str, overwrite: bool) -> int:
+def export_text(
+    dataset: Any,
+    output: Path,
+    columns: list[str] | None,
+    separator: str,
+    overwrite: bool,
+) -> int:
     if output.exists() and not overwrite:
-        raise FileExistsError(f"Output already exists: {output}. Pass --overwrite to replace it.")
+        raise FileExistsError(
+            f"Output already exists: {output}. Pass --overwrite to replace it."
+        )
 
     output.parent.mkdir(parents=True, exist_ok=True)
     row_count = 0
@@ -65,7 +95,11 @@ def export_text(dataset: Any, output: Path, columns: list[str] | None, separator
                     )
                 selected_columns = ["text"]
 
-            missing = [column for column in selected_columns if column not in split.column_names]
+            missing = [
+                column
+                for column in selected_columns
+                if column not in split.column_names
+            ]
             if missing:
                 raise ValueError(
                     f"Split {split_name!r} is missing columns {missing}. Available: {split.column_names}"
@@ -93,7 +127,9 @@ def main() -> None:
         "split": args.split,
         "revision": args.revision,
     }
-    dataset = load_dataset(**{key: value for key, value in load_kwargs.items() if value is not None})
+    dataset = load_dataset(
+        **{key: value for key, value in load_kwargs.items() if value is not None}
+    )
 
     if args.format == "disk":
         if args.output.exists():
@@ -106,7 +142,9 @@ def main() -> None:
         print(f"Dataset saved to {args.output.resolve()}")
         return
 
-    rows = export_text(dataset, args.output, args.text_columns, args.column_separator, args.overwrite)
+    rows = export_text(
+        dataset, args.output, args.text_columns, args.column_separator, args.overwrite
+    )
     metadata = {
         "dataset": args.dataset,
         "config": args.config,
@@ -116,10 +154,11 @@ def main() -> None:
         "rows": rows,
     }
     metadata_path = args.output.with_suffix(args.output.suffix + ".meta.json")
-    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    metadata_path.write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     print(f"Exported {rows:,} records to {args.output.resolve()}")
 
 
 if __name__ == "__main__":
     main()
-

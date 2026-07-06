@@ -11,7 +11,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Iterable, TextIO
 
-
 CHINESE_PATTERN = re.compile(r"[\u4e00-\u9fff]")
 
 
@@ -60,7 +59,10 @@ class TextChunkWriter:
     def write(self, text: str) -> None:
         record = text + "\n"
         record_bytes = len(record.encode("utf-8"))
-        if self.stream is None or (self.current_bytes > 0 and self.current_bytes + record_bytes > self.target_bytes):
+        if self.stream is None or (
+            self.current_bytes > 0
+            and self.current_bytes + record_bytes > self.target_bytes
+        ):
             self._open_next()
         assert self.stream is not None
         self.stream.write(record)
@@ -156,7 +158,9 @@ def make_traditional_converter(mode: str) -> Callable[[str], str]:
 def prepare_outputs(paths: Iterable[Path], overwrite: bool) -> None:
     for path in paths:
         if path.exists() and not overwrite:
-            raise FileExistsError(f"Output already exists: {path}. Pass --overwrite to replace it.")
+            raise FileExistsError(
+                f"Output already exists: {path}. Pass --overwrite to replace it."
+            )
         path.parent.mkdir(parents=True, exist_ok=True)
 
 
@@ -206,7 +210,9 @@ def main() -> None:
     input_resolved = {path.resolve() for path in input_paths}
     overlap = output_resolved & input_resolved
     if overlap:
-        raise ValueError(f"Input and output paths must be different: {sorted(map(str, overlap))}")
+        raise ValueError(
+            f"Input and output paths must be different: {sorted(map(str, overlap))}"
+        )
 
     prepare_outputs((args.train_output, args.val_output), args.overwrite)
     fix_text = make_text_fixer(args.fix_text)
@@ -222,7 +228,9 @@ def main() -> None:
         )
 
     try:
-        with args.train_output.open("w", encoding="utf-8", newline="\n") as train_stream, args.val_output.open(
+        with args.train_output.open(
+            "w", encoding="utf-8", newline="\n"
+        ) as train_stream, args.val_output.open(
             "w", encoding="utf-8", newline="\n"
         ) as val_stream:
             for input_path in input_paths:
@@ -268,10 +276,11 @@ def main() -> None:
         "stats": asdict(stats),
     }
     metadata_path = args.train_output.parent / "preprocess.meta.json"
-    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    metadata_path.write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     print(json.dumps(asdict(stats), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
     main()
-

@@ -3,6 +3,8 @@ $TRAIN_DATA = "data/train.bin"
 $VAL_DATA   = "data/val.bin"
 $VOCAB      = "bpe/tokenizer"
 $OUT_ROOT   = "train_logs"
+$RESUME = "train_logs\run_20260706_110646\ckpt_step_120000.pt"
+
 
 # 纯数字时间戳，无中文无空格
 $TIMESTAMP = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -44,5 +46,6 @@ python main/run_train_model.py `
     --min_lr 1e-5 `
     --warmup_iters 1000 `
     --lr_decay_iters 130000 `
+    --resume $RESUME `
     2>&1 
 Write-Host "`ntrain done"

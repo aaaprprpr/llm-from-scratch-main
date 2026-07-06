@@ -2,7 +2,7 @@ import torch
 from model import Transformer as Model
 from tokenizer_optimized import Tokenizer
 
-model_ckpt = r"../train_logs\run_20260508_194017\ckpt_iter_49999.pt"
+model_ckpt = r"../train_logs\run_20260706_175441\ckpt_step_130000.pt"
 vocab_file = "../bpe/tokenizer"
 
 

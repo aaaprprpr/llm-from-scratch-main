@@ -31,3 +31,4 @@ main/alpaca_zh_local
 
 main/my_hf_model
 sft
+pretrained_weights

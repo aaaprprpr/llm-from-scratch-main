@@ -14,7 +14,6 @@ from typing import Iterator
 import numpy as np
 from tqdm import tqdm
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -26,7 +25,9 @@ _worker_dtype = None
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Tokenize train/validation text and write flat binary token files.")
+    parser = argparse.ArgumentParser(
+        description="Tokenize train/validation text and write flat binary token files."
+    )
     parser.add_argument("--tokenizer", type=Path, default=Path("bpe/tokenizer"))
     parser.add_argument("--train-text", type=Path, default=Path("data/train.txt"))
     parser.add_argument("--val-text", type=Path, default=Path("data/val.txt"))
@@ -56,7 +57,9 @@ def tokenizer_fingerprint(path: Path) -> str:
 
 def choose_dtype(requested: str, tokenizer_size: int) -> np.dtype:
     if requested == "auto":
-        requested = "uint16" if tokenizer_size <= np.iinfo(np.uint16).max + 1 else "uint32"
+        requested = (
+            "uint16" if tokenizer_size <= np.iinfo(np.uint16).max + 1 else "uint32"
+        )
     dtype = np.dtype(requested)
     if tokenizer_size - 1 > np.iinfo(dtype).max:
         raise ValueError(f"Tokenizer size {tokenizer_size} does not fit in {dtype}.")
@@ -64,7 +67,7 @@ def choose_dtype(requested: str, tokenizer_size: int) -> np.dtype:
 
 
 def init_worker(tokenizer_path: str, eos_id: int, dtype_name: str) -> None:
-    from main.tokenizer_optimized import Tokenizer
+    from pretrain.tokenizer_optimized import Tokenizer
 
     global _worker_tokenizer, _worker_eos_id, _worker_dtype
     _worker_tokenizer = Tokenizer(tokenizer_path)
@@ -90,7 +93,12 @@ def encode_chunk(payload: tuple[list[str], int]) -> tuple[np.ndarray, int, int, 
 
     if token_ids and max(token_ids) > np.iinfo(_worker_dtype).max:
         raise ValueError(f"Token id {max(token_ids)} does not fit in {_worker_dtype}.")
-    return np.asarray(token_ids, dtype=_worker_dtype), source_bytes, len(lines), nonempty_lines
+    return (
+        np.asarray(token_ids, dtype=_worker_dtype),
+        source_bytes,
+        len(lines),
+        nonempty_lines,
+    )
 
 
 def iter_line_chunks(path: Path, chunk_lines: int) -> Iterator[tuple[list[str], int]]:
@@ -124,7 +132,9 @@ def build_one_bin(
     if not input_text.is_file():
         raise FileNotFoundError(f"Input text does not exist: {input_text}")
     if output_bin.exists() and not overwrite:
-        raise FileExistsError(f"Output already exists: {output_bin}. Pass --overwrite to replace it.")
+        raise FileExistsError(
+            f"Output already exists: {output_bin}. Pass --overwrite to replace it."
+        )
 
     output_bin.parent.mkdir(parents=True, exist_ok=True)
     temporary_output = output_bin.with_suffix(output_bin.suffix + ".tmp")
@@ -158,7 +168,9 @@ def build_one_bin(
                     initializer=init_worker,
                     initargs=(str(tokenizer_path), eos_id, dtype.name),
                 ) as executor:
-                    for array, source_bytes, line_count, kept_count in executor.map(encode_chunk, chunks):
+                    for array, source_bytes, line_count, kept_count in executor.map(
+                        encode_chunk, chunks
+                    ):
                         array.tofile(output_stream)
                         total_tokens += int(array.size)
                         total_lines += line_count
@@ -185,7 +197,9 @@ def build_one_bin(
         "eos_id": eos_id,
     }
     metadata_path = output_bin.with_suffix(output_bin.suffix + ".meta.json")
-    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    metadata_path.write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     print(f"Wrote {total_tokens:,} tokens to {output_bin.resolve()} ({dtype.name})")
 
 
@@ -196,7 +210,7 @@ def main() -> None:
     if args.workers < 1:
         raise ValueError("--workers must be positive.")
 
-    from main.tokenizer_optimized import Tokenizer
+    from pretrain.tokenizer_optimized import Tokenizer
 
     tokenizer = Tokenizer(str(args.tokenizer))
     tokenizer_size = len(tokenizer.tokenizer)
@@ -226,4 +240,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
