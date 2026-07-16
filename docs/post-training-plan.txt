@@ -1,0 +1,23 @@
+后训练规划
+
+训练阶段保留原生 PyTorch 模型和 checkpoint，不让 Hugging Face 接口侵入核心模型。
+
+第一阶段手写全参数 SFT，重点实现对话模板、response-only loss、padding mask、混合精度、梯度累积、验证和断点恢复。
+
+第二阶段在 SFT 模型上手写 DPO。冻结一份 SFT 模型作为 reference model，分别计算 chosen 和 rejected 回答部分的序列 log-prob，再实现 DPO loss。
+
+训练完成后编写独立导出器，将原生 checkpoint 转为包含配置、tokenizer、自定义模型代码和 safetensors 权重的自包含 Hugging Face 模型目录。
+
+导出时验证原生模型与 Hugging Face 模型的 logits 和 greedy generation 一致。随后按照 vLLM Transformers backend 的接口要求调整基础模型和 attention，最后用本地模型目录完成 vLLM 加载与生成测试。
+
+数据与模板约定
+
+原始数据集保持不变。每种数据集单独提供适配器，只负责将自身字段转换为统一的 messages 结构。统一消息只使用 system、user 和 assistant 三种角色，训练代码不接触 instruction、input、output 等数据集专属字段。
+
+Alpaca 中文数据通过 load_from_disk 读取。instruction 和 input 合并为 user 消息，output 转为 assistant 消息。数据只有 train split，需要固定随机种子划分训练集和验证集。样本在进入模型前仍需完成模板渲染、tokenize、截断、response-only labels 和动态 padding。
+
+chat_template.jinja 是训练和推理共同使用的唯一对话模板。每条消息使用 im_start、角色名、换行、正文和 im_end 表示。训练时只计算 assistant 正文及其 im_end 的 loss；system、user 和 assistant 前缀全部屏蔽。推理时使用同一模板，并通过 add_generation_prompt 在末尾追加 assistant 前缀。
+
+原生推理、Hugging Face 导出和 vLLM 服务不得自行拼接另一套 prompt。最终导出时将同一份 Jinja 写入 tokenizer 配置，并把 im_end 和 endoftext 都配置为可停止生成的 token。
+
+代码分层为数据集适配器、统一消息结构、对话模板、tokenize 与 labels、动态 padding collator、SFT 训练循环。以后增加 ShareGPT、OpenAI messages 或其他数据集时只新增适配器。DPO 继续复用同一消息结构和对话模板，但使用 chosen、rejected 和 reference model 构造损失。
