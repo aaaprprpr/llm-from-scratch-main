@@ -4,7 +4,9 @@
     "tokenizer": "bpe/tokenizer",
     "chat_template": "sft/chat_template.jinja",
     "pretrained_weights": "pretrained_weights/model.pt",
-    "sft_logs": "sft_logs"
+    "sft_logs": "sft_logs",
+    "tokenized_cache": "sft_cache/alpaca_zh_tokenized.pt",
+    "resume": null
   },
   "model": {
     "vocab_size": 8192,
@@ -18,9 +20,13 @@
   "train": {
     "device": "auto",
     "max_seq_len": 256,
-    "batch_size": 16,
+    "micro_batch_size": 16,
+    "gradient_accumulation_steps": 1,
     "num_epochs": 1,
-    "learning_rate": 0.00002,
+    "max_learning_rate": 0.00002,
+    "min_learning_rate": 0.000002,
+    "warmup_steps": 50,
+    "lr_decay_steps": null,
     "weight_decay": 0.01,
     "grad_clip": 1.0,
     "eval_every": 200,
@@ -28,10 +34,7 @@
     "eval_batches": 20,
     "val_size": 1000,
     "seed": 42,
-    "smoke_test": false,
-    "smoke_train_size": 32,
-    "smoke_val_size": 16,
-    "smoke_max_steps": 2
+    "length_bucket_multiplier": 100
   },
   "play": {
     "max_new_tokens": 80,

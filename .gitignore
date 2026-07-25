@@ -24,6 +24,7 @@ data/*.meta.json
 .pt
 train_logs/
 sft_logs/
+sft_cache/
 main/my_sft_complete_model
 main/my_hf_model
 main/my_sft_model
