@@ -1,0 +1,50 @@
+{
+  "paths": {
+    "dataset": "sft/alpaca_zh_local",
+    "tokenizer": "bpe/tokenizer",
+    "chat_template": "sft/chat_template.jinja",
+    "pretrained_weights": "pretrained_weights/model.pt",
+    "sft_logs": "sft_logs"
+  },
+  "model": {
+    "vocab_size": 8192,
+    "context_length": 256,
+    "n_head": 8,
+    "num_layers": 12,
+    "d_model": 512,
+    "d_ff": 2048,
+    "theta": 10000.0
+  },
+  "train": {
+    "device": "auto",
+    "max_seq_len": 256,
+    "batch_size": 16,
+    "num_epochs": 1,
+    "learning_rate": 0.00002,
+    "weight_decay": 0.01,
+    "grad_clip": 1.0,
+    "eval_every": 200,
+    "save_every": 1000,
+    "eval_batches": 20,
+    "val_size": 1000,
+    "seed": 42,
+    "smoke_test": false,
+    "smoke_train_size": 32,
+    "smoke_val_size": 16,
+    "smoke_max_steps": 2
+  },
+  "play": {
+    "max_new_tokens": 80,
+    "temperature": 0.7,
+    "top_p": 0.9,
+    "prompts": [
+      "中国的首都是哪里？",
+      "自然语言处理是什么？",
+      "请用三句话介绍深度学习。",
+      "北京是一座什么样的城市？",
+      "我今天吃了",
+      "上路被三人越塔，应该怎么办？",
+      "写一个 Python 函数，计算列表里所有数字的平均值。"
+    ]
+  }
+}
