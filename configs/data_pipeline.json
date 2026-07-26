@@ -1,0 +1,273 @@
+{
+  "download_manifest": "data/downloads/download_manifest.json",
+  "download_samples": {
+    "output_dir": "data_pipeline/dataset_samples",
+    "rows": 2,
+    "max_chars": 1000
+  },
+  "downloads": [
+    {
+      "source_id": "wiki_zh_20231101",
+      "enabled": true,
+      "source_type": "huggingface",
+      "purpose": "pretrain",
+      "description": "中文 Wikipedia。只使用 wikimedia/wikipedia 的 20231101.zh 配置，禁止裸用全量 wikipedia。",
+      "source_url": "https://huggingface.co/datasets/wikimedia/wikipedia",
+      "dataset": "wikimedia/wikipedia",
+      "config": "20231101.zh",
+      "split": "train",
+      "revision": null,
+      "license": "cc-by-sa-3.0",
+      "output": "data/downloads/wiki_zh_20231101",
+      "format": "disk",
+      "expected_columns": [
+        "id",
+        "url",
+        "title",
+        "text"
+      ],
+      "adapter": "plain_text",
+      "overwrite": false,
+      "size_note": "不要把 config 改成 null；全量 wikipedia 体积很大，只允许中文 zh 配置。",
+      "safety_note": null,
+      "notes": "确认来源：旧版 download.py 使用 load_dataset(\"wikimedia/wikipedia\", \"20231101.zh\", split=\"train\")。"
+    },
+    {
+      "source_id": "sharegpt_chinese",
+      "enabled": true,
+      "source_type": "huggingface",
+      "purpose": "pretrain_candidate",
+      "description": "中文 ShareGPT 多轮对话数据。",
+      "source_url": "https://huggingface.co/datasets/FreedomIntelligence/sharegpt-chinese",
+      "dataset": "FreedomIntelligence/sharegpt-chinese",
+      "config": null,
+      "split": "train",
+      "revision": null,
+      "license": "apache-2.0",
+      "output": "data/downloads/sharegpt_chinese",
+      "format": "disk",
+      "expected_columns": [
+        "conversation"
+      ],
+      "adapter": "openai_role_content_conversation",
+      "overwrite": false,
+      "size_note": null,
+      "safety_note": "包含用户生成对话，后续导出预训练文本前需要做格式化和质量过滤。",
+      "notes": "先保存原始 dataset，后续单独写 conversation 展平逻辑，不直接导出 txt。"
+    },
+    {
+      "source_id": "chinese_question_answering_dataset",
+      "enabled": true,
+      "source_type": "huggingface",
+      "purpose": "pretrain_candidate",
+      "description": "中文问答数据。",
+      "source_url": "https://huggingface.co/datasets/kurehamnm/Chinese_Question_Answering_Dataset",
+      "dataset": "kurehamnm/Chinese_Question_Answering_Dataset",
+      "config": null,
+      "split": "train",
+      "revision": null,
+      "license": null,
+      "output": "data/downloads/chinese_question_answering_dataset",
+      "format": "disk",
+      "expected_columns": [
+        "instruction",
+        "input",
+        "output"
+      ],
+      "adapter": "instruction_input_output",
+      "overwrite": false,
+      "size_note": null,
+      "safety_note": null,
+      "notes": "旧版 download.py 注释中出现过。保存原始 dataset，后续再决定是否用于预训练或 SFT。"
+    },
+    {
+      "source_id": "chinese_simpleqa",
+      "enabled": true,
+      "source_type": "huggingface",
+      "purpose": "pretrain_candidate",
+      "description": "中文 SimpleQA 问答数据。",
+      "source_url": "https://huggingface.co/datasets/OpenStellarTeam/Chinese-SimpleQA",
+      "dataset": "OpenStellarTeam/Chinese-SimpleQA",
+      "config": null,
+      "split": "train",
+      "revision": null,
+      "license": "cc-by-nc-sa-4.0",
+      "output": "data/downloads/chinese_simpleqa",
+      "format": "disk",
+      "expected_columns": [
+        "id",
+        "primary_category",
+        "secondary_category",
+        "question",
+        "answer",
+        "urls"
+      ],
+      "adapter": "question_answer",
+      "overwrite": false,
+      "size_note": null,
+      "safety_note": "CC-BY-NC-SA，注意非商业限制和署名/相同方式共享要求。",
+      "notes": "保存原始 dataset，后续格式化成问答文本。"
+    },
+    {
+      "source_id": "chinese_safe",
+      "enabled": true,
+      "source_type": "huggingface",
+      "purpose": "pretrain_candidate",
+      "description": "中文安全分类/安全文本数据。",
+      "source_url": "https://huggingface.co/datasets/SUSTech/ChineseSafe",
+      "dataset": "SUSTech/ChineseSafe",
+      "config": null,
+      "split": "test",
+      "revision": null,
+      "license": null,
+      "output": "data/downloads/chinese_safe",
+      "format": "disk",
+      "expected_columns": [
+        "text",
+        "label",
+        "subject"
+      ],
+      "adapter": "classification_text",
+      "overwrite": false,
+      "size_note": null,
+      "safety_note": "安全数据不一定适合直接混进预训练；建议后续单独决定用途。",
+      "notes": "旧版 download.py 注释中出现过 SUSTech/ChineseSafe split=test。"
+    },
+    {
+      "source_id": "belle_train_3_5m_cn",
+      "enabled": true,
+      "source_type": "huggingface",
+      "purpose": "pretrain_candidate",
+      "description": "中文 BELLE 指令/对话数据。",
+      "source_url": "https://huggingface.co/datasets/ticoAg/Belle_train_3.5M_CN",
+      "dataset": "ticoAg/Belle_train_3.5M_CN",
+      "config": null,
+      "split": "train",
+      "revision": null,
+      "license": "gpl-3.0",
+      "output": "data/downloads/belle_train_3_5m_cn",
+      "format": "disk",
+      "expected_columns": [
+        "id",
+        "conversations"
+      ],
+      "adapter": "sharegpt_conversations",
+      "overwrite": false,
+      "size_note": "数据量较大，启用前确认磁盘空间。",
+      "safety_note": "数据卡说明仅限研究用途，并禁止商业及可能造成社会危害的用途。",
+      "notes": "旧版 download.py 注释中出现过。保存原始 dataset，不直接导出 txt。"
+    },
+    {
+      "source_id": "tieba_some_interesting",
+      "enabled": true,
+      "source_type": "huggingface",
+      "purpose": "pretrain_candidate",
+      "description": "贴吧类中文数据。",
+      "source_url": "https://huggingface.co/datasets/Hanversion/Tieba-SomeInteresting",
+      "dataset": "Hanversion/Tieba-SomeInteresting",
+      "config": null,
+      "split": "train",
+      "revision": null,
+      "license": null,
+      "output": "data/downloads/tieba_some_interesting",
+      "format": "disk",
+      "expected_columns": [
+        "question",
+        "answer",
+        "think"
+      ],
+      "adapter": "question_answer_optional_think",
+      "overwrite": false,
+      "size_note": null,
+      "safety_note": "贴吧语料噪声高，后续导出预训练文本前需要做质量过滤和去重。",
+      "notes": "旧版 download.py 注释中出现过。"
+    },
+    {
+      "source_id": "baidu_tieba_kangyabeiguo",
+      "enabled": true,
+      "source_type": "huggingface",
+      "purpose": "pretrain_candidate",
+      "description": "百度贴吧抗压背锅吧数据。",
+      "source_url": "https://huggingface.co/datasets/Orphanage/Baidu_Tieba_KangYaBeiGuo",
+      "dataset": "Orphanage/Baidu_Tieba_KangYaBeiGuo",
+      "config": null,
+      "split": "train",
+      "revision": null,
+      "license": "mit / dataset card citation says cc-by-nc-4.0",
+      "output": "data/downloads/baidu_tieba_kangyabeiguo",
+      "format": "disk",
+      "expected_columns": [
+        "标题",
+        "链接",
+        "楼主内容",
+        "回复列表"
+      ],
+      "adapter": "tieba_thread",
+      "overwrite": false,
+      "size_note": null,
+      "safety_note": "贴吧语料噪声高，后续导出预训练文本前需要做质量过滤和去重；数据页和引用区 license 信息不完全一致，使用前需要再确认。",
+      "notes": "旧版 download.py 注释中出现过，并有旧代码按 标题/楼主内容/回复列表 导出。"
+    }
+  ],
+  "preprocess": {
+    "dataset_sources": [
+      {
+        "source_id": "wiki_zh_20231101",
+        "enabled": false
+      },
+      {
+        "source_id": "sharegpt_chinese",
+        "enabled": false
+      },
+      {
+        "source_id": "chinese_question_answering_dataset",
+        "enabled": false
+      },
+      {
+        "source_id": "chinese_simpleqa",
+        "enabled": false
+      },
+      {
+        "source_id": "chinese_safe",
+        "enabled": false
+      },
+      {
+        "source_id": "belle_train_3_5m_cn",
+        "enabled": false
+      },
+      {
+        "source_id": "tieba_some_interesting",
+        "enabled": false
+      },
+      {
+        "source_id": "baidu_tieba_kangyabeiguo",
+        "enabled": false
+      }
+    ],
+    "missing_dataset_policy": "error",
+    "raw_text_inputs": [],
+    "train_output": "data/train.txt",
+    "val_output": "data/val.txt",
+    "train_ratio": 0.95,
+    "seed": 42,
+    "min_chars": 6,
+    "require_chinese": false,
+    "fix_text": true,
+    "traditional_mode": "keep",
+    "bpe_chunk_dir": null,
+    "bpe_chunk_size_mb": 100,
+    "overwrite": false
+  },
+  "build_bin": {
+    "tokenizer": "bpe/tokenizer",
+    "train_text": "data/train.txt",
+    "val_text": "data/val.txt",
+    "train_bin": "data/train.bin",
+    "val_bin": "data/val.bin",
+    "eos_token": "<|endoftext|>",
+    "chunk_lines": 2000,
+    "workers": 8,
+    "dtype": "auto",
+    "overwrite": false
+  }
+}

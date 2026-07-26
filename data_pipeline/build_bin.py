@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import os
@@ -18,32 +17,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from config_loader import Config
+
+CONFIG_PATH = PROJECT_ROOT / "configs" / "data_pipeline.json"
 
 _worker_tokenizer = None
 _worker_eos_id: int | None = None
 _worker_dtype = None
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Tokenize train/validation text and write flat binary token files."
-    )
-    parser.add_argument("--tokenizer", type=Path, default=Path("bpe/tokenizer"))
-    parser.add_argument("--train-text", type=Path, default=Path("data/train.txt"))
-    parser.add_argument("--val-text", type=Path, default=Path("data/val.txt"))
-    parser.add_argument("--train-bin", type=Path, default=Path("data/train.bin"))
-    parser.add_argument("--val-bin", type=Path, default=Path("data/val.bin"))
-    parser.add_argument("--eos-token", default="<|endoftext|>")
-    parser.add_argument("--chunk-lines", type=int, default=2000)
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=max(1, min(8, (os.cpu_count() or 2) - 1)),
-        help="Tokenizer worker processes. Use 1 for deterministic debugging.",
-    )
-    parser.add_argument("--dtype", choices=("auto", "uint16", "uint32"), default="auto")
-    parser.add_argument("--overwrite", action="store_true")
-    return parser.parse_args()
 
 
 def tokenizer_fingerprint(path: Path) -> str:
@@ -133,7 +113,7 @@ def build_one_bin(
         raise FileNotFoundError(f"Input text does not exist: {input_text}")
     if output_bin.exists() and not overwrite:
         raise FileExistsError(
-            f"Output already exists: {output_bin}. Pass --overwrite to replace it."
+            f"Output already exists: {output_bin}. Set overwrite=true in configs/data_pipeline.json to replace it."
         )
 
     output_bin.parent.mkdir(parents=True, exist_ok=True)
@@ -204,38 +184,47 @@ def build_one_bin(
 
 
 def main() -> None:
-    args = parse_args()
-    if args.chunk_lines < 1:
-        raise ValueError("--chunk-lines must be positive.")
-    if args.workers < 1:
-        raise ValueError("--workers must be positive.")
+    config = Config(CONFIG_PATH).require("build_bin")
+    tokenizer_path = PROJECT_ROOT / config["tokenizer"]
+    train_text = PROJECT_ROOT / config["train_text"]
+    val_text = PROJECT_ROOT / config["val_text"]
+    train_bin = PROJECT_ROOT / config["train_bin"]
+    val_bin = PROJECT_ROOT / config["val_bin"]
+    workers = config["workers"]
+    if workers == "auto":
+        workers = max(1, min(8, (os.cpu_count() or 2) - 1))
+
+    if config["chunk_lines"] < 1:
+        raise ValueError("chunk_lines must be positive.")
+    if workers < 1:
+        raise ValueError("workers must be positive.")
 
     from pretrain.tokenizer_optimized import Tokenizer
 
-    tokenizer = Tokenizer(str(args.tokenizer))
+    tokenizer = Tokenizer(str(tokenizer_path))
     tokenizer_size = len(tokenizer.tokenizer)
-    eos_id = tokenizer.special_token_to_id.get(args.eos_token)
+    eos_id = tokenizer.special_token_to_id.get(config["eos_token"])
     if eos_id is None:
         raise ValueError(
-            f"Tokenizer has no special token {args.eos_token!r}. "
+            f"Tokenizer has no special token {config['eos_token']!r}. "
             f"Available: {sorted(tokenizer.special_token_to_id)}"
         )
 
-    dtype = choose_dtype(args.dtype, tokenizer_size)
-    fingerprint = tokenizer_fingerprint(args.tokenizer)
+    dtype = choose_dtype(config["dtype"], tokenizer_size)
+    fingerprint = tokenizer_fingerprint(tokenizer_path)
     common = {
-        "tokenizer_path": args.tokenizer.resolve(),
+        "tokenizer_path": tokenizer_path.resolve(),
         "tokenizer_size": tokenizer_size,
         "tokenizer_sha256": fingerprint,
-        "eos_token": args.eos_token,
+        "eos_token": config["eos_token"],
         "eos_id": eos_id,
         "dtype": dtype,
-        "chunk_lines": args.chunk_lines,
-        "workers": args.workers,
-        "overwrite": args.overwrite,
+        "chunk_lines": config["chunk_lines"],
+        "workers": workers,
+        "overwrite": config["overwrite"],
     }
-    build_one_bin(args.val_text, args.val_bin, **common)
-    build_one_bin(args.train_text, args.train_bin, **common)
+    build_one_bin(val_text, val_bin, **common)
+    build_one_bin(train_text, train_bin, **common)
 
 
 if __name__ == "__main__":
