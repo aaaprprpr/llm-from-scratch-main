@@ -25,6 +25,11 @@ data/*.meta.json
 train_logs/
 sft_logs/
 sft_cache/
+dpo_logs/
+dpo_cache/
+sft_weights/
+dpo_weights/
+.hf_modules_cache/
 main/my_sft_complete_model
 main/my_hf_model
 main/my_sft_model
@@ -36,3 +41,4 @@ main/my_hf_model
 pretrained_weights
 
 sft/alpaca_zh_local
+hf/dpo_model
