@@ -213,35 +213,35 @@
     "dataset_sources": [
       {
         "source_id": "wiki_zh_20231101",
-        "enabled": false
+        "enabled": true
       },
       {
         "source_id": "sharegpt_chinese",
-        "enabled": false
+        "enabled": true
       },
       {
         "source_id": "chinese_question_answering_dataset",
-        "enabled": false
+        "enabled": true
       },
       {
         "source_id": "chinese_simpleqa",
-        "enabled": false
+        "enabled": true
       },
       {
         "source_id": "chinese_safe",
-        "enabled": false
+        "enabled": true
       },
       {
         "source_id": "belle_train_3_5m_cn",
-        "enabled": false
+        "enabled": true
       },
       {
         "source_id": "tieba_some_interesting",
-        "enabled": false
+        "enabled": true
       },
       {
         "source_id": "baidu_tieba_kangyabeiguo",
-        "enabled": false
+        "enabled": true
       }
     ],
     "missing_dataset_policy": "error",
