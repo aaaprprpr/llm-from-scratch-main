@@ -3,7 +3,7 @@ from torch import nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
-from .modules import Block, CausalSelfAttention_RoPE, RoPE, SwiGLU
+from .modules import Block, CausalSelfAttention_RoPE, RoPE, StaticKVCache, SwiGLU
 from .utils import filter_top_p_logits
 
 __all__ = [
@@ -11,6 +11,7 @@ __all__ = [
     "SwiGLU",
     "CausalSelfAttention_RoPE",
     "Block",
+    "StaticKVCache",
     "Transformer",
 ]
 
@@ -59,6 +60,24 @@ class Transformer(nn.Module):
     def gradient_checkpointing_disable(self):
         self.gradient_checkpointing = False
 
+    def create_static_kv_cache(
+        self,
+        batch_size: int,
+        max_cache_length: int | None = None,
+    ) -> StaticKVCache:
+        if max_cache_length is None:
+            max_cache_length = self.context_length
+        if max_cache_length > self.context_length:
+            raise ValueError(
+                f"Static cache length {max_cache_length} exceeds "
+                f"model context_length {self.context_length}"
+            )
+        return StaticKVCache(
+            num_layers=len(self.layers),
+            batch_size=batch_size,
+            max_cache_length=max_cache_length,
+        )
+
     def forward(
         self,
         x: torch.Tensor,
@@ -68,23 +87,19 @@ class Transformer(nn.Module):
         attention_mask: torch.Tensor | None = None,
         past_key_values=None,
         use_cache=False,
-    ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]] | None]:
+    ) -> tuple[
+        torch.Tensor,
+        StaticKVCache | None,
+    ]:
         B, T = x.shape
 
         if T == 0:
             raise ValueError("Input sequence cannot be empty")
 
-        past_length = 0
+        if use_cache and past_key_values is None:
+            past_key_values = self.create_static_kv_cache(batch_size=B)
 
-        if past_key_values is not None:
-            if len(past_key_values) != len(self.layers):
-                raise ValueError(
-                    f"Expected {len(self.layers)} cache layers, "
-                    f"got {len(past_key_values)}"
-                )
-
-            past_length = past_key_values[0][0].size(-2)
-
+        past_length = past_key_values.get_seq_length() if use_cache else 0
         total_length = past_length + T
 
         if attention_mask is not None:
@@ -165,9 +180,7 @@ class Transformer(nn.Module):
                 "gradient checkpointing is incompatible with past_key_values/use_cache"
             )
 
-        next_decoder_cache = [] if use_cache else None
         for i, layer in enumerate(self.layers):
-            past_key_value = past_key_values[i] if past_key_values is not None else None
             if checkpointing:
 
                 def checkpointed_layer(hidden_states, current_layer=layer):
@@ -175,30 +188,25 @@ class Transformer(nn.Module):
                         hidden_states,
                         position_embeddings=position_embeddings,
                         attention_mask=attention_mask,
-                        past_key_value=None,
-                        use_cache=False,
-                    )[0]
+                    )
 
                 x = checkpoint(
                     checkpointed_layer,
                     x,
                     use_reentrant=False,
                 )
-                present_key_value = None
             else:
-                x, present_key_value = layer(
+                x = layer(
                     x,
                     position_embeddings=position_embeddings,
                     attention_mask=attention_mask,
-                    past_key_value=past_key_value,
-                    use_cache=use_cache,
+                    kv_cache=past_key_values if use_cache else None,
+                    layer_index=i,
                 )  # 注意力
-            if use_cache:
-                next_decoder_cache.append(present_key_value)
 
         x = self.norm(x)
         logits = self.lm_head(x)
-        return logits, next_decoder_cache
+        return logits, past_key_values if use_cache else None
 
     @torch.no_grad()
     def generate(
@@ -275,13 +283,25 @@ class Transformer(nn.Module):
         self.eval()
 
         try:
-            past_key_values = None
             finished = torch.zeros(idx.size(0), dtype=torch.bool, device=idx.device)
+            prompt_length = min(idx.size(1), context_length)
+            max_cache_length = min(
+                context_length,
+                prompt_length + max(0, max_new_tokens - 1),
+            )
+            past_key_values = (
+                self.create_static_kv_cache(
+                    batch_size=idx.size(0),
+                    max_cache_length=max_cache_length,
+                )
+                if max_new_tokens > 0
+                else None
+            )
 
             for _ in range(max_new_tokens):
                 # 增量推理阶段（Decode）：既然已经有了历史缓存，我们只需要把上一步生成的【最后 1 个词】喂给模型
-                if past_key_values is not None:
-                    cached_length = past_key_values[0][0].size(-2)
+                cached_length = past_key_values.get_seq_length()
+                if cached_length > 0:
 
                     if cached_length >= context_length:
                         break

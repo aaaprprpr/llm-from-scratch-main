@@ -1,17 +1,9 @@
 看完了，没有改代码。总体判断是：`models/model.py` 不需要推倒重写。当前已经是比较正常的 dense decoder：12 层、512 维、8 头 MHA、Pre-RMSNorm、SwiGLU、RoPE、PyTorch SDPA，总计约 5873 万参数。主要缺口是长上下文相关的工程实现还比较初级。
 
 
-二、KV cache 已经支持，而且数值逻辑是正确的。完整前向、逐 token cache、分块 cache 的误差都在 `1e-6` 内。不过它现在属于“能用但不高效”：每一步都把历史 K/V 与新 K/V 重新 `torch.cat`，累计产生 O(T²) 的复制；没有静态预分配、cache position、滑动窗口或者 paged cache。当前 MHA 在 BF16、batch=1、4K 上下文时，12 层 KV cache 大约 96 MiB。
 
-要区分清楚：KV cache 只优化自回归生成，不能降低预训练的显存和计算量。预训练长上下文更依赖 FlashAttention、BF16 和 activation checkpointing。
 
-三、当前已经是标准 8 头 MHA，不是单头。实际最值得升级的是 GQA，而不是立刻做 MLA。保留 8 个 query heads，把 KV heads 改成 2，KV cache 可以直接降到四分之一，模型改动也比较有限；GQA 本身就是为接近 MHA 质量、接近 MQA 推理效率设计的。[GQA 原论文](https://arxiv.org/abs/2305.13245)
 
-MLA 对 KV cache 压缩更狠，但需要低秩 KV latent、拆分 RoPE 维度以及专门的推理实现，和现有 SDPA 的衔接复杂很多。对于当前 5900 万参数模型，先做 GQA 的性价比明显更高。[DeepSeek-V2 的 MLA 与 DeepSeekMoE](https://arxiv.org/abs/2405.04434)
-
-四、现在已经在调用 `scaled_dot_product_attention`，所以模型接口本身兼容 FlashAttention，正常无 mask 的预训练路径也比较干净。但训练入口目前默认 FP32，没有 autocast/BF16，因此不能说实际已经命中了 Flash 内核。PyTorch 会根据 GPU、dtype 和张量条件自动选择 FlashAttention、memory-efficient 或普通实现。[PyTorch SDPA 文档](https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention)
-
-FlashAttention 主要解决 T×T 注意力矩阵的显存和 IO，不改变 O(T²) 计算量。256 扩到 2048，单样本注意力计算约增加 64 倍；扩到 4096 则约增加 256 倍。所以 BF16、梯度累积、activation checkpointing 和 token-based 训练预算也要同步调整，但这些应该放在训练代码里，不应塞进 `model.py`。
 
 五、Kimi 的 Attention Residuals 和 DeepSeek 的 mHC 都是残差拓扑，不是序列注意力。当前模型就是普通的 `x + Attention`、`x + FFN`。AttnRes 改为沿网络深度，对 embedding 和先前子层输出做注意力聚合；当前 12 个 block、24 个子层不算深，Full AttnRes 已经具备实现和实验价值，Block AttnRes 可以后面再做。它比 mHC 更适合作为第一个研究分支。[AttnRes 论文](https://arxiv.org/abs/2603.15031)、[官方仓库](https://github.com/MoonshotAI/Attention-Residuals)
 

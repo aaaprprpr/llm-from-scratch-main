@@ -2,6 +2,7 @@ import torch
 from torch import nn
 
 from .attention import CausalSelfAttention_RoPE
+from .cache import StaticKVCache
 from .feed_forward import SwiGLU
 
 
@@ -22,16 +23,16 @@ class Block(nn.Module):
         x: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
-        past_key_value=None,
-        use_cache=False,
-    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
-        attn_out, present_key_value = self.attn(
+        kv_cache: StaticKVCache | None = None,
+        layer_index: int = 0,
+    ) -> torch.Tensor:
+        attn_out = self.attn(
             self.attn_norm(x),
             position_embeddings=position_embeddings,
             attention_mask=attention_mask,
-            past_key_value=past_key_value,
-            use_cache=use_cache,
+            kv_cache=kv_cache,
+            layer_index=layer_index,
         )
         x = x + attn_out
         x = x + self.ffn(self.ffn_norm(x))
-        return x, present_key_value
+        return x

@@ -22,7 +22,7 @@ class LLMFromScratchForCausalLM(PreTrainedModel, GenerationMixin):
 
     @classmethod
     def _supports_default_dynamic_cache(cls):
-        # 核心模型当前使用 tuple/list KV cache，不接收 Transformers DynamicCache。
+        # 核心模型维护自己的静态 cache，不接收 Transformers Cache 类型。
         return False
 
     def __init__(self, config: LLMFromScratchConfig):
@@ -110,7 +110,13 @@ class LLMFromScratchForCausalLM(PreTrainedModel, GenerationMixin):
         use_cache=True,
         **kwargs,
     ):
-        if past_key_values is not None:
+        if past_key_values is None and use_cache:
+            past_key_values = CoreTransformer.create_static_kv_cache(
+                self,
+                batch_size=input_ids.size(0),
+                max_cache_length=self.context_length,
+            )
+        if past_key_values is not None and past_key_values.get_seq_length() > 0:
             input_ids = input_ids[:, -1:]
 
         return {
@@ -119,15 +125,3 @@ class LLMFromScratchForCausalLM(PreTrainedModel, GenerationMixin):
             "past_key_values": past_key_values,
             "use_cache": use_cache,
         }
-
-    @staticmethod
-    def _reorder_cache(past_key_values, beam_idx):
-        if past_key_values is None:
-            return None
-        return tuple(
-            (
-                layer_past[0].index_select(0, beam_idx),
-                layer_past[1].index_select(0, beam_idx),
-            )
-            for layer_past in past_key_values
-        )

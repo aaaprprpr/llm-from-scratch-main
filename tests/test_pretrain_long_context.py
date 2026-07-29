@@ -6,11 +6,12 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torch.overrides import TorchFunctionMode
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from models.model import Transformer
+from models.model import StaticKVCache, Transformer
 from pretrain.play_model import load_model as load_play_model
 from pretrain.train_model import get_batch, load_checkpoint, save_checkpoint
 
@@ -118,6 +119,88 @@ class LongContextModelTest(unittest.TestCase):
             atol=2e-6,
             rtol=1e-5,
         )
+
+    def test_static_cache_matches_full_forward_without_reallocation(self):
+        class CatCounter(TorchFunctionMode):
+            def __init__(self):
+                self.calls = 0
+
+            def __torch_function__(self, func, types, args=(), kwargs=None):
+                if func is torch.cat:
+                    self.calls += 1
+                return func(*args, **(kwargs or {}))
+
+        torch.manual_seed(3)
+        model = make_model(context_length=128, num_layers=2).eval()
+        input_ids = torch.randint(0, 33, (2, 37))
+        cache = model.create_static_kv_cache(
+            batch_size=input_ids.size(0),
+            max_cache_length=input_ids.size(1),
+        )
+
+        with torch.no_grad():
+            full_logits, _ = model(input_ids)
+            first_logits, returned_cache = model(
+                input_ids[:, :19],
+                past_key_values=cache,
+                use_cache=True,
+            )
+            pointers = [
+                (key.data_ptr(), value.data_ptr())
+                for key, value in zip(cache.key_cache, cache.value_cache)
+            ]
+
+            cat_counter = CatCounter()
+            with cat_counter:
+                second_logits, returned_cache = model(
+                    input_ids[:, 19:20],
+                    past_key_values=cache,
+                    use_cache=True,
+                )
+            third_logits, returned_cache = model(
+                input_ids[:, 20:],
+                past_key_values=cache,
+                use_cache=True,
+            )
+
+        self.assertIs(returned_cache, cache)
+        self.assertEqual(cache.get_seq_length(), input_ids.size(1))
+        self.assertEqual(cat_counter.calls, 0)
+        self.assertEqual(
+            pointers,
+            [
+                (key.data_ptr(), value.data_ptr())
+                for key, value in zip(cache.key_cache, cache.value_cache)
+            ],
+        )
+        torch.testing.assert_close(
+            torch.cat((first_logits, second_logits, third_logits), dim=1),
+            full_logits,
+            atol=2e-6,
+            rtol=1e-5,
+        )
+
+    def test_static_cache_capacity(self):
+        model = make_model(context_length=32, num_layers=2).eval()
+        cache = model.create_static_kv_cache(
+            batch_size=1,
+            max_cache_length=8,
+        )
+
+        with torch.no_grad():
+            model(
+                torch.tensor([[1, 2, 3]]),
+                past_key_values=cache,
+                use_cache=True,
+            )
+
+        with self.assertRaisesRegex(ValueError, "static capacity"):
+            with torch.no_grad():
+                model(
+                    torch.tensor([[4, 5, 6, 7, 8, 9]]),
+                    past_key_values=cache,
+                    use_cache=True,
+                )
 
     def test_checkpointing_preserves_loss_and_gradients(self):
         torch.manual_seed(1)
@@ -329,7 +412,7 @@ class PretrainDataAndCheckpointTest(unittest.TestCase):
 
 @unittest.skipUnless(HAS_TRANSFORMERS, "transformers is not installed")
 class HuggingFaceCompatibilityTest(unittest.TestCase):
-    def test_generation_uses_legacy_tuple_cache(self):
+    def test_generation_uses_static_cache(self):
         config = LLMFromScratchConfig(
             vocab_size=33,
             context_length=64,
@@ -349,9 +432,12 @@ class HuggingFaceCompatibilityTest(unittest.TestCase):
                 torch.tensor([[2, 3, 4]]),
                 max_new_tokens=4,
                 do_sample=False,
+                return_dict_in_generate=True,
             )
 
-        self.assertEqual(output.shape, (1, 7))
+        self.assertEqual(output.sequences.shape, (1, 7))
+        self.assertIsInstance(output.past_key_values, StaticKVCache)
+        self.assertEqual(output.past_key_values.get_seq_length(), 6)
 
 
 if __name__ == "__main__":

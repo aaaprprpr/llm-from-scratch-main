@@ -29,7 +29,10 @@ def load_config() -> Config:
 
 
 def build_hf_config(config: Config, tokenizer) -> LLMFromScratchConfig:
-    model_config = config.require("model")
+    model_config = {
+        **config.require("model"),
+        "use_cache": True,
+    }
     hf_config = LLMFromScratchConfig(
         **model_config,
         bos_token_id=tokenizer.bos_token_id,
@@ -62,7 +65,13 @@ def copy_remote_code_files(output_dir: Path):
     shutil.copy2(MODEL_CODE_PATH, output_dir / "modeling_llm_from_scratch.py")
     shutil.copy2(CORE_MODEL_CODE_PATH, output_dir / "model.py")
     shutil.copy2(CORE_MODEL_MODULES_PATH / "__init__.py", output_dir / "modules.py")
-    for module_name in ("rope.py", "attention.py", "feed_forward.py", "block.py"):
+    for module_name in (
+        "rope.py",
+        "attention.py",
+        "feed_forward.py",
+        "block.py",
+        "cache.py",
+    ):
         shutil.copy2(CORE_MODEL_MODULES_PATH / module_name, output_dir / module_name)
     shutil.copy2(CORE_MODEL_UTILS_PATH, output_dir / "utils.py")
 

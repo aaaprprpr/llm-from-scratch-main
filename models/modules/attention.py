@@ -2,6 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
+from .cache import StaticKVCache
 from .rope import RoPE
 
 
@@ -38,17 +39,12 @@ class CausalSelfAttention_RoPE(nn.Module):
         x: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
-        past_key_value=None,
-        use_cache=False,
-    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
+        kv_cache: StaticKVCache | None = None,
+        layer_index: int = 0,
+    ) -> torch.Tensor:
         B, T, C = x.size()  # batch, seq_len, d_model
 
-        past_length = 0
-        past_k = None
-        past_v = None
-        if past_key_value is not None:
-            past_k, past_v = past_key_value
-            past_length = past_k.size(-2)
+        past_length = kv_cache.get_seq_length() if kv_cache is not None else 0
 
         qkv = self.qkv_proj(x)  # (batch, seq_len, 3 * d_model)
         q, k, v = qkv.split(self.d_model, dim=-1)  # each is (batch, seq_len, d_model)
@@ -73,11 +69,8 @@ class CausalSelfAttention_RoPE(nn.Module):
         q = RoPE._apply_rope(q, cos, sin)
         k = RoPE._apply_rope(k, cos, sin)
 
-        if past_k is not None:
-            k = torch.cat([past_k, k], dim=-2)
-            v = torch.cat([past_v, v], dim=-2)
-
-        present_key_value = (k, v) if use_cache else None
+        if kv_cache is not None:
+            k, v = kv_cache.update(layer_index, k, v)
 
         key_length = past_length + T
 
@@ -134,4 +127,4 @@ class CausalSelfAttention_RoPE(nn.Module):
         )  # 多头拼接(batch, seq_len, d_model) <- `concatenation` operation
         y = self.out_proj(attn_output)  # (batch, seq_len, d_model)
 
-        return y, present_key_value
+        return y
