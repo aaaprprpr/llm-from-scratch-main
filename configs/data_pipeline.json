@@ -245,17 +245,12 @@
       }
     ],
     "missing_dataset_policy": "error",
-    "raw_text_inputs": [],
-    "train_output": "data/train.txt",
-    "val_output": "data/val.txt",
-    "train_ratio": 0.95,
-    "seed": 42,
-    "min_chars": 6,
-    "require_chinese": false,
+    "output": "data/preprocessed",
     "fix_text": true,
-    "traditional_mode": "keep",
-    "bpe_chunk_dir": null,
-    "bpe_chunk_size_mb": 100,
+    "deduplicate": true,
+    "max_repetition_ratio": 0.8,
+    "workers": "auto",
+    "map_batch_size": 1000,
     "overwrite": false
   },
   "build_bin": {

@@ -1,15 +1,19 @@
-"""Stream text cleaning, train/validation splitting, and optional BPE chunk creation."""
+"""Normalize raw datasets into complete pretraining text records."""
 
 from __future__ import annotations
 
-import glob
+import hashlib
 import json
-import random
+import os
 import re
+import shutil
 import sys
+import tempfile
+import unicodedata
+from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, TextIO
+from typing import Any, Callable, Iterable, Mapping
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -21,237 +25,233 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from config_loader import Config
 
 CONFIG_PATH = PROJECT_ROOT / "configs" / "data_pipeline.json"
-CHINESE_PATTERN = re.compile(r"[\u4e00-\u9fff]")
+DEFAULT_OUTPUT = "data/preprocessed"
+LINK_ONLY_PATTERN = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+CONTROL_CHARACTER_TRANSLATION = {
+    codepoint: None
+    for codepoint in (*range(0x20), *range(0x7F, 0xA0))
+    if codepoint not in {0x09, 0x0A}
+}
+REPETITION_SAMPLE_SIZE = 4096
+_ftfy_fix_text = None
 
 
 @dataclass
 class PreprocessStats:
-    input_files: int = 0
-    raw_text_files: int = 0
     dataset_sources: int = 0
     dataset_rows: int = 0
-    total_lines: int = 0
-    empty_lines: int = 0
-    too_short: int = 0
-    no_chinese: int = 0
-    traditional_dropped: int = 0
+    filtered: int = 0
+    duplicates: int = 0
     accepted: int = 0
-    train: int = 0
-    validation: int = 0
 
 
-class TextChunkWriter:
-    """Write complete UTF-8 records into approximately fixed-size text chunks."""
-
-    def __init__(self, output_dir: Path, target_bytes: int, overwrite: bool):
-        self.output_dir = output_dir
-        self.target_bytes = target_bytes
-        self.index = 0
-        self.current_bytes = 0
-        self.stream: TextIO | None = None
-
-        output_dir.mkdir(parents=True, exist_ok=True)
-        existing = sorted(output_dir.glob("chunk_*.txt"))
-        if existing and not overwrite:
-            raise FileExistsError(
-                f"BPE chunk directory already contains chunk_*.txt: {output_dir}. "
-                "Set overwrite=true in configs/data_pipeline.json to replace generated chunks."
-            )
-        if overwrite:
-            for path in existing:
-                path.unlink()
-
-    def _open_next(self) -> None:
-        if self.stream is not None:
-            self.stream.close()
-        self.index += 1
-        path = self.output_dir / f"chunk_{self.index:05d}.txt"
-        self.stream = path.open("w", encoding="utf-8", newline="\n")
-        self.current_bytes = 0
-
-    def write(self, text: str) -> None:
-        record = text + "\n"
-        record_bytes = len(record.encode("utf-8"))
-        if self.stream is None or (
-            self.current_bytes > 0
-            and self.current_bytes + record_bytes > self.target_bytes
-        ):
-            self._open_next()
-        assert self.stream is not None
-        self.stream.write(record)
-        self.current_bytes += record_bytes
-
-    def close(self) -> None:
-        if self.stream is not None:
-            self.stream.close()
-            self.stream = None
-
-
-def resolve_inputs(patterns: Iterable[str]) -> list[Path]:
-    resolved: dict[str, Path] = {}
-    for pattern in patterns:
-        pattern_path = Path(pattern)
-        search_pattern = (
-            pattern_path if pattern_path.is_absolute() else PROJECT_ROOT / pattern_path
-        )
-        matches = [Path(path) for path in glob.glob(str(search_pattern), recursive=True)]
-        if not matches and search_pattern.is_file():
-            matches = [search_pattern]
-        for path in matches:
-            if path.is_file():
-                resolved[str(path.resolve())] = path
-    return [resolved[key] for key in sorted(resolved)]
-
-
-def _iter_splits(dataset: Any) -> Iterable[tuple[str, Any]]:
-    if isinstance(dataset, Mapping):
-        for split_name in sorted(dataset):
-            yield split_name, dataset[split_name]
-    else:
-        yield "selected", dataset
-
-
-def _compact_text(value: Any) -> str:
-    if value is None:
+def normalize_text(value: Any) -> str:
+    if not isinstance(value, str):
         return ""
-    if isinstance(value, str):
-        text = value
-    elif isinstance(value, list | tuple | dict):
-        text = json.dumps(value, ensure_ascii=False)
-    else:
-        text = str(value)
-    return re.sub(r"\s+", " ", text).strip()
+
+    text = value.replace("\r\n", "\n").replace("\r", "\n")
+    text = unicodedata.normalize("NFC", text).replace("\ufeff", "")
+    text = text.translate(CONTROL_CHARACTER_TRANSLATION)
+    return text.strip()
 
 
-def _first_field(row: Mapping[str, Any], *names: str) -> str:
+def first_text(row: Mapping[str, Any], *names: str) -> str:
     for name in names:
         value = row.get(name)
-        text = _compact_text(value)
-        if text:
-            return text
+        if isinstance(value, str) and value.strip():
+            return value.strip()
     return ""
 
 
-ROLE_NAMES = {
-    "human": "用户",
-    "user": "用户",
-    "assistant": "助手",
-    "gpt": "助手",
-    "bot": "助手",
-    "system": "系统",
-}
+def join_parts(*parts: str) -> str | None:
+    texts = [part.strip() for part in parts if isinstance(part, str) and part.strip()]
+    if not texts:
+        return None
+    return "\n\n".join(texts)
 
 
-def _format_turn(turn: Any) -> str:
-    if isinstance(turn, Mapping):
-        role = _compact_text(
-            turn.get("role")
-            or turn.get("from")
-            or turn.get("speaker")
-            or turn.get("name")
-        )
-        content = _first_field(turn, "content", "value", "text")
-        if not content:
-            content = _compact_text(turn)
-        if role:
-            return f"{ROLE_NAMES.get(role.lower(), role)}：{content}"
-        return content
-    return _compact_text(turn)
+def clean_record(
+    text: str | None,
+    max_repetition_ratio: float,
+    fix_text: bool,
+) -> str | None:
+    if not text:
+        return None
+
+    if fix_text:
+        global _ftfy_fix_text
+        if _ftfy_fix_text is None:
+            import ftfy
+
+            _ftfy_fix_text = ftfy.fix_text
+        text = _ftfy_fix_text(text)
+    text = normalize_text(text)
+    if not text:
+        return None
+    if LINK_ONLY_PATTERN.fullmatch(text):
+        return None
+
+    compact_length = 0
+    replacement_count = 0
+    has_letter = False
+    repetition_sample = []
+    for character in text:
+        if character.isspace():
+            continue
+        compact_length += 1
+        replacement_count += character == "\ufffd"
+        has_letter = has_letter or character.isalpha()
+        if len(repetition_sample) < REPETITION_SAMPLE_SIZE and character.isalnum():
+            repetition_sample.append(character.casefold())
+
+    if not has_letter:
+        return None
+    if replacement_count / compact_length > 0.02:
+        return None
+
+    if len(repetition_sample) >= 20:
+        most_common_count = Counter(repetition_sample).most_common(1)[0][1]
+        if most_common_count / len(repetition_sample) > max_repetition_ratio:
+            return None
+        sample_text = "".join(repetition_sample)
+        max_pattern_length = min(16, len(sample_text) // 4)
+        for pattern_length in range(2, max_pattern_length + 1):
+            if sample_text[pattern_length:] == sample_text[:-pattern_length]:
+                return None
+
+    return text
 
 
-def _format_conversation(value: Any) -> str:
-    if isinstance(value, str):
-        return _compact_text(value)
-    if isinstance(value, list | tuple):
-        return " ".join(part for part in (_format_turn(turn) for turn in value) if part)
-    return _compact_text(value)
+def adapt_plain_text(row: Mapping[str, Any]) -> str | None:
+    return join_parts(first_text(row, "title"), first_text(row, "text"))
 
 
-def adapt_plain_text(row: Mapping[str, Any]) -> str:
-    return _first_field(row, "text")
+def adapt_classification_text(row: Mapping[str, Any]) -> str | None:
+    return join_parts(first_text(row, "text", "content"))
 
 
-def adapt_classification_text(row: Mapping[str, Any]) -> str:
-    return _first_field(row, "text", "content")
+def adapt_instruction_input_output(row: Mapping[str, Any]) -> str | None:
+    instruction = first_text(row, "instruction", "prompt", "question")
+    input_text = first_text(row, "input", "context")
+    output = first_text(row, "output", "answer", "response")
+    return join_parts(instruction, input_text, output)
 
 
-def adapt_instruction_input_output(row: Mapping[str, Any]) -> str:
-    instruction = _first_field(row, "instruction", "prompt", "question")
-    input_text = _first_field(row, "input", "context")
-    output = _first_field(row, "output", "answer", "response")
-    parts = []
-    if instruction:
-        parts.append(f"指令：{instruction}")
-    if input_text:
-        parts.append(f"输入：{input_text}")
-    if output:
-        parts.append(f"回答：{output}")
-    return " ".join(parts)
+def adapt_question_answer(row: Mapping[str, Any]) -> str | None:
+    question = first_text(row, "question", "query", "prompt")
+    answer = first_text(row, "answer", "output", "response")
+    return join_parts(question, answer)
 
 
-def adapt_question_answer(row: Mapping[str, Any]) -> str:
-    question = _first_field(row, "question", "query", "prompt")
-    answer = _first_field(row, "answer", "output", "response")
-    parts = []
-    if question:
-        parts.append(f"问题：{question}")
-    if answer:
-        parts.append(f"回答：{answer}")
-    return " ".join(parts)
+def adapt_question_answer_optional_think(
+    row: Mapping[str, Any],
+) -> str | None:
+    question = first_text(row, "question", "query", "prompt")
+    think = first_text(row, "think", "reasoning")
+    answer = first_text(row, "answer", "output", "response")
+    return join_parts(question, think, answer)
 
 
-def adapt_question_answer_optional_think(row: Mapping[str, Any]) -> str:
-    question = _first_field(row, "question", "query", "prompt")
-    think = _first_field(row, "think", "reasoning")
-    answer = _first_field(row, "answer", "output", "response")
-    parts = []
-    if question:
-        parts.append(f"问题：{question}")
-    if think:
-        parts.append(f"思考：{think}")
-    if answer:
-        parts.append(f"回答：{answer}")
-    return " ".join(parts)
+def adapt_conversation(row: Mapping[str, Any]) -> str | None:
+    conversation = row.get("conversations")
+    if conversation is None:
+        conversation = row.get("conversation")
+
+    if isinstance(conversation, str):
+        return join_parts(conversation)
+    if not isinstance(conversation, list | tuple):
+        return None
+
+    contents = []
+    for turn in conversation:
+        if isinstance(turn, Mapping):
+            content = first_text(turn, "content", "value", "text")
+        elif isinstance(turn, str):
+            content = turn.strip()
+        else:
+            content = ""
+        if content:
+            contents.append(content)
+    return join_parts(*contents)
 
 
-def adapt_sharegpt_conversations(row: Mapping[str, Any]) -> str:
-    return _format_conversation(row.get("conversations") or row.get("conversation"))
+def adapt_tieba_thread(row: Mapping[str, Any]) -> str | None:
+    title = first_text(row, "标题", "title")
+    author_content = first_text(row, "楼主内容", "content", "text")
+    raw_replies = row.get("回复列表")
+    if raw_replies is None:
+        raw_replies = row.get("replies")
+
+    replies = []
+    if isinstance(raw_replies, list | tuple):
+        for reply in raw_replies:
+            if isinstance(reply, Mapping):
+                text = first_text(reply, "content", "value", "text")
+            else:
+                text = reply.strip() if isinstance(reply, str) else ""
+            if text:
+                replies.append(text)
+    elif isinstance(raw_replies, str):
+        text = raw_replies.strip()
+        if text:
+            replies.append(text)
+
+    return join_parts(title, author_content, *replies)
 
 
-def adapt_openai_role_content_conversation(row: Mapping[str, Any]) -> str:
-    return _format_conversation(row.get("conversation") or row.get("conversations"))
-
-
-def adapt_tieba_thread(row: Mapping[str, Any]) -> str:
-    title = _first_field(row, "标题", "title")
-    author_content = _first_field(row, "楼主内容", "content", "text")
-    replies = row.get("回复列表") or row.get("replies") or []
-    parts = []
-    if title:
-        parts.append(f"标题：{title}")
-    if author_content:
-        parts.append(f"楼主：{author_content}")
-    if isinstance(replies, list | tuple):
-        for reply in replies:
-            reply_text = _compact_text(reply)
-            if reply_text:
-                parts.append(f"回复：{reply_text}")
-    else:
-        reply_text = _compact_text(replies)
-        if reply_text:
-            parts.append(f"回复：{reply_text}")
-    return " ".join(parts)
-
-
-ADAPTERS: dict[str, Callable[[Mapping[str, Any]], str]] = {
+ADAPTERS: dict[str, Callable[[Mapping[str, Any]], str | None]] = {
     "plain_text": adapt_plain_text,
     "classification_text": adapt_classification_text,
     "instruction_input_output": adapt_instruction_input_output,
     "question_answer": adapt_question_answer,
     "question_answer_optional_think": adapt_question_answer_optional_think,
-    "sharegpt_conversations": adapt_sharegpt_conversations,
-    "openai_role_content_conversation": adapt_openai_role_content_conversation,
+    "sharegpt_conversations": adapt_conversation,
+    "openai_role_content_conversation": adapt_conversation,
     "tieba_thread": adapt_tieba_thread,
+}
+
+ADAPTER_COLUMNS = {
+    "plain_text": {"title", "text"},
+    "classification_text": {"text", "content"},
+    "instruction_input_output": {
+        "instruction",
+        "prompt",
+        "question",
+        "input",
+        "context",
+        "output",
+        "answer",
+        "response",
+    },
+    "question_answer": {
+        "question",
+        "query",
+        "prompt",
+        "answer",
+        "output",
+        "response",
+    },
+    "question_answer_optional_think": {
+        "question",
+        "query",
+        "prompt",
+        "think",
+        "reasoning",
+        "answer",
+        "output",
+        "response",
+    },
+    "sharegpt_conversations": {"conversations", "conversation"},
+    "openai_role_content_conversation": {"conversation", "conversations"},
+    "tieba_thread": {
+        "标题",
+        "title",
+        "楼主内容",
+        "content",
+        "text",
+        "回复列表",
+        "replies",
+    },
 }
 
 
@@ -260,7 +260,7 @@ def select_dataset_sources(
     source_settings: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     downloads_by_id = {source["source_id"]: source for source in downloads}
-    selected: list[dict[str, Any]] = []
+    selected = []
     for setting in source_settings:
         if not setting.get("enabled", False):
             continue
@@ -271,225 +271,246 @@ def select_dataset_sources(
     return selected
 
 
-def iter_dataset_texts(
+def iter_splits(dataset: Any) -> Iterable[tuple[str, Any]]:
+    if isinstance(dataset, Mapping):
+        for split_name in sorted(dataset):
+            yield split_name, dataset[split_name]
+    else:
+        yield "selected", dataset
+
+
+def clean_batch(
+    batch: Mapping[str, list[Any]],
+    adapter_name: str,
+    max_repetition_ratio: float,
+    fix_text: bool,
+) -> dict[str, list[Any]]:
+    adapter = ADAPTERS[adapter_name]
+    batch_size = len(next(iter(batch.values()), []))
+    texts = []
+    digests = []
+
+    for index in range(batch_size):
+        row = {name: values[index] for name, values in batch.items()}
+        text = clean_record(
+            adapter(row),
+            max_repetition_ratio,
+            fix_text,
+        )
+        if text is None:
+            continue
+        texts.append(text)
+        digests.append(
+            hashlib.blake2b(text.encode("utf-8"), digest_size=16).digest()
+        )
+
+    return {"text": texts, "_digest": digests}
+
+
+def clean_source(
     source: dict[str, Any],
     missing_policy: str,
-) -> Iterable[str]:
-    from datasets import load_from_disk
+    max_repetition_ratio: float,
+    fix_text: bool,
+    workers: int,
+    map_batch_size: int,
+    stats: PreprocessStats,
+    cache_dir: Path,
+) -> list[Any]:
+    from datasets import Features, Value, load_from_disk
 
-    output = PROJECT_ROOT / source["output"]
-    if not output.exists():
-        message = f"Downloaded dataset does not exist for {source['source_id']}: {output}"
+    input_path = PROJECT_ROOT / source["output"]
+    if not input_path.exists():
+        message = (
+            f"Downloaded dataset does not exist for {source['source_id']}: "
+            f"{input_path}"
+        )
         if missing_policy == "skip":
             print(f"Warning: {message}; skipped.")
-            return
+            return []
         raise FileNotFoundError(message)
 
-    adapter_name = source.get("adapter") or "plain_text"
-    adapter = ADAPTERS.get(adapter_name)
-    if adapter is None:
-        raise KeyError(f"Unknown adapter {adapter_name!r} for source {source['source_id']}")
+    adapter_name = source.get("adapter", "plain_text")
+    if adapter_name not in ADAPTERS:
+        raise KeyError(
+            f"Unknown adapter {adapter_name!r} for source {source['source_id']}"
+        )
 
-    dataset = load_from_disk(str(output))
-    for split_name, split in _iter_splits(dataset):
+    dataset = load_from_disk(str(input_path))
+    cleaned_splits = []
+    output_features = Features(
+        {
+            "text": Value("string"),
+            "_digest": Value("binary"),
+        }
+    )
+    num_proc = workers if workers > 1 else None
+
+    for split_index, (split_name, split) in enumerate(iter_splits(dataset)):
         print(f"Processing dataset {source['source_id']} split {split_name}")
-        for row in split:
-            yield adapter(row)
-
-
-def make_text_fixer(enabled: bool) -> Callable[[str], str]:
-    if not enabled:
-        return lambda text: text
-    try:
-        import ftfy
-    except ImportError:
-        print("Warning: ftfy is not installed; continuing without Unicode repair.")
-        return lambda text: text
-    return ftfy.fix_text
-
-
-def make_traditional_converter(mode: str) -> Callable[[str], str]:
-    if mode == "keep":
-        return lambda text: text
-    try:
-        from opencc import OpenCC
-    except ImportError as exc:
-        raise RuntimeError(
-            f"traditional_mode={mode} requires an OpenCC Python package. "
-            "Install it or set traditional_mode=keep in configs/data_pipeline.json."
-        ) from exc
-    converter = OpenCC("t2s")
-    return converter.convert
-
-
-def prepare_outputs(paths: Iterable[Path], overwrite: bool) -> None:
-    for path in paths:
-        if path.exists() and not overwrite:
-            raise FileExistsError(
-                f"Output already exists: {path}. Set overwrite=true in configs/data_pipeline.json to replace it."
+        stats.dataset_rows += len(split)
+        input_columns = [
+            column
+            for column in split.column_names
+            if column in ADAPTER_COLUMNS[adapter_name]
+        ]
+        if not input_columns:
+            raise KeyError(
+                f"Dataset {source['source_id']} has none of the columns expected "
+                f"by adapter {adapter_name!r}."
             )
-        path.parent.mkdir(parents=True, exist_ok=True)
+        split = split.select_columns(input_columns)
+
+        cache_prefix = f"{source['source_id']}-{split_index:03d}"
+        mapped = split.map(
+            clean_batch,
+            batched=True,
+            batch_size=map_batch_size,
+            num_proc=num_proc,
+            fn_kwargs={
+                "adapter_name": adapter_name,
+                "max_repetition_ratio": max_repetition_ratio,
+                "fix_text": fix_text,
+            },
+            remove_columns=split.column_names,
+            features=output_features,
+            cache_file_name=str(cache_dir / f"{cache_prefix}-map.arrow"),
+            desc=f"Cleaning {source['source_id']}:{split_name}",
+        )
+        stats.filtered += len(split) - len(mapped)
+        if len(mapped):
+            cleaned_splits.append(mapped)
+
+    return cleaned_splits
 
 
-def clean_line(
-    raw_line: str,
+def build_dataset(
+    sources: list[dict[str, Any]],
+    missing_policy: str,
+    deduplicate: bool,
     stats: PreprocessStats,
-    min_chars: int,
-    require_chinese: bool,
-    fix_text: Callable[[str], str],
-    traditional_mode: str,
-    convert_traditional: Callable[[str], str],
-) -> str | None:
-    text = re.sub(r"\s+", " ", fix_text(raw_line)).strip()
-    if not text:
-        stats.empty_lines += 1
-        return None
-    if len(text) < min_chars:
-        stats.too_short += 1
-        return None
-    if require_chinese and CHINESE_PATTERN.search(text) is None:
-        stats.no_chinese += 1
-        return None
+    cache_dir: Path,
+    max_repetition_ratio: float,
+    fix_text: bool,
+    workers: int,
+    map_batch_size: int,
+):
+    from datasets import Dataset, Features, Value, concatenate_datasets
 
-    converted = convert_traditional(text)
-    if traditional_mode == "drop" and converted != text:
-        stats.traditional_dropped += 1
-        return None
-    if traditional_mode == "convert":
-        text = converted
-    return text
+    cleaned_parts = []
+    for source in sources:
+        cleaned_parts.extend(
+            clean_source(
+                source,
+                missing_policy,
+                max_repetition_ratio,
+                fix_text,
+                workers,
+                map_batch_size,
+                stats,
+                cache_dir,
+            )
+        )
+    if not cleaned_parts:
+        raise ValueError("No valid pretraining text records remain after cleaning.")
+
+    cleaned_dataset = concatenate_datasets(cleaned_parts)
+    if not deduplicate:
+        stats.accepted = len(cleaned_dataset)
+        return cleaned_dataset.remove_columns("_digest")
+
+    def generate_records():
+        seen_hashes: set[bytes] = set()
+        for text_batch in cleaned_dataset.iter(batch_size=10_000):
+            for text, digest in zip(text_batch["text"], text_batch["_digest"]):
+                if digest in seen_hashes:
+                    stats.duplicates += 1
+                    continue
+                seen_hashes.add(digest)
+
+                stats.accepted += 1
+                yield {"text": text}
+
+    return Dataset.from_generator(
+        generate_records,
+        features=Features({"text": Value("string")}),
+        cache_dir=str(cache_dir),
+    )
 
 
 def main() -> None:
     root_config = Config(CONFIG_PATH)
     config = root_config.require("preprocess")
     downloads = root_config.require("downloads")
-    train_output = PROJECT_ROOT / config["train_output"]
-    val_output = PROJECT_ROOT / config["val_output"]
-    bpe_chunk_dir = (
-        PROJECT_ROOT / config["bpe_chunk_dir"]
-        if config["bpe_chunk_dir"] is not None
-        else None
-    )
 
-    if not 0.0 < config["train_ratio"] < 1.0:
-        raise ValueError("train_ratio must be between 0 and 1.")
-    if config["min_chars"] < 1:
-        raise ValueError("min_chars must be positive.")
-    if config["bpe_chunk_size_mb"] < 1:
-        raise ValueError("bpe_chunk_size_mb must be positive.")
-    if config["traditional_mode"] not in {"keep", "convert", "drop"}:
-        raise ValueError("traditional_mode must be one of: keep, convert, drop.")
-
-    if config.get("missing_dataset_policy", "error") not in {"error", "skip"}:
+    missing_policy = config.get("missing_dataset_policy", "error")
+    if missing_policy not in {"error", "skip"}:
         raise ValueError("missing_dataset_policy must be one of: error, skip.")
 
-    raw_text_inputs = config.get("raw_text_inputs", config.get("input", []))
-    input_paths = resolve_inputs(raw_text_inputs)
-    dataset_sources = select_dataset_sources(
+    sources = select_dataset_sources(
         downloads,
         config.get("dataset_sources", []),
     )
-    if not input_paths and not dataset_sources:
-        raise FileNotFoundError(
-            "No preprocess inputs enabled. Enable preprocess.dataset_sources or set raw_text_inputs."
-        )
+    if not sources:
+        raise ValueError("No preprocess dataset sources are enabled.")
 
-    output_resolved = {train_output.resolve(), val_output.resolve()}
-    input_resolved = {path.resolve() for path in input_paths}
-    overlap = output_resolved & input_resolved
-    if overlap:
-        raise ValueError(
-            f"Input and output paths must be different: {sorted(map(str, overlap))}"
-        )
+    output_path = PROJECT_ROOT / config.get("output", DEFAULT_OUTPUT)
+    overwrite = config.get("overwrite", False)
+    deduplicate = config.get("deduplicate", True)
+    max_repetition_ratio = config.get("max_repetition_ratio", 0.8)
+    fix_text = config.get("fix_text", True)
+    workers = config.get("workers", "auto")
+    map_batch_size = config.get("map_batch_size", 1000)
 
-    prepare_outputs((train_output, val_output), config["overwrite"])
-    fix_text = make_text_fixer(config["fix_text"])
-    convert_traditional = make_traditional_converter(config["traditional_mode"])
-    rng = random.Random(config["seed"])
-    stats = PreprocessStats(
-        input_files=len(input_paths) + len(dataset_sources),
-        raw_text_files=len(input_paths),
-        dataset_sources=len(dataset_sources),
-    )
-    chunk_writer = None
-    if bpe_chunk_dir is not None:
-        chunk_writer = TextChunkWriter(
-            bpe_chunk_dir,
-            config["bpe_chunk_size_mb"] * 1024 * 1024,
-            config["overwrite"],
-        )
+    if not 0.0 < max_repetition_ratio <= 1.0:
+        raise ValueError("max_repetition_ratio must be between 0 and 1.")
+    if workers == "auto":
+        workers = max(1, (os.cpu_count() or 2) - 1)
+    if not isinstance(workers, int) or workers < 1:
+        raise ValueError("workers must be a positive integer or 'auto'.")
+    if not isinstance(map_batch_size, int) or map_batch_size < 1:
+        raise ValueError("map_batch_size must be positive.")
 
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(
+            f"Output already exists: {output_path}. "
+            "Set overwrite=true in configs/data_pipeline.json to replace it."
+        )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    temporary_output = output_path.with_name(f".{output_path.name}.tmp")
+    if temporary_output.exists():
+        shutil.rmtree(temporary_output)
+
+    stats = PreprocessStats(dataset_sources=len(sources))
     try:
-        with train_output.open("w", encoding="utf-8", newline="\n") as train_stream, val_output.open(
-            "w", encoding="utf-8", newline="\n"
-        ) as val_stream:
-            def consume_text(raw_text: str) -> None:
-                stats.total_lines += 1
-                text = clean_line(
-                    raw_text,
-                    stats,
-                    config["min_chars"],
-                    config["require_chinese"],
-                    fix_text,
-                    config["traditional_mode"],
-                    convert_traditional,
-                )
-                if text is None:
-                    return
+        with tempfile.TemporaryDirectory(
+            prefix=".preprocess-cache-",
+            dir=output_path.parent,
+        ) as cache_dir:
+            dataset = build_dataset(
+                sources,
+                missing_policy,
+                deduplicate,
+                stats,
+                Path(cache_dir),
+                max_repetition_ratio,
+                fix_text,
+                workers,
+                map_batch_size,
+            )
+            dataset.save_to_disk(str(temporary_output))
 
-                stats.accepted += 1
-                if rng.random() < config["train_ratio"]:
-                    train_stream.write(text + "\n")
-                    stats.train += 1
-                    if chunk_writer is not None:
-                        chunk_writer.write(text)
-                else:
-                    val_stream.write(text + "\n")
-                    stats.validation += 1
+        if output_path.exists():
+            shutil.rmtree(output_path)
+        temporary_output.replace(output_path)
+    except BaseException:
+        if temporary_output.exists():
+            shutil.rmtree(temporary_output)
+        raise
 
-            for dataset_source in dataset_sources:
-                for raw_text in iter_dataset_texts(
-                    dataset_source,
-                    config.get("missing_dataset_policy", "error"),
-                ):
-                    stats.dataset_rows += 1
-                    consume_text(raw_text)
-
-            for input_path in input_paths:
-                print(f"Processing {input_path}")
-                with input_path.open("r", encoding="utf-8") as source:
-                    for raw_line in source:
-                        consume_text(raw_line)
-    finally:
-        if chunk_writer is not None:
-            chunk_writer.close()
-
-    metadata = {
-        "raw_text_inputs": [str(path.resolve()) for path in input_paths],
-        "dataset_sources": [
-            {
-                "source_id": source["source_id"],
-                "output": str((PROJECT_ROOT / source["output"]).resolve()),
-                "adapter": source.get("adapter"),
-            }
-            for source in dataset_sources
-        ],
-        "train_output": str(train_output.resolve()),
-        "val_output": str(val_output.resolve()),
-        "train_ratio": config["train_ratio"],
-        "seed": config["seed"],
-        "min_chars": config["min_chars"],
-        "require_chinese": config["require_chinese"],
-        "fix_text": config["fix_text"],
-        "traditional_mode": config["traditional_mode"],
-        "stats": asdict(stats),
-    }
-    metadata_path = train_output.parent / "preprocess.meta.json"
-    metadata_path.write_text(
-        json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
     print(json.dumps(asdict(stats), ensure_ascii=False, indent=2))
+    print(f"Wrote {len(dataset):,} records to {output_path.resolve()}")
 
 
 if __name__ == "__main__":
