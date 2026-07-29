@@ -1,8 +1,5 @@
-看完了，没有改代码。总体判断是：`pretrain/model.py` 不需要推倒重写。当前已经是比较正常的 dense decoder：12 层、512 维、8 头 MHA、Pre-RMSNorm、SwiGLU、RoPE、PyTorch SDPA，总计约 5873 万参数。主要缺口是长上下文相关的工程实现还比较初级。
+看完了，没有改代码。总体判断是：`models/model.py` 不需要推倒重写。当前已经是比较正常的 dense decoder：12 层、512 维、8 头 MHA、Pre-RMSNorm、SwiGLU、RoPE、PyTorch SDPA，总计约 5873 万参数。主要缺口是长上下文相关的工程实现还比较初级。
 
-一、256 不是 RoPE 的上限。RoPE 会按位置自动扩展缓存，真正限制长度的是 [model.py](/home/guojia/Desktop/llm-from-scratch-main/pretrain/model.py:475) 里的 `context_length` 检查。因此只改配置就能运行 2K、4K，模型参数形状不变，旧权重也能严格加载。`train.bin/val.bin` 是平坦 token 流，训练时会按新窗口重新切，不需要重新预处理或 buildbin。但“能够计算 4K”不等于“256 训练的模型已经学会 4K”；继续旧权重时仍要进行长上下文训练。若从头按 2K/4K 训练，当前标准 RoPE 可以先作为基线；再往 32K 以上扩展，才需要认真引入 YaRN、NTK scaling 或重新设计 theta。
-
-当前 RoPE 实现还有几个明确的工程问题：每层各自保存一份 cos/sin、增量生成时每增加一个位置就 `torch.cat`、已经注册的 `inv_freq` 实际没有使用。后面应该改成模型级共享缓存、按倍数扩容，并把位置合法性检查补完整。这些不影响现在 256 的正确性，但长上下文下会浪费显存和内存带宽。
 
 二、KV cache 已经支持，而且数值逻辑是正确的。完整前向、逐 token cache、分块 cache 的误差都在 `1e-6` 内。不过它现在属于“能用但不高效”：每一步都把历史 K/V 与新 K/V 重新 `torch.cat`，累计产生 O(T²) 的复制；没有静态预分配、cache position、滑动窗口或者 paged cache。当前 MHA 在 BF16、batch=1、4K 上下文时，12 层 KV cache 大约 96 MiB。
 

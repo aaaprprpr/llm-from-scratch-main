@@ -19,7 +19,7 @@ from hf.modeling_llm_from_scratch import LLMFromScratchForCausalLM
 CONFIG_PATH = PROJECT_ROOT / "configs" / "dpo.json"
 CONFIG_CODE_PATH = PROJECT_ROOT / "hf" / "configuration_llm_from_scratch.py"
 MODEL_CODE_PATH = PROJECT_ROOT / "hf" / "modeling_llm_from_scratch.py"
-CORE_MODEL_CODE_PATH = PROJECT_ROOT / "pretrain" / "model.py"
+CORE_MODEL_CODE_PATH = PROJECT_ROOT / "models" / "model.py"
 
 
 def load_config() -> Config:

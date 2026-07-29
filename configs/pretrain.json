@@ -1,9 +1,9 @@
 {
   "paths": {
-    "train_data": "data/train.bin",
-    "val_data": "data/val.bin",
+    "train_data": "data_pipeline/data/train.bin",
+    "val_data": "data_pipeline/data/val.bin",
     "tokenizer_vocab": "bpe/tokenizer",
-    "out_root": "train_logs",
+    "out_root": "output/train_logs",
     "resume": null
   },
   "model": {

@@ -14,4 +14,4 @@
 - split 行数和字段；
 - 前几条样本。
 
-它不是训练输入。真正的训练输入由 `data_pipeline/preprocess.py` 从 `data/downloads/...` 读取并清洗生成。
+它不是训练输入。真正的训练输入由 `data_pipeline/preprocess.py` 从 `data_pipeline/data/downloads/...` 读取并清洗生成。

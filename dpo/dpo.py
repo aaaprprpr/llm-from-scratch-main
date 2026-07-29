@@ -29,7 +29,7 @@ from transformers import AutoTokenizer
 from dpo.collator import DPOCollator
 from dpo.loss import dpo_loss, model_sequence_logprob
 from dpo.tokenize_dpo import tokenize_preference_example
-from pretrain.model import Transformer
+from models.model import Transformer
 
 CONFIG_PATH = PROJECT_ROOT / "configs" / "dpo.json"
 

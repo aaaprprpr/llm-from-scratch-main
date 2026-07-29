@@ -18,7 +18,7 @@
 ## 🏗 Architecture
 本模型严格遵循如下架构流程设计：
 
-![Architecture](img/architecture.png)
+![Architecture](models/architecture.png)
 
 ## 📂 Project Structure
 ├── main/

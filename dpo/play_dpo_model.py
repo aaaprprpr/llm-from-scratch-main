@@ -13,7 +13,7 @@ import torch
 from transformers import AutoTokenizer
 
 from config_loader import Config
-from pretrain.model import Transformer
+from models.model import Transformer
 
 CONFIG_PATH = PROJECT_ROOT / "configs" / "dpo.json"
 

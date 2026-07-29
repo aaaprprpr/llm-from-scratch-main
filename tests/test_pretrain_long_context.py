@@ -10,7 +10,8 @@ import torch.nn.functional as F
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from pretrain.model import Transformer
+from models.model import Transformer
+from pretrain.play_model import load_model as load_play_model
 from pretrain.train_model import get_batch, load_checkpoint, save_checkpoint
 
 try:
@@ -287,6 +288,43 @@ class PretrainDataAndCheckpointTest(unittest.TestCase):
             restored_model.parameters(),
         ):
             torch.testing.assert_close(expected, actual)
+
+    def test_play_script_uses_checkpoint_model_args(self):
+        model_args = {
+            "vocab_size": 33,
+            "context_length": 64,
+            "n_head": 2,
+            "theta": 10000.0,
+            "num_layers": 1,
+            "d_model": 16,
+            "d_ff": 32,
+        }
+        model = Transformer(**model_args)
+
+        class FallbackConfig:
+            @staticmethod
+            def require(section):
+                raise AssertionError(
+                    f"checkpoint model_args should be used, requested {section}"
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint_path = Path(directory) / "checkpoint.pt"
+            torch.save(
+                {
+                    "model": model.state_dict(),
+                    "model_args": model_args,
+                },
+                checkpoint_path,
+            )
+            restored_model, restored_args = load_play_model(
+                FallbackConfig(),
+                checkpoint_path,
+                torch.device("cpu"),
+            )
+
+        self.assertEqual(restored_args, model_args)
+        self.assertEqual(restored_model.context_length, 64)
 
 
 @unittest.skipUnless(HAS_TRANSFORMERS, "transformers is not installed")

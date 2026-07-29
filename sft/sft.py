@@ -24,7 +24,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Sampler, random_split
 from transformers import AutoTokenizer
 
-from pretrain.model import Transformer
+from models.model import Transformer
 from sft.collator import SFTCollator
 from sft.tokenize_sft import IGNORE_INDEX, tokenize_chat_example
 

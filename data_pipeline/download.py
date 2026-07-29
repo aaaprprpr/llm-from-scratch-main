@@ -19,7 +19,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from config_loader import Config
 
 CONFIG_PATH = PROJECT_ROOT / "configs" / "data_pipeline.json"
-DEFAULT_MANIFEST_PATH = PROJECT_ROOT / "data" / "downloads" / "download_manifest.json"
+DEFAULT_MANIFEST_PATH = (
+    PROJECT_ROOT
+    / "data_pipeline"
+    / "data"
+    / "downloads"
+    / "download_manifest.json"
+)
 DEFAULT_SAMPLE_DIR = PROJECT_ROOT / "data_pipeline" / "dataset_samples"
 
 

@@ -1,5 +1,5 @@
 {
-  "download_manifest": "data/downloads/download_manifest.json",
+  "download_manifest": "data_pipeline/data/downloads/download_manifest.json",
   "download_samples": {
     "output_dir": "data_pipeline/dataset_samples",
     "rows": 2,
@@ -18,7 +18,7 @@
       "split": "train",
       "revision": null,
       "license": "cc-by-sa-3.0",
-      "output": "data/downloads/wiki_zh_20231101",
+      "output": "data_pipeline/data/downloads/wiki_zh_20231101",
       "format": "disk",
       "expected_columns": [
         "id",
@@ -44,7 +44,7 @@
       "split": "train",
       "revision": null,
       "license": "apache-2.0",
-      "output": "data/downloads/sharegpt_chinese",
+      "output": "data_pipeline/data/downloads/sharegpt_chinese",
       "format": "disk",
       "expected_columns": [
         "conversation"
@@ -67,7 +67,7 @@
       "split": "train",
       "revision": null,
       "license": null,
-      "output": "data/downloads/chinese_question_answering_dataset",
+      "output": "data_pipeline/data/downloads/chinese_question_answering_dataset",
       "format": "disk",
       "expected_columns": [
         "instruction",
@@ -92,7 +92,7 @@
       "split": "train",
       "revision": null,
       "license": "cc-by-nc-sa-4.0",
-      "output": "data/downloads/chinese_simpleqa",
+      "output": "data_pipeline/data/downloads/chinese_simpleqa",
       "format": "disk",
       "expected_columns": [
         "id",
@@ -120,7 +120,7 @@
       "split": "test",
       "revision": null,
       "license": null,
-      "output": "data/downloads/chinese_safe",
+      "output": "data_pipeline/data/downloads/chinese_safe",
       "format": "disk",
       "expected_columns": [
         "text",
@@ -145,7 +145,7 @@
       "split": "train",
       "revision": null,
       "license": "gpl-3.0",
-      "output": "data/downloads/belle_train_3_5m_cn",
+      "output": "data_pipeline/data/downloads/belle_train_3_5m_cn",
       "format": "disk",
       "expected_columns": [
         "id",
@@ -169,7 +169,7 @@
       "split": "train",
       "revision": null,
       "license": null,
-      "output": "data/downloads/tieba_some_interesting",
+      "output": "data_pipeline/data/downloads/tieba_some_interesting",
       "format": "disk",
       "expected_columns": [
         "question",
@@ -194,7 +194,7 @@
       "split": "train",
       "revision": null,
       "license": "mit / dataset card citation says cc-by-nc-4.0",
-      "output": "data/downloads/baidu_tieba_kangyabeiguo",
+      "output": "data_pipeline/data/downloads/baidu_tieba_kangyabeiguo",
       "format": "disk",
       "expected_columns": [
         "标题",
@@ -245,7 +245,7 @@
       }
     ],
     "missing_dataset_policy": "error",
-    "output": "data/preprocessed",
+    "output": "data_pipeline/data/preprocessed",
     "fix_text": true,
     "deduplicate": true,
     "max_repetition_ratio": 0.8,
@@ -254,10 +254,10 @@
     "overwrite": false
   },
   "build_bin": {
-    "input": "data/preprocessed",
+    "input": "data_pipeline/data/preprocessed",
     "tokenizer": "bpe/tokenizer",
-    "train_bin": "data/train.bin",
-    "val_bin": "data/val.bin",
+    "train_bin": "data_pipeline/data/train.bin",
+    "val_bin": "data_pipeline/data/val.bin",
     "train_ratio": 0.95,
     "seed": 42,
     "eos_token": "<|endoftext|>",

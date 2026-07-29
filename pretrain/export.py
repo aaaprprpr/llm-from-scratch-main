@@ -3,8 +3,14 @@ from pathlib import Path
 import torch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CHECKPOINT_PATH = PROJECT_ROOT / "train_logs/run_20260706_175441/ckpt_step_130000.pt"
-OUTPUT_PATH = PROJECT_ROOT / "pretrained_weights/model.pt"
+CHECKPOINT_PATH = (
+    PROJECT_ROOT
+    / "output"
+    / "train_logs"
+    / "run_20260706_175441"
+    / "ckpt_step_130000.pt"
+)
+OUTPUT_PATH = PROJECT_ROOT / "output" / "pretrained_weights" / "model.pt"
 
 
 def main():

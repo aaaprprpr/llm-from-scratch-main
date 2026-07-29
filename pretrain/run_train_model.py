@@ -32,7 +32,7 @@ from pretrain.train_model import (
     save_checkpoint,
     load_checkpoint,
 )
-from pretrain.model import Transformer as Model
+from models.model import Transformer as Model
 
 CONFIG_PATH = PROJECT_ROOT / "configs" / "pretrain.json"
 

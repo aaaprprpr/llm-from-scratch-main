@@ -1,43 +1,29 @@
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path = [
+    path for path in sys.path if Path(path or Path.cwd()).resolve() != SCRIPT_DIR
+]
+sys.path.insert(0, str(PROJECT_ROOT))
+
 import torch
-from model import Transformer as Model
-from tokenizer_optimized import Tokenizer
 
-model_ckpt = r"../train_logs\run_20260706_175441\ckpt_step_130000.pt"
-vocab_file = "../bpe/tokenizer"
+from config_loader import Config
+from models.model import Transformer
+from pretrain.tokenizer_optimized import Tokenizer
 
+CONFIG_PATH = PROJECT_ROOT / "configs" / "pretrain.json"
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"using device: {device}")
-print(f"Loading model from {model_ckpt}...")
+# 指定文件时加载指定 checkpoint；保持 None 就玩最近保存的预训练模型。
+CHECKPOINT_PATH = None
 
-tokenizer = Tokenizer(vocab_file)
-model_args = dict(
-    vocab_size=8192,
-    context_length=256,
-    n_head=8,
-    num_layers=12,
-    d_model=512,
-    d_ff=2048,
-    theta=10000.0,
-)
-model = Model(**model_args).to(device)
-checkpoint = torch.load(
-    model_ckpt,
-    map_location="cpu",
-    weights_only=True,
-    mmap=True,
-)
-model.load_state_dict(
-    checkpoint["model"],
-    strict=True,
-)
-del checkpoint
+MAX_NEW_TOKENS = 50
+TEMPERATURE = 0.6
+TOP_P = 0.9
 
-model = model.to(device)
-model.eval()
-
-# 开始调戏模型
-prompts = [
+PROMPTS = [
     "中国的首都是",
     "自然语言处理",
     "北京是一座",
@@ -51,17 +37,83 @@ prompts = [
     "乌兹，永远的",
 ]
 
-print("-" * 30)
-for p in prompts:
-    print(f"Prompt: {p}")
-    idx = tokenizer.idx(p, device=device)
-    full_output = model.generate(
-        idx,
-        max_new_tokens=50,
-        temperature=0.6,
-        top_p=0.9,
-        eos_id=tokenizer.special_token_to_id.get("<|endoftext|>"),
-        context_length=128,
+
+def find_checkpoint(config: Config) -> Path:
+    if CHECKPOINT_PATH is not None:
+        path = Path(CHECKPOINT_PATH)
+        return path if path.is_absolute() else PROJECT_ROOT / path
+
+    out_root = config.resolve_path("paths", "out_root")
+    checkpoints = list(out_root.glob("run_*/ckpt_step_*.pt"))
+    if not checkpoints:
+        raise FileNotFoundError(f"没有找到预训练 checkpoint：{out_root}")
+    return max(checkpoints, key=lambda path: path.stat().st_mtime)
+
+
+def load_model(config: Config, checkpoint_path: Path, device: torch.device):
+    checkpoint = torch.load(
+        checkpoint_path,
+        map_location="cpu",
+        weights_only=True,
+        mmap=True,
     )
-    print(f"Generated: {tokenizer.text(full_output,device=device)}")
-    print("=" * 80)
+
+    if "model" in checkpoint:
+        state_dict = checkpoint["model"]
+        model_args = checkpoint.get("model_args")
+        if model_args is None:
+            model_args = config.require("model")
+    else:
+        state_dict = checkpoint
+        model_args = config.require("model")
+
+    model = Transformer(**model_args)
+    model.load_state_dict(state_dict, strict=True)
+    model.to(device)
+    model.eval()
+    return model, model_args
+
+
+def main():
+    config = Config(CONFIG_PATH)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    checkpoint_path = find_checkpoint(config)
+
+    print(f"使用设备：{device}")
+    print(f"加载 checkpoint：{checkpoint_path}")
+
+    tokenizer = Tokenizer(
+        str(config.resolve_path("paths", "tokenizer_vocab"))
+    )
+    model, model_args = load_model(config, checkpoint_path, device)
+    context_length = model_args["context_length"]
+    eos_id = tokenizer.special_token_to_id.get("<|endoftext|>")
+    use_bfloat16 = device.type == "cuda" and torch.cuda.is_bf16_supported()
+
+    print(f"模型上下文：{context_length}")
+    print("-" * 50)
+
+    with torch.inference_mode():
+        for prompt in PROMPTS:
+            input_ids = tokenizer.idx(prompt, device=device)
+            with torch.autocast(
+                device_type=device.type,
+                dtype=torch.bfloat16,
+                enabled=use_bfloat16,
+            ):
+                output_ids = model.generate(
+                    input_ids,
+                    max_new_tokens=MAX_NEW_TOKENS,
+                    temperature=TEMPERATURE,
+                    top_p=TOP_P,
+                    eos_id=eos_id,
+                    context_length=context_length,
+                )
+
+            print(f"输入：{prompt}")
+            print(f"输出：{tokenizer.text(output_ids, device=device)}")
+            print("=" * 80)
+
+
+if __name__ == "__main__":
+    main()

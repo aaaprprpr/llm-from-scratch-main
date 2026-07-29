@@ -28,7 +28,7 @@ python .\data_pipeline\download.py
 
 注意：
 
-- Hugging Face 数据源统一使用 `format: "disk"`，下载为 `data/downloads/<source_id>`。
+- Hugging Face 数据源统一使用 `format: "disk"`，下载为 `data_pipeline/data/downloads/<source_id>`。
 - `download.py` 不再导出 txt。
 - `wikimedia/wikipedia` 必须显式写 `config: "20231101.zh"` 和 `split: "train"`。不要把 wiki 配成 `config: null`，避免误拉全量 wikipedia。
 
@@ -39,11 +39,11 @@ python .\data_pipeline\download.py
 `preprocess.py` 负责：
 
 - 读取 `preprocess.dataset_sources` 中启用的数据源；
-- 从对应的 `data/downloads/...` 目录加载 dataset；
+- 从对应的 `data_pipeline/data/downloads/...` 目录加载 dataset；
 - 按每个数据源的 `adapter` 转成完整的预训练文本记录；
 - 清洗并精确去重；
-- 输出只有 `text` 列的 `data/preprocessed` Arrow Dataset；
-- 将被过滤的正文和原因写入 `data/preprocessed.report.json`。
+- 输出只有 `text` 列的 `data_pipeline/data/preprocessed` Arrow Dataset；
+- 将被过滤的正文和原因写入 `data_pipeline/data/preprocessed.report.json`。
 
 运行：
 
@@ -65,7 +65,7 @@ python .\data_pipeline\build_bin.py
 
 该阶段会：
 
-- 直接读取 `data/preprocessed`，不经过 txt；
+- 直接读取 `data_pipeline/data/preprocessed`，不经过 txt；
 - 用固定 seed 在完整记录层划分 train/val，按随机块顺序读取并在块内打乱；
 - 从 tokenizer 查询 EOS id；
 - 完整编码每条记录，只在记录末尾追加一次 EOS；

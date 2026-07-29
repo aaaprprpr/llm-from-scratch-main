@@ -25,7 +25,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from config_loader import Config
 
 CONFIG_PATH = PROJECT_ROOT / "configs" / "data_pipeline.json"
-DEFAULT_OUTPUT = "data/preprocessed"
+DEFAULT_OUTPUT = "data_pipeline/data/preprocessed"
 LINK_ONLY_PATTERN = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
 CONTROL_CHARACTER_TRANSLATION = {
     codepoint: None

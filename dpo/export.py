@@ -4,8 +4,8 @@ from pathlib import Path
 import torch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-LOGS_PATH = PROJECT_ROOT / "dpo_logs"
-OUTPUT_PATH = PROJECT_ROOT / "dpo_weights" / "model.pt"
+LOGS_PATH = PROJECT_ROOT / "output" / "dpo_logs"
+OUTPUT_PATH = PROJECT_ROOT / "output" / "dpo_weights" / "model.pt"
 
 
 def checkpoint_step(path: Path) -> int:

@@ -9,7 +9,7 @@ try:
     from .model import Transformer as CoreTransformer
 except ImportError:
     from hf.configuration_llm_from_scratch import LLMFromScratchConfig
-    from pretrain.model import Transformer as CoreTransformer
+    from models.model import Transformer as CoreTransformer
 
 IGNORE_INDEX = -100
 

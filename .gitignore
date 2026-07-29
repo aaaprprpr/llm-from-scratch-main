@@ -19,9 +19,7 @@ env/
 *.txt
 !requirements.txt
 !docs/post-training-plan.txt
-data/downloads/
 data_pipeline/dataset_samples/*.sample.json
-data/*.meta.json
 .pt
 train_logs/
 sft_logs/
@@ -43,4 +41,6 @@ pretrained_weights
 
 sft/alpaca_zh_local
 hf/dpo_model
-data
+data_pipeline/data/*
+!data_pipeline/data/README.md
+output
