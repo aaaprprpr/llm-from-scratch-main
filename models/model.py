@@ -171,6 +171,14 @@ class Transformer(nn.Module):
             needed_len=rope_cache_length,
             device=x.device,
         )
+        rope_dtype = (
+            torch.get_autocast_dtype(x.device.type)
+            if torch.is_autocast_enabled(x.device.type)
+            else x.dtype
+        )
+        position_embeddings = tuple(
+            table.to(dtype=rope_dtype) for table in position_embeddings
+        )
 
         checkpointing = self.training and getattr(
             self, "gradient_checkpointing", False

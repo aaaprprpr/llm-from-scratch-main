@@ -13,7 +13,12 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from models.model import StaticKVCache, Transformer
 from pretrain.play_model import load_model as load_play_model
-from pretrain.train_model import get_batch, load_checkpoint, save_checkpoint
+from pretrain.train_model import (
+    get_batch,
+    load_checkpoint,
+    load_token_bin,
+    save_checkpoint,
+)
 
 try:
     from hf.configuration_llm_from_scratch import LLMFromScratchConfig
@@ -82,6 +87,35 @@ class LongContextModelTest(unittest.TestCase):
         self.assertEqual(model.rope.cos_cached.shape, (64, 4))
         self.assertEqual(model.rope.cos_cached.dtype, torch.float32)
         self.assertEqual(model.rope.inv_freq.dtype, torch.float32)
+
+    def test_position_embeddings_are_cast_once_and_shared(self):
+        model = make_model(context_length=64, num_layers=3).eval()
+        position_tables = []
+
+        def capture_position_embeddings(module, args, kwargs):
+            position_tables.append(kwargs["position_embeddings"])
+
+        hooks = [
+            layer.attn.register_forward_pre_hook(
+                capture_position_embeddings,
+                with_kwargs=True,
+            )
+            for layer in model.layers
+        ]
+        try:
+            with torch.no_grad(), torch.autocast("cpu", dtype=torch.bfloat16):
+                model(torch.randint(0, 33, (1, 16)))
+        finally:
+            for hook in hooks:
+                hook.remove()
+
+        self.assertEqual(len(position_tables), 3)
+        first_cos, first_sin = position_tables[0]
+        self.assertEqual(first_cos.dtype, torch.bfloat16)
+        self.assertEqual(first_sin.dtype, torch.bfloat16)
+        for cos, sin in position_tables[1:]:
+            self.assertEqual(cos.data_ptr(), first_cos.data_ptr())
+            self.assertEqual(sin.data_ptr(), first_sin.data_ptr())
 
     def test_cached_decode_matches_full_forward(self):
         torch.manual_seed(0)
@@ -328,6 +362,53 @@ class PretrainDataAndCheckpointTest(unittest.TestCase):
         self.assertEqual(position, 8)
         self.assertEqual(x.dtype, torch.int64)
         self.assertEqual(y.dtype, torch.int64)
+        self.assertTrue(x.is_contiguous())
+        self.assertTrue(y.is_contiguous())
+
+    def test_get_batch_wraps_before_an_incomplete_batch(self):
+        data = np.arange(24, dtype=np.uint16)
+        x, y, position = get_batch(
+            data,
+            batch_size=2,
+            context_length=4,
+            device="cpu",
+            position=16,
+        )
+
+        torch.testing.assert_close(
+            x,
+            torch.tensor(
+                [
+                    [0, 1, 2, 3],
+                    [4, 5, 6, 7],
+                ]
+            ),
+        )
+        torch.testing.assert_close(
+            y,
+            torch.tensor(
+                [
+                    [1, 2, 3, 4],
+                    [5, 6, 7, 8],
+                ]
+            ),
+        )
+        self.assertEqual(position, 8)
+
+    def test_load_token_bin_uses_metadata_dtype(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bin_path = Path(directory) / "tokens.bin"
+            expected = np.array([0, 65_536, 100_000], dtype=np.uint32)
+            expected.tofile(bin_path)
+            bin_path.with_suffix(".bin.meta.json").write_text(
+                '{"dtype": "uint32"}',
+                encoding="utf-8",
+            )
+
+            actual = load_token_bin(bin_path)
+
+        self.assertEqual(actual.dtype, np.dtype("uint32"))
+        np.testing.assert_array_equal(actual, expected)
 
     def test_checkpoint_round_trip_includes_long_context_metadata(self):
         model = make_model(context_length=4096)

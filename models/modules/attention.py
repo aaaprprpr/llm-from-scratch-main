@@ -61,8 +61,6 @@ class CausalSelfAttention_RoPE(nn.Module):
 
         # 旋转qk# (B,H,T,hd)
         cos, sin = position_embeddings
-        cos = cos.to(device=q.device, dtype=q.dtype)
-        sin = sin.to(device=q.device, dtype=q.dtype)
         while cos.ndim < q.ndim:
             cos = cos.unsqueeze(-3)
             sin = sin.unsqueeze(-3)

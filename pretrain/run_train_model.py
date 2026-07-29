@@ -7,7 +7,6 @@ import time
 from contextlib import nullcontext
 from pathlib import Path
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
@@ -29,6 +28,7 @@ from pretrain.tokenizer_optimized import Tokenizer
 from pretrain.train_model import (
     lr_cosine_schedule,
     get_batch,
+    load_token_bin,
     save_checkpoint,
     load_checkpoint,
 )
@@ -136,7 +136,7 @@ def print_config(config: Config):
     print("=" * 65)
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def estimate_loss(
     model,
     data,
@@ -314,17 +314,8 @@ def main():
 
     tokenizer = Tokenizer(str(config.resolve_path("paths", "tokenizer_vocab")))
 
-    # 使用np.memmap以高效内存的方式加载数据
-    train_data = np.memmap(
-        config.resolve_path("paths", "train_data"),
-        dtype=np.uint16,
-        mode="r",
-    )
-    val_data = np.memmap(
-        config.resolve_path("paths", "val_data"),
-        dtype=np.uint16,
-        mode="r",
-    )
+    train_data = load_token_bin(config.resolve_path("paths", "train_data"))
+    val_data = load_token_bin(config.resolve_path("paths", "val_data"))
 
     # model, optimizer  优化器手写换官方了
     model = Model(**model_config).to(device)
@@ -370,13 +361,16 @@ def main():
     # 训练循环
     last_log_step = start_iter
     last_log_tokens = tokens_seen
-    log_interval_start = None
+    cuda_step_events = []
+    accumulated_training_time = 0.0
 
     for it in range(start_iter, train_config["max_iters"]):
-        if log_interval_start is None:
-            if device.type == "cuda":
-                torch.cuda.synchronize(device)
-            log_interval_start = time.perf_counter()
+        if device.type == "cuda":
+            step_start = torch.cuda.Event(enable_timing=True)
+            step_end = torch.cuda.Event(enable_timing=True)
+            step_start.record()
+        else:
+            step_start = time.perf_counter()
 
         # 更新学习率（余弦调度）
         lr = lr_cosine_schedule(
@@ -418,6 +412,13 @@ def main():
             model.parameters(), optimizer_config["max_norm"]
         )
         optimizer.step()
+
+        if device.type == "cuda":
+            step_end.record()
+            cuda_step_events.append((step_start, step_end))
+        else:
+            accumulated_training_time += time.perf_counter() - step_start
+
         # 到这里才算真正完成一次更新
         completed_steps = it + 1
         last_step = completed_steps == train_config["max_iters"]
@@ -425,8 +426,12 @@ def main():
         # 每隔一定步数（日志间隔）打印训练进度
         if completed_steps % train_config["log_interval"] == 0 or last_step:
             if device.type == "cuda":
-                torch.cuda.synchronize(device)
-            training_time = time.perf_counter() - log_interval_start
+                cuda_step_events[-1][1].synchronize()
+                training_time = sum(
+                    start.elapsed_time(end) for start, end in cuda_step_events
+                ) / 1000.0
+            else:
+                training_time = accumulated_training_time
             steps_since_log = completed_steps - last_log_step
             ms_per_step = training_time * 1000 / steps_since_log
             tokens_per_second = (
@@ -443,7 +448,8 @@ def main():
 
             last_log_step = completed_steps
             last_log_tokens = tokens_seen
-            log_interval_start = None
+            cuda_step_events.clear()
+            accumulated_training_time = 0.0
 
         # 每隔一定步数（评估间隔）执行评估并记录日志
         if completed_steps % train_config["eval_interval"] == 0 or last_step:

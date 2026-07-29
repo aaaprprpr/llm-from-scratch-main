@@ -1,8 +1,23 @@
-import torch
-import numpy as np
+import json
 import math
 import os
+from pathlib import Path
 from typing import BinaryIO, IO
+
+import torch
+import numpy as np
+
+
+def load_token_bin(path: str | os.PathLike) -> np.memmap:
+    path = Path(path)
+    metadata_path = path.with_suffix(path.suffix + ".meta.json")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    dtype_name = metadata.get("dtype")
+    if dtype_name not in {"uint16", "uint32"}:
+        raise ValueError(
+            f"{metadata_path} contains unsupported dtype {dtype_name!r}"
+        )
+    return np.memmap(path, dtype=np.dtype(dtype_name), mode="r")
 
 
 def lr_cosine_schedule(
@@ -52,39 +67,31 @@ def get_batch(
     if context_length <= 0:
         raise ValueError(f"context_length must be positive, got {context_length}")
 
-    if len(data) <= context_length:
+    tokens_per_batch = batch_size * context_length
+    window_length = tokens_per_batch + 1
+    if len(data) < window_length:
         raise ValueError(
-            f"data must contain at least {context_length + 1} tokens, "
+            f"data must contain at least {window_length} tokens for a full batch, "
             f"got {len(data)}"
         )
 
     if position < 0:
         raise ValueError(f"position must be non-negative, got {position}")
 
-    # 1. 计算总共有多少个合法的起始位置
-    max_start = len(data) - context_length - 1
+    max_batch_start = len(data) - window_length
+    if position > max_batch_start:
+        position = 0
 
-    # 2. 生成 batch_size 个索引
-    # 不再是 randint，而是从当前位置开始往后排
-    # 比如：[pos, pos + context_length, pos + 2*context_length, ...]
-    # 这样能保证数据被地毯式扫过
-    indices = []
+    window = np.asarray(
+        data[position : position + window_length],
+        dtype=np.int64,
+    )
+    tokens = torch.from_numpy(window).to(device)
+    next_position = position + tokens_per_batch
 
-    for _ in range(batch_size):
-        if position > max_start:
-            position = 0  # 扫完了，回到开头
-        indices.append(position)
-        position += context_length  # 步长等于上下文长度，无缝衔接
-
-    # 每条序列只读取和转换一次 T+1 token，再在目标设备上切出 x/y。
-    # 旧实现会分别为 x 和 y 重复 memmap 切片、astype、stack 和设备搬运。
-    windows = np.stack(
-        [data[i : i + context_length + 1] for i in indices]
-    ).astype(np.int64, copy=False)
-    tokens = torch.from_numpy(windows)
-    tokens = tokens.to(device)
-
-    return tokens[:, :-1], tokens[:, 1:], position
+    x = tokens[:-1].view(batch_size, context_length)
+    y = tokens[1:].view(batch_size, context_length)
+    return x, y, next_position
 
 
 def save_checkpoint(

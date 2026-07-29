@@ -1,4 +1,19 @@
-看完了，没有改代码。总体判断是：`models/model.py` 不需要推倒重写。当前已经是比较正常的 dense decoder：12 层、512 维、8 头 MHA、Pre-RMSNorm、SwiGLU、RoPE、PyTorch SDPA，总计约 5873 万参数。主要缺口是长上下文相关的工程实现还比较初级。
+
+
+
+
+
+四、数据搬运是同步的。每个微批次都在主线程完成 NumPy 转换，然后执行阻塞式 `.to(device)`，CPU 准备和 GPU 计算无法重叠。输入 token 很少，因此不需要上复杂的多进程 DataLoader；后续做一个简单的锁页双缓冲或预取就够了。
+
+
+
+七、`torch.save` 直接同步保存 GPU 上的模型和 AdamW 状态，保存期间训练完全停止。这属于阶段性停顿，不影响单步计算；可以以后再考虑异步 CPU 快照，当前不值得先复杂化。
+
+八、当前没有 `torch.compile`。手写 RoPE、RMSNorm、残差和 SwiGLU 都有不少零碎 kernel，compile 有实际价值；AdamW 也可以测试 fused 版本。但这两项属于完成前面清理后的第二阶段，不是现有 bug。
+
+
+
+
 
 
 
