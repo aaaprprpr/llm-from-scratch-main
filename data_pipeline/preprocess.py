@@ -11,7 +11,7 @@ import sys
 import tempfile
 import unicodedata
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
@@ -34,15 +34,25 @@ CONTROL_CHARACTER_TRANSLATION = {
 }
 REPETITION_SAMPLE_SIZE = 4096
 _ftfy_fix_text = None
+KEEP_REASON = 0
+FILTER_REASONS = {
+    1: "empty_or_invalid",
+    2: "link_only",
+    3: "no_letters",
+    4: "corrupted",
+    5: "repetitive",
+}
 
 
 @dataclass
 class PreprocessStats:
     dataset_sources: int = 0
     dataset_rows: int = 0
-    filtered: int = 0
     duplicates: int = 0
     accepted: int = 0
+    filtered_by_reason: dict[str, int] = field(
+        default_factory=lambda: {reason: 0 for reason in FILTER_REASONS.values()}
+    )
 
 
 def normalize_text(value: Any) -> str:
@@ -64,7 +74,11 @@ def first_text(row: Mapping[str, Any], *names: str) -> str:
 
 
 def join_parts(*parts: str) -> str | None:
-    texts = [part.strip() for part in parts if isinstance(part, str) and part.strip()]
+    texts = [
+        text
+        for part in parts
+        if isinstance(part, str) and (text := part.strip())
+    ]
     if not texts:
         return None
     return "\n\n".join(texts)
@@ -74,9 +88,9 @@ def clean_record(
     text: str | None,
     max_repetition_ratio: float,
     fix_text: bool,
-) -> str | None:
+) -> tuple[str | None, int]:
     if not text:
-        return None
+        return None, 1
 
     if fix_text:
         global _ftfy_fix_text
@@ -87,9 +101,9 @@ def clean_record(
         text = _ftfy_fix_text(text)
     text = normalize_text(text)
     if not text:
-        return None
+        return None, 1
     if LINK_ONLY_PATTERN.fullmatch(text):
-        return None
+        return None, 2
 
     compact_length = 0
     replacement_count = 0
@@ -104,22 +118,24 @@ def clean_record(
         if len(repetition_sample) < REPETITION_SAMPLE_SIZE and character.isalnum():
             repetition_sample.append(character.casefold())
 
+    if compact_length == 0:
+        return None, 1
     if not has_letter:
-        return None
+        return None, 3
     if replacement_count / compact_length > 0.02:
-        return None
+        return None, 4
 
     if len(repetition_sample) >= 20:
         most_common_count = Counter(repetition_sample).most_common(1)[0][1]
         if most_common_count / len(repetition_sample) > max_repetition_ratio:
-            return None
+            return None, 5
         sample_text = "".join(repetition_sample)
         max_pattern_length = min(16, len(sample_text) // 4)
         for pattern_length in range(2, max_pattern_length + 1):
             if sample_text[pattern_length:] == sample_text[:-pattern_length]:
-                return None
+                return None, 5
 
-    return text
+    return text, KEEP_REASON
 
 
 def adapt_plain_text(row: Mapping[str, Any]) -> str | None:
@@ -289,22 +305,28 @@ def clean_batch(
     batch_size = len(next(iter(batch.values()), []))
     texts = []
     digests = []
+    reasons = []
 
     for index in range(batch_size):
         row = {name: values[index] for name, values in batch.items()}
-        text = clean_record(
+        text, reason = clean_record(
             adapter(row),
             max_repetition_ratio,
             fix_text,
         )
-        if text is None:
-            continue
-        texts.append(text)
+        texts.append(text or "")
         digests.append(
             hashlib.blake2b(text.encode("utf-8"), digest_size=16).digest()
+            if text is not None
+            else b""
         )
+        reasons.append(reason)
 
-    return {"text": texts, "_digest": digests}
+    return {"text": texts, "_digest": digests, "_reason": reasons}
+
+
+def keep_valid_batch(batch: Mapping[str, list[Any]]) -> list[bool]:
+    return [reason == KEEP_REASON for reason in batch["_reason"]]
 
 
 def clean_source(
@@ -342,6 +364,7 @@ def clean_source(
         {
             "text": Value("string"),
             "_digest": Value("binary"),
+            "_reason": Value("uint8"),
         }
     )
     num_proc = workers if workers > 1 else None
@@ -377,9 +400,23 @@ def clean_source(
             cache_file_name=str(cache_dir / f"{cache_prefix}-map.arrow"),
             desc=f"Cleaning {source['source_id']}:{split_name}",
         )
-        stats.filtered += len(split) - len(mapped)
-        if len(mapped):
-            cleaned_splits.append(mapped)
+
+        reason_counts: Counter[int] = Counter()
+        for reason_batch in mapped.iter(batch_size=100_000):
+            reason_counts.update(reason_batch["_reason"])
+        for reason_code, reason_name in FILTER_REASONS.items():
+            stats.filtered_by_reason[reason_name] += reason_counts[reason_code]
+
+        filtered = mapped.filter(
+            keep_valid_batch,
+            batched=True,
+            batch_size=map_batch_size,
+            num_proc=num_proc,
+            cache_file_name=str(cache_dir / f"{cache_prefix}-filter.arrow"),
+            desc=f"Selecting {source['source_id']}:{split_name}",
+        ).remove_columns("_reason")
+        if len(filtered):
+            cleaned_splits.append(filtered)
 
     return cleaned_splits
 
@@ -438,6 +475,27 @@ def build_dataset(
     )
 
 
+def make_report(stats: PreprocessStats) -> dict[str, Any]:
+    filtered_by_reason = {
+        **stats.filtered_by_reason,
+        "duplicate": stats.duplicates,
+    }
+    filtered = sum(filtered_by_reason.values())
+    if stats.accepted + filtered != stats.dataset_rows:
+        raise RuntimeError(
+            "Preprocess statistics are inconsistent: "
+            f"{stats.accepted} accepted + {filtered} filtered != "
+            f"{stats.dataset_rows} input rows."
+        )
+    return {
+        "dataset_sources": stats.dataset_sources,
+        "input_records": stats.dataset_rows,
+        "accepted_records": stats.accepted,
+        "filtered_records": filtered,
+        "filtered_by_reason": filtered_by_reason,
+    }
+
+
 def main() -> None:
     root_config = Config(CONFIG_PATH)
     config = root_config.require("preprocess")
@@ -479,8 +537,12 @@ def main() -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     temporary_output = output_path.with_name(f".{output_path.name}.tmp")
+    report_path = output_path.with_name(f"{output_path.name}.report.json")
+    temporary_report = report_path.with_suffix(report_path.suffix + ".tmp")
     if temporary_output.exists():
         shutil.rmtree(temporary_output)
+    if temporary_report.exists():
+        temporary_report.unlink()
 
     stats = PreprocessStats(dataset_sources=len(sources))
     try:
@@ -500,16 +562,24 @@ def main() -> None:
                 map_batch_size,
             )
             dataset.save_to_disk(str(temporary_output))
+            report = make_report(stats)
+            temporary_report.write_text(
+                json.dumps(report, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
 
         if output_path.exists():
             shutil.rmtree(output_path)
         temporary_output.replace(output_path)
+        temporary_report.replace(report_path)
     except BaseException:
         if temporary_output.exists():
             shutil.rmtree(temporary_output)
+        if temporary_report.exists():
+            temporary_report.unlink()
         raise
 
-    print(json.dumps(asdict(stats), ensure_ascii=False, indent=2))
+    print(json.dumps(report, ensure_ascii=False, indent=2))
     print(f"Wrote {len(dataset):,} records to {output_path.resolve()}")
 
 
