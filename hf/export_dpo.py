@@ -20,6 +20,8 @@ CONFIG_PATH = PROJECT_ROOT / "configs" / "dpo.json"
 CONFIG_CODE_PATH = PROJECT_ROOT / "hf" / "configuration_llm_from_scratch.py"
 MODEL_CODE_PATH = PROJECT_ROOT / "hf" / "modeling_llm_from_scratch.py"
 CORE_MODEL_CODE_PATH = PROJECT_ROOT / "models" / "model.py"
+CORE_MODEL_MODULES_PATH = PROJECT_ROOT / "models" / "modules"
+CORE_MODEL_UTILS_PATH = PROJECT_ROOT / "models" / "utils.py"
 
 
 def load_config() -> Config:
@@ -59,6 +61,10 @@ def copy_remote_code_files(output_dir: Path):
     shutil.copy2(CONFIG_CODE_PATH, output_dir / "configuration_llm_from_scratch.py")
     shutil.copy2(MODEL_CODE_PATH, output_dir / "modeling_llm_from_scratch.py")
     shutil.copy2(CORE_MODEL_CODE_PATH, output_dir / "model.py")
+    shutil.copy2(CORE_MODEL_MODULES_PATH / "__init__.py", output_dir / "modules.py")
+    for module_name in ("rope.py", "attention.py", "feed_forward.py", "block.py"):
+        shutil.copy2(CORE_MODEL_MODULES_PATH / module_name, output_dir / module_name)
+    shutil.copy2(CORE_MODEL_UTILS_PATH, output_dir / "utils.py")
 
 
 def write_readme(output_dir: Path):
