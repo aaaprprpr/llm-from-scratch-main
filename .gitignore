@@ -43,3 +43,4 @@ pretrained_weights
 
 sft/alpaca_zh_local
 hf/dpo_model
+data

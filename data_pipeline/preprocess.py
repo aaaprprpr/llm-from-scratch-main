@@ -11,7 +11,7 @@ import sys
 import tempfile
 import unicodedata
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
@@ -50,9 +50,6 @@ class PreprocessStats:
     dataset_rows: int = 0
     duplicates: int = 0
     accepted: int = 0
-    filtered_by_reason: dict[str, int] = field(
-        default_factory=lambda: {reason: 0 for reason in FILTER_REASONS.values()}
-    )
 
 
 def normalize_text(value: Any) -> str:
@@ -297,36 +294,48 @@ def iter_splits(dataset: Any) -> Iterable[tuple[str, Any]]:
 
 def clean_batch(
     batch: Mapping[str, list[Any]],
+    rank: int | None,
     adapter_name: str,
     max_repetition_ratio: float,
     fix_text: bool,
+    rejected_dir: str,
 ) -> dict[str, list[Any]]:
     adapter = ADAPTERS[adapter_name]
     batch_size = len(next(iter(batch.values()), []))
     texts = []
     digests = []
-    reasons = []
+    rejected = []
 
     for index in range(batch_size):
         row = {name: values[index] for name, values in batch.items()}
+        original_text = adapter(row)
         text, reason = clean_record(
-            adapter(row),
+            original_text,
             max_repetition_ratio,
             fix_text,
         )
-        texts.append(text or "")
+        if text is None:
+            rejected.append(
+                {
+                    "reason": FILTER_REASONS[reason],
+                    "text": original_text or "",
+                }
+            )
+            continue
+
+        texts.append(text)
         digests.append(
             hashlib.blake2b(text.encode("utf-8"), digest_size=16).digest()
-            if text is not None
-            else b""
         )
-        reasons.append(reason)
 
-    return {"text": texts, "_digest": digests, "_reason": reasons}
+    if rejected:
+        rejected_path = Path(rejected_dir) / f"worker-{rank or 0:05d}.jsonl"
+        with rejected_path.open("a", encoding="utf-8") as stream:
+            for record in rejected:
+                stream.write(json.dumps(record, ensure_ascii=False))
+                stream.write("\n")
 
-
-def keep_valid_batch(batch: Mapping[str, list[Any]]) -> list[bool]:
-    return [reason == KEEP_REASON for reason in batch["_reason"]]
+    return {"text": texts, "_digest": digests}
 
 
 def clean_source(
@@ -338,6 +347,7 @@ def clean_source(
     map_batch_size: int,
     stats: PreprocessStats,
     cache_dir: Path,
+    rejected_dir: Path,
 ) -> list[Any]:
     from datasets import Features, Value, load_from_disk
 
@@ -364,7 +374,6 @@ def clean_source(
         {
             "text": Value("string"),
             "_digest": Value("binary"),
-            "_reason": Value("uint8"),
         }
     )
     num_proc = workers if workers > 1 else None
@@ -390,33 +399,20 @@ def clean_source(
             batched=True,
             batch_size=map_batch_size,
             num_proc=num_proc,
+            with_rank=True,
             fn_kwargs={
                 "adapter_name": adapter_name,
                 "max_repetition_ratio": max_repetition_ratio,
                 "fix_text": fix_text,
+                "rejected_dir": str(rejected_dir),
             },
             remove_columns=split.column_names,
             features=output_features,
             cache_file_name=str(cache_dir / f"{cache_prefix}-map.arrow"),
             desc=f"Cleaning {source['source_id']}:{split_name}",
         )
-
-        reason_counts: Counter[int] = Counter()
-        for reason_batch in mapped.iter(batch_size=100_000):
-            reason_counts.update(reason_batch["_reason"])
-        for reason_code, reason_name in FILTER_REASONS.items():
-            stats.filtered_by_reason[reason_name] += reason_counts[reason_code]
-
-        filtered = mapped.filter(
-            keep_valid_batch,
-            batched=True,
-            batch_size=map_batch_size,
-            num_proc=num_proc,
-            cache_file_name=str(cache_dir / f"{cache_prefix}-filter.arrow"),
-            desc=f"Selecting {source['source_id']}:{split_name}",
-        ).remove_columns("_reason")
-        if len(filtered):
-            cleaned_splits.append(filtered)
+        if len(mapped):
+            cleaned_splits.append(mapped)
 
     return cleaned_splits
 
@@ -431,6 +427,7 @@ def build_dataset(
     fix_text: bool,
     workers: int,
     map_batch_size: int,
+    rejected_dir: Path,
 ):
     from datasets import Dataset, Features, Value, concatenate_datasets
 
@@ -446,6 +443,7 @@ def build_dataset(
                 map_batch_size,
                 stats,
                 cache_dir,
+                rejected_dir,
             )
         )
     if not cleaned_parts:
@@ -458,15 +456,27 @@ def build_dataset(
 
     def generate_records():
         seen_hashes: set[bytes] = set()
-        for text_batch in cleaned_dataset.iter(batch_size=10_000):
-            for text, digest in zip(text_batch["text"], text_batch["_digest"]):
-                if digest in seen_hashes:
-                    stats.duplicates += 1
-                    continue
-                seen_hashes.add(digest)
+        duplicate_path = rejected_dir / "duplicates.jsonl"
+        with duplicate_path.open("a", encoding="utf-8") as rejected_stream:
+            for text_batch in cleaned_dataset.iter(batch_size=10_000):
+                for text, digest in zip(
+                    text_batch["text"],
+                    text_batch["_digest"],
+                ):
+                    if digest in seen_hashes:
+                        stats.duplicates += 1
+                        rejected_stream.write(
+                            json.dumps(
+                                {"reason": "duplicate", "text": text},
+                                ensure_ascii=False,
+                            )
+                        )
+                        rejected_stream.write("\n")
+                        continue
+                    seen_hashes.add(digest)
 
-                stats.accepted += 1
-                yield {"text": text}
+                    stats.accepted += 1
+                    yield {"text": text}
 
     return Dataset.from_generator(
         generate_records,
@@ -475,10 +485,22 @@ def build_dataset(
     )
 
 
-def make_report(stats: PreprocessStats) -> dict[str, Any]:
+def write_report(
+    stats: PreprocessStats,
+    rejected_dir: Path,
+    output_path: Path,
+) -> dict[str, Any]:
+    rejected_files = sorted(rejected_dir.glob("*.jsonl"))
+    filtered_by_reason: Counter[str] = Counter()
+    for rejected_file in rejected_files:
+        with rejected_file.open(encoding="utf-8") as stream:
+            for line in stream:
+                if line.strip():
+                    filtered_by_reason[json.loads(line)["reason"]] += 1
+
     filtered_by_reason = {
-        **stats.filtered_by_reason,
-        "duplicate": stats.duplicates,
+        reason: filtered_by_reason.get(reason, 0)
+        for reason in (*FILTER_REASONS.values(), "duplicate")
     }
     filtered = sum(filtered_by_reason.values())
     if stats.accepted + filtered != stats.dataset_rows:
@@ -487,13 +509,31 @@ def make_report(stats: PreprocessStats) -> dict[str, Any]:
             f"{stats.accepted} accepted + {filtered} filtered != "
             f"{stats.dataset_rows} input rows."
         )
-    return {
+    summary = {
         "dataset_sources": stats.dataset_sources,
         "input_records": stats.dataset_rows,
         "accepted_records": stats.accepted,
         "filtered_records": filtered,
         "filtered_by_reason": filtered_by_reason,
     }
+    with output_path.open("w", encoding="utf-8") as report:
+        report.write('{\n  "summary": ')
+        report.write(json.dumps(summary, ensure_ascii=False, indent=2))
+        report.write(',\n  "records": [')
+        first_record = True
+        for rejected_file in rejected_files:
+            with rejected_file.open(encoding="utf-8") as stream:
+                for line in stream:
+                    record = line.strip()
+                    if not record:
+                        continue
+                    report.write("\n    " if first_record else ",\n    ")
+                    report.write(record)
+                    first_record = False
+        if not first_record:
+            report.write("\n  ")
+        report.write("]\n}\n")
+    return summary
 
 
 def main() -> None:
@@ -550,23 +590,23 @@ def main() -> None:
             prefix=".preprocess-cache-",
             dir=output_path.parent,
         ) as cache_dir:
+            cache_path = Path(cache_dir)
+            rejected_dir = cache_path / "rejected"
+            rejected_dir.mkdir()
             dataset = build_dataset(
                 sources,
                 missing_policy,
                 deduplicate,
                 stats,
-                Path(cache_dir),
+                cache_path,
                 max_repetition_ratio,
                 fix_text,
                 workers,
                 map_batch_size,
+                rejected_dir,
             )
             dataset.save_to_disk(str(temporary_output))
-            report = make_report(stats)
-            temporary_report.write_text(
-                json.dumps(report, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            report = write_report(stats, rejected_dir, temporary_report)
 
         if output_path.exists():
             shutil.rmtree(output_path)
