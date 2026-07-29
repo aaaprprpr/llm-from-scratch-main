@@ -4,11 +4,11 @@
     "val_data": "data/val.bin",
     "tokenizer_vocab": "bpe/tokenizer",
     "out_root": "train_logs",
-    "resume": "train_logs/run_20260706_110646/ckpt_step_120000.pt"
+    "resume": null
   },
   "model": {
     "vocab_size": 8192,
-    "context_length": 256,
+    "context_length": 4096,
     "n_head": 8,
     "theta": 10000.0,
     "num_layers": 12,
@@ -17,10 +17,16 @@
   },
   "train": {
     "device": "auto",
-    "batch_size": 64,
-    "max_iters": 130000,
-    "eval_interval": 1000,
-    "eval_iters": 10,
+    "seed": 42,
+    "sequence_length": 2048,
+    "batch_size": 1,
+    "tokens_per_update": 4096,
+    "precision": "bfloat16",
+    "activation_checkpointing": true,
+    "require_flash_attention": true,
+    "max_iters": 1000,
+    "eval_interval": 10,
+    "eval_tokens": 40960,
     "log_interval": 10
   },
   "optimizer": {

@@ -20,6 +20,11 @@ class LLMFromScratchForCausalLM(PreTrainedModel, GenerationMixin):
     supports_gradient_checkpointing = False
     all_tied_weights_keys = {}
 
+    @classmethod
+    def _supports_default_dynamic_cache(cls):
+        # 核心模型当前使用 tuple/list KV cache，不接收 Transformers DynamicCache。
+        return False
+
     def __init__(self, config: LLMFromScratchConfig):
         super().__init__(config)
         core = CoreTransformer(
@@ -31,11 +36,13 @@ class LLMFromScratchForCausalLM(PreTrainedModel, GenerationMixin):
             context_length=config.context_length,
             num_layers=config.num_layers,
         )
+        self.rope = core.rope
         self.layers = core.layers
         self.norm = core.norm
         self.context_length = core.context_length
         self.embedding = core.embedding
         self.lm_head = core.lm_head
+        self.gradient_checkpointing = False
 
     def get_input_embeddings(self):
         return self.embedding

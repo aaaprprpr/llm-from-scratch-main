@@ -44,6 +44,8 @@ def get_batch(
     device,
     position,
 ):
+    device = torch.device(device)
+
     if batch_size <= 0:
         raise ValueError(f"batch_size must be positive, got {batch_size}")
 
@@ -74,17 +76,15 @@ def get_batch(
         indices.append(position)
         position += context_length  # 步长等于上下文长度，无缝衔接
 
-    x = torch.from_numpy(
-        np.stack([data[i : i + context_length].astype(np.int64) for i in indices])
-    ).to(device)
+    # 每条序列只读取和转换一次 T+1 token，再在目标设备上切出 x/y。
+    # 旧实现会分别为 x 和 y 重复 memmap 切片、astype、stack 和设备搬运。
+    windows = np.stack(
+        [data[i : i + context_length + 1] for i in indices]
+    ).astype(np.int64, copy=False)
+    tokens = torch.from_numpy(windows)
+    tokens = tokens.to(device)
 
-    y = torch.from_numpy(
-        np.stack(
-            [data[i + 1 : i + context_length + 1].astype(np.int64) for i in indices]
-        )
-    ).to(device)
-
-    return x, y, position
+    return tokens[:, :-1], tokens[:, 1:], position
 
 
 def save_checkpoint(
@@ -93,6 +93,9 @@ def save_checkpoint(
     iteration: int,
     out: str | os.PathLike | BinaryIO | IO[bytes],
     train_position=None,
+    tokens_seen=None,
+    model_args=None,
+    config=None,
 ):
     """
     将前三个参数的所有状态转储到类文件对象 out 中。
@@ -105,6 +108,12 @@ def save_checkpoint(
     }
     if train_position is not None:
         obj["train_position"] = train_position
+    if tokens_seen is not None:
+        obj["tokens_seen"] = tokens_seen
+    if model_args is not None:
+        obj["model_args"] = model_args
+    if config is not None:
+        obj["config"] = config
     torch.save(obj, out)
 
 
@@ -121,4 +130,8 @@ def load_checkpoint(
     )
     model.load_state_dict(obj["model"])
     optimizer.load_state_dict(obj["optimizer"])
-    return obj["iteration"], obj.get("train_position", 0)
+    return (
+        obj["iteration"],
+        obj.get("train_position", 0),
+        obj.get("tokens_seen"),
+    )

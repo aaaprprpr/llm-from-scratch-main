@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 
 class RoPE(nn.Module):
@@ -66,39 +67,82 @@ class RoPE(nn.Module):
     @torch.no_grad()
     def _maybe_extend_cache(self, needed_len: int, device: torch.device):
         """确保缓存至少覆盖 [0, needed_len) positions。"""
+        if needed_len < 0:
+            raise ValueError(f"needed_len must be non-negative, got {needed_len}")
+
         cur_len = int(self.cos_cached.size(0))
-        if needed_len <= cur_len:
+        cache_ready = (
+            needed_len <= cur_len
+            and self.cos_cached.device == device
+            and self.sin_cached.device == device
+            and self.cos_cached.dtype == torch.float32
+            and self.sin_cached.dtype == torch.float32
+        )
+        if cache_ready:
             return
 
-        # 待扩展的缓存位置区间Range to extend cache [cur_len, needed_len)
-        new_positions = torch.arange(
-            cur_len, needed_len, dtype=torch.float32, device=device
-        )  # (ΔL,)
-        # angles: (ΔL, d_k/2)
-        frequency_indices = torch.arange(
-            0, self.d_k // 2, dtype=torch.float32, device=device
-        )
-
-        inv_freq = 1.0 / (self.theta ** (2.0 * frequency_indices / self.d_k))
-        # 用 einsum 做外积，生成角度矩阵
-        angles = torch.einsum(
-            "i,j->ij", new_positions, inv_freq
-        )  # float64 * float32 -> float64
-
-        new_cos = angles.cos().to(dtype=torch.float32)  # (ΔL, d_k/2)
-        new_sin = angles.sin().to(dtype=torch.float32)
-
-        # 如果缓存所在设备不匹配（例如模型初始化在 CPU，当前输入在 GPU），将缓存迁移到正确设备
-        if self.cos_cached.device != device:
-            self.cos_cached = self.cos_cached.to(device=device)
-            self.sin_cached = self.sin_cached.to(device=device)
-
-        if cur_len == 0:
-            self.cos_cached = new_cos
-            self.sin_cached = new_sin
+        # 训练时通常一次覆盖完整窗口；增量生成若超过已有容量，则按倍数扩容，
+        # 避免每生成一个 token 都重新拼接整份缓存。
+        if needed_len > cur_len:
+            target_len = max(needed_len, max(16, cur_len * 2))
         else:
-            self.cos_cached = torch.cat([self.cos_cached, new_cos], dim=0)
-            self.sin_cached = torch.cat([self.sin_cached, new_sin], dim=0)
+            # 这里只是在修复 device/dtype，不应无故扩大已有容量。
+            target_len = cur_len
+        positions = torch.arange(
+            target_len,
+            dtype=torch.float32,
+            device=device,
+        )
+        if self.inv_freq.dtype != torch.float32:
+            frequency_indices = torch.arange(
+                0,
+                self.d_k // 2,
+                dtype=torch.float64,
+                device=device,
+            )
+            self.inv_freq = (
+                1.0
+                / (self.theta ** (2.0 * frequency_indices / self.d_k))
+            ).to(torch.float32)
+        elif self.inv_freq.device != device:
+            self.inv_freq = self.inv_freq.to(device=device)
+        inv_freq = self.inv_freq
+        angles = torch.outer(positions, inv_freq)
+
+        # RoPE 基表固定使用 FP32；AMP 只在应用到 q/k 前转换一次。
+        self.cos_cached = angles.cos()
+        self.sin_cached = angles.sin()
+
+    def get_cos_sin(
+        self,
+        token_positions: torch.Tensor,
+        needed_len: int,
+        device: torch.device,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """一次取出当前 batch 所需的位置表，供所有 Transformer 层共享。"""
+        token_positions = token_positions.to(device=device, dtype=torch.long)
+        self._maybe_extend_cache(needed_len=needed_len, device=device)
+
+        flat_positions = token_positions.reshape(-1)
+        output_shape = (*token_positions.shape, -1)
+        cos = self.cos_cached.index_select(0, flat_positions).reshape(output_shape)
+        sin = self.sin_cached.index_select(0, flat_positions).reshape(output_shape)
+        return cos, sin
+
+    @classmethod
+    def apply_rotary(
+        cls,
+        x: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+    ) -> torch.Tensor:
+        """把预先取出的共享位置表应用到 q 或 k。"""
+        cos, sin = position_embeddings
+        cos = cos.to(device=x.device, dtype=x.dtype)
+        sin = sin.to(device=x.device, dtype=x.dtype)
+        while cos.ndim < x.ndim:
+            cos = cos.unsqueeze(-3)
+            sin = sin.unsqueeze(-3)
+        return cls._apply_rope(x, cos, sin)
 
     def forward(
         self,
@@ -137,32 +181,20 @@ class RoPE(nn.Module):
                 else 0
             )
 
-        self._maybe_extend_cache(
+        position_embeddings = self.get_cos_sin(
+            token_positions=token_positions,
             needed_len=needed_len,
             device=x.device,
         )
 
-        # 从缓存中取出对应位置的 cos/sin 值，并重塑回与位置编码相同的批次形状
-        cos = self.cos_cached.index_select(0, token_positions.reshape(-1)).reshape(
-            *token_positions.shape, -1
-        )
-        sin = self.sin_cached.index_select(0, token_positions.reshape(-1)).reshape(
-            *token_positions.shape, -1
-        )
-
         # 合理性检查：序列长度维度对齐
-        if cos.shape[-2] != seq_len:
+        if position_embeddings[0].shape[-2] != seq_len:
             raise ValueError(
-                f"token_positions seq dim {cos.shape[-2]} != x seq_len {seq_len}"
+                f"token_positions seq dim {position_embeddings[0].shape[-2]} "
+                f"!= x seq_len {seq_len}"
             )
 
-        # 数据类型对齐
-        cos = cos.to(dtype=x.dtype)
-        sin = sin.to(dtype=x.dtype)
-        while cos.ndim < x.ndim:
-            cos = cos.unsqueeze(-3)  # 变成 (B, 1, T, head_dim // 2)
-            sin = sin.unsqueeze(-3)  # 变成 (B, 1, T, head_dim // 2)
-        return self._apply_rope(x, cos, sin)
+        return self.apply_rotary(x, position_embeddings)
 
 
 class SwiGLU(nn.Module):
@@ -197,7 +229,7 @@ class CausalSelfAttention_RoPE(nn.Module):
     Causal multi-head self-attention.
     """
 
-    def __init__(self, d_model: int, n_head: int, theta: float = 10000.0):
+    def __init__(self, d_model: int, n_head: int):
         super().__init__()
 
         if d_model <= 0:
@@ -225,15 +257,11 @@ class CausalSelfAttention_RoPE(nn.Module):
         # output projection
         self.out_proj = nn.Linear(self.d_model, self.d_model, bias=False)
 
-        # RoPE：注意 d_k = head_dim
-        self.rope = RoPE(theta=theta, d_k=self.head_dim)
-
     def forward(
         self,
         x: torch.Tensor,
-        token_positions: torch.Tensor | None = None,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
-        rope_cache_length: int | None = None,
         past_key_value=None,
         use_cache=False,
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
@@ -245,25 +273,6 @@ class CausalSelfAttention_RoPE(nn.Module):
         if past_key_value is not None:
             past_k, past_v = past_key_value
             past_length = past_k.size(-2)
-
-        # Attention 单独使用时，也能生成正确的绝对位置
-        if token_positions is None:
-            token_positions = torch.arange(
-                past_length,
-                past_length + T,
-                device=x.device,
-                dtype=torch.long,
-            )
-
-            if rope_cache_length is None:
-                rope_cache_length = past_length + T
-
-        elif rope_cache_length is None:
-            rope_cache_length = (
-                int(token_positions.max().item()) + 1
-                if token_positions.numel() > 0
-                else 0
-            )
 
         qkv = self.qkv_proj(x)  # (batch, seq_len, 3 * d_model)
         q, k, v = qkv.split(self.d_model, dim=-1)  # each is (batch, seq_len, d_model)
@@ -279,8 +288,14 @@ class CausalSelfAttention_RoPE(nn.Module):
         )  # (batch, n_head, seq_len, head_size)
 
         # 旋转qk# (B,H,T,hd)
-        q = self.rope(q, token_positions, needed_len=rope_cache_length)
-        k = self.rope(k, token_positions, needed_len=rope_cache_length)
+        cos, sin = position_embeddings
+        cos = cos.to(device=q.device, dtype=q.dtype)
+        sin = sin.to(device=q.device, dtype=q.dtype)
+        while cos.ndim < q.ndim:
+            cos = cos.unsqueeze(-3)
+            sin = sin.unsqueeze(-3)
+        q = RoPE._apply_rope(q, cos, sin)
+        k = RoPE._apply_rope(k, cos, sin)
 
         if past_k is not None:
             k = torch.cat([past_k, k], dim=-2)
@@ -347,11 +362,11 @@ class CausalSelfAttention_RoPE(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self, d_model: int, n_head: int, d_ff: int, theta: float = 10000.0):
+    def __init__(self, d_model: int, n_head: int, d_ff: int):
         super().__init__()
         self.attn_norm = nn.RMSNorm(d_model, eps=1e-6)  # 可学习权重的归一化
         self.attn = CausalSelfAttention_RoPE(
-            d_model, n_head, theta
+            d_model, n_head
         )  # 带旋转位置编码的自注意力，旋转注意力是相对位置，所以每次都要加。最简单那个位置编码是绝对位置，加一次就够了
         self.ffn_norm = nn.RMSNorm(
             d_model, eps=1e-6
@@ -361,17 +376,15 @@ class Block(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        token_positions: torch.Tensor | None = None,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
-        rope_cache_length: int | None = None,
         past_key_value=None,
         use_cache=False,
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
         attn_out, present_key_value = self.attn(
             self.attn_norm(x),
-            token_positions=token_positions,
+            position_embeddings=position_embeddings,
             attention_mask=attention_mask,
-            rope_cache_length=rope_cache_length,
             past_key_value=past_key_value,
             use_cache=use_cache,
         )
@@ -424,13 +437,25 @@ class Transformer(nn.Module):
         if num_layers <= 0:
             raise ValueError(f"num_layers must be positive, got {num_layers}")
 
+        self.rope = RoPE(theta=theta, d_k=head_dim)
+        self.rope._maybe_extend_cache(
+            needed_len=context_length,
+            device=self.rope.inv_freq.device,
+        )
         self.layers = nn.ModuleList(
-            [Block(d_model, n_head, d_ff, theta) for _ in range(num_layers)]
+            [Block(d_model, n_head, d_ff) for _ in range(num_layers)]
         )
         self.norm = nn.RMSNorm(d_model, eps=1e-6)  # 层归一化
         self.context_length = context_length  # 最大长度
         self.embedding = nn.Embedding(vocab_size, d_model)  # 词嵌入
         self.lm_head = nn.Linear(d_model, vocab_size, bias=False)  # 语言模型头
+        self.gradient_checkpointing = False
+
+    def gradient_checkpointing_enable(self):
+        self.gradient_checkpointing = True
+
+    def gradient_checkpointing_disable(self):
+        self.gradient_checkpointing = False
 
     def forward(
         self,
@@ -479,15 +504,11 @@ class Transformer(nn.Module):
             )
 
         if token_positions is None:
-            token_positions = (
-                torch.arange(
-                    past_length,
-                    total_length,
-                    device=x.device,
-                    dtype=torch.long,
-                )
-                .unsqueeze(0)
-                .expand(B, -1)
+            token_positions = torch.arange(
+                past_length,
+                total_length,
+                device=x.device,
+                dtype=torch.long,
             )
 
             # 普通训练和生成路径完全不需要 .item()
@@ -495,31 +516,81 @@ class Transformer(nn.Module):
         else:
             token_positions = token_positions.to(device=x.device, dtype=torch.long)
 
+            if token_positions.ndim not in (1, 2):
+                raise ValueError(
+                    "token_positions must have shape (T), (1, T), or (B, T), "
+                    f"got {tuple(token_positions.shape)}"
+                )
+
             if token_positions.shape[-1] != T:
                 raise ValueError(
                     f"Expected token_positions length {T}, "
                     f"got {token_positions.shape[-1]}"
                 )
 
+            if token_positions.ndim == 2 and token_positions.shape[0] not in (1, B):
+                raise ValueError(
+                    f"Expected token_positions batch dimension 1 or {B}, "
+                    f"got {token_positions.shape[0]}"
+                )
+
             # 只有外部传入任意 positions 时同步一次
-            rope_cache_length = (
-                int(token_positions.max().item()) + 1
-                if token_positions.numel() > 0
-                else 0
-            )
+            min_position = int(token_positions.min().item())
+            max_position = int(token_positions.max().item())
+            if min_position < 0:
+                raise ValueError(
+                    f"token_positions must be non-negative, got {min_position}"
+                )
+            if max_position >= self.context_length:
+                raise ValueError(
+                    f"token position {max_position} exceeds model position range "
+                    f"[0, {self.context_length})"
+                )
+            rope_cache_length = max_position + 1
 
         x = self.embedding(x)  # (batch, seq_len, d_model) 词嵌入
+        position_embeddings = self.rope.get_cos_sin(
+            token_positions=token_positions,
+            needed_len=rope_cache_length,
+            device=x.device,
+        )
+
+        checkpointing = self.training and getattr(
+            self, "gradient_checkpointing", False
+        )
+        if checkpointing and (past_key_values is not None or use_cache):
+            raise ValueError(
+                "gradient checkpointing is incompatible with past_key_values/use_cache"
+            )
+
         next_decoder_cache = [] if use_cache else None
         for i, layer in enumerate(self.layers):
             past_key_value = past_key_values[i] if past_key_values is not None else None
-            x, present_key_value = layer(
-                x,
-                token_positions=token_positions,
-                attention_mask=attention_mask,
-                rope_cache_length=rope_cache_length,
-                past_key_value=past_key_value,
-                use_cache=use_cache,
-            )  # 注意力
+            if checkpointing:
+
+                def checkpointed_layer(hidden_states, current_layer=layer):
+                    return current_layer(
+                        hidden_states,
+                        position_embeddings=position_embeddings,
+                        attention_mask=attention_mask,
+                        past_key_value=None,
+                        use_cache=False,
+                    )[0]
+
+                x = checkpoint(
+                    checkpointed_layer,
+                    x,
+                    use_reentrant=False,
+                )
+                present_key_value = None
+            else:
+                x, present_key_value = layer(
+                    x,
+                    position_embeddings=position_embeddings,
+                    attention_mask=attention_mask,
+                    past_key_value=past_key_value,
+                    use_cache=use_cache,
+                )  # 注意力
             if use_cache:
                 next_decoder_cache.append(present_key_value)
 

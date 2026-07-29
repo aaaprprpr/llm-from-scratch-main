@@ -1,85 +1,29 @@
-# 预训练问题台账
+看完了，没有改代码。总体判断是：`pretrain/model.py` 不需要推倒重写。当前已经是比较正常的 dense decoder：12 层、512 维、8 头 MHA、Pre-RMSNorm、SwiGLU、RoPE、PyTorch SDPA，总计约 5873 万参数。主要缺口是长上下文相关的工程实现还比较初级。
 
-> 最近更新：2026-07-05  
-> 当前范围：`main/`、`bpe/`、`data_pipeline/`、预训练启动脚本与运行环境。  
-> SFT/Hugging Face 转换已经移出当前主线，不在本文继续跟踪。
+一、256 不是 RoPE 的上限。RoPE 会按位置自动扩展缓存，真正限制长度的是 [model.py](/home/guojia/Desktop/llm-from-scratch-main/pretrain/model.py:475) 里的 `context_length` 检查。因此只改配置就能运行 2K、4K，模型参数形状不变，旧权重也能严格加载。`train.bin/val.bin` 是平坦 token 流，训练时会按新窗口重新切，不需要重新预处理或 buildbin。但“能够计算 4K”不等于“256 训练的模型已经学会 4K”；继续旧权重时仍要进行长上下文训练。若从头按 2K/4K 训练，当前标准 RoPE 可以先作为基线；再往 32K 以上扩展，才需要认真引入 YaRN、NTK scaling 或重新设计 theta。
 
-本文只保留当前预训练链路中仍然存在的问题。已经修复的模型推理问题、已经被新数据流水线替代的旧脚本问题，以及当前范围外的 SFT/HF 问题均已删除。
+当前 RoPE 实现还有几个明确的工程问题：每层各自保存一份 cos/sin、增量生成时每增加一个位置就 `torch.cat`、已经注册的 `inv_freq` 实际没有使用。后面应该改成模型级共享缓存、按倍数扩容，并把位置合法性检查补完整。这些不影响现在 256 的正确性，但长上下文下会浪费显存和内存带宽。
 
-## 当前结论
+二、KV cache 已经支持，而且数值逻辑是正确的。完整前向、逐 token cache、分块 cache 的误差都在 `1e-6` 内。不过它现在属于“能用但不高效”：每一步都把历史 K/V 与新 K/V 重新 `torch.cat`，累计产生 O(T²) 的复制；没有静态预分配、cache position、滑动窗口或者 paged cache。当前 MHA 在 BF16、batch=1、4K 上下文时，12 层 KV cache 大约 96 MiB。
 
-- `main/` 现在是纯预训练实现。
-- 模型侧的 attention mask、带 cache 的因果遮罩、批量 EOS、生成后训练状态恢复、cache 总长度限制和参数合法性校验已经落地，不再列为问题。
-- `data_pipeline/` 已替代原先分散的数据脚本：EOS 查询、固定随机种子、流式清洗、繁简策略、多进程编码和 tokenizer/bin 元数据均已处理。
-- 训练数据游标、固定窗口评估、更新后的 step 语义及 checkpoint 中的游标恢复已经处理。
-- 当前预训练主链路没有已知的阻断问题；剩余事项主要是 tokenizer 重训项、工程入口统一、文档与测试补全。
-- tokenizer 的正则预切分问题仍然存在，但修改后必须重新训练 tokenizer、重新生成 `.bin` 并从头预训练；当前正在训练的模型不能中途切换。
+要区分清楚：KV cache 只优化自回归生成，不能降低预训练的显存和计算量。预训练长上下文更依赖 FlashAttention、BF16 和 activation checkpointing。
 
-## P1：需要下一次完整重训才能处理
+三、当前已经是标准 8 头 MHA，不是单头。实际最值得升级的是 GQA，而不是立刻做 MLA。保留 8 个 query heads，把 KV heads 改成 2，KV cache 可以直接降到四分之一，模型改动也比较有限；GQA 本身就是为接近 MHA 质量、接近 MQA 推理效率设计的。[GQA 原论文](https://arxiv.org/abs/2305.13245)
 
-### PRETRAIN-003：BPE 的 Qwen pattern 没有作为正则表达式保存
+MLA 对 KV cache 压缩更狠，但需要低秩 KV latent、拆分 RoPE 维度以及专门的推理实现，和现有 SDPA 的衔接复杂很多。对于当前 5900 万参数模型，先做 GQA 的性价比明显更高。[DeepSeek-V2 的 MLA 与 DeepSeekMoE](https://arxiv.org/abs/2405.04434)
 
-- 文件：`bpe/train_qwen_bpe.py`
-- `Split(pattern=qwen_pattern, ...)` 接收的是普通字符串，tokenizer JSON 中会保存为 `String`，而不是 `Regex`。
-- 当前 tokenizer 能正常编码和解码，但没有真正执行代码声称的 Qwen-style 预切分，可能产生跨空格或跨标点的异常 merge。
-- 需要显式使用 `tokenizers.Regex`，并检查保存后的 tokenizer JSON。
+四、现在已经在调用 `scaled_dot_product_attention`，所以模型接口本身兼容 FlashAttention，正常无 mask 的预训练路径也比较干净。但训练入口目前默认 FP32，没有 autocast/BF16，因此不能说实际已经命中了 Flash 内核。PyTorch 会根据 GPU、dtype 和张量条件自动选择 FlashAttention、memory-efficient 或普通实现。[PyTorch SDPA 文档](https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention)
 
-该修改会改变 token ID 和 merge 规则。处理时必须重新训练 tokenizer、重新生成全部 `.bin` 并从头预训练，不能替换当前模型所用 tokenizer。
+FlashAttention 主要解决 T×T 注意力矩阵的显存和 IO，不改变 O(T²) 计算量。256 扩到 2048，单样本注意力计算约增加 64 倍；扩到 4096 则约增加 256 倍。所以 BF16、梯度累积、activation checkpointing 和 token-based 训练预算也要同步调整，但这些应该放在训练代码里，不应塞进 `model.py`。
 
-### PRETRAIN-004：BPE 训练入口仍直接使用 val 文本
+五、Kimi 的 Attention Residuals 和 DeepSeek 的 mHC 都是残差拓扑，不是序列注意力。当前模型就是普通的 `x + Attention`、`x + FFN`。AttnRes 改为沿网络深度，对 embedding 和先前子层输出做注意力聚合；当前 12 个 block、24 个子层不算深，Full AttnRes 已经具备实现和实验价值，Block AttnRes 可以后面再做。它比 mHC 更适合作为第一个研究分支。[AttnRes 论文](https://arxiv.org/abs/2603.15031)、[官方仓库](https://github.com/MoonshotAI/Attention-Residuals)
 
-- 文件：`bpe/train_qwen_bpe.py`
-- 脚本仍硬编码 `../data/val.txt`，与 `data_pipeline/README.md` 中“只使用 train/BPE chunk”的新约定没有接通。
-- 如果需要严格 held-out，验证文本不应参与 tokenizer 词频统计。
-- BPE 脚本还依赖当前工作目录，输入、输出和训练参数均未提供 CLI。
+DeepSeek 那个准确名称是 mHC，即 Manifold-Constrained Hyper-Connections。它把 residual stream 扩展成多条并行流，再通过 Sinkhorn 投影约束动态混合矩阵。论文中的效率依赖融合内核、重计算和并行系统；直接用普通 PyTorch 实现，会显著增加残差激活和内存带宽，而长上下文本来就缺显存。因此可以实现，但不适合第一轮作为默认结构。[mHC 论文](https://arxiv.org/abs/2512.24880)
 
-建议让 BPE 入口显式接收 train 文本或 `bpe/data` chunks，并记录输入文件、抽样规则、参数和 tokenizer SHA256。
+AttnRes 和 mHC 应当做成互斥实验项，分别与标准残差进行同预算对照，不建议一开始叠加，否则很难判断收益来自哪里。
 
-## P2：低优先级工程问题
+六、MoE 当前不值得优先做。它解决的是总参数容量与激活计算量之间的关系，不解决上下文长度、注意力 O(T²) 或 KV cache。当前模型规模和单机训练条件下，router、负载均衡、专家分发以及额外优化器状态很可能让训练更慢。等 dense 长上下文基线稳定后，再把 SwiGLU 替换成小型 top-2 MoE 做研究更合理。
 
-### PRETRAIN-005：运行入口和配置仍不统一
+另外还有三个比 MoE 更值得先处理的结构细节：当前没有统一的权重初始化；SwiGLU 的 `d_ff=2048=4*d_model`，使 FFN 占每个 block 约 75% 参数，属于偏宽配置而不是常见的等参数 SwiGLU；embedding 和 lm_head 没有绑权，额外占约 419 万参数。这些不是必然错误，但重构时应该明确决定，而不是继续依赖默认值。
 
-- `run.sh` 仍有非法 Bash 赋值、Windows 反斜杠路径和不存在的 `--tokenizer_merges` 参数，当前不可用。
-- `main/play_model.py`、BPE 脚本等仍依赖特定当前工作目录。
-- 模型尺寸、路径、训练参数和 tokenizer 配置散落在多个脚本中。
-
-建议统一为从仓库根目录执行的 CLI，并让每次运行保存完整参数快照。
-
-### PRETRAIN-006：依赖与 README 仍然失真
-
-- `requirements.txt` 中的 NumPy/Torch pin 与当前 Python/CUDA 环境不匹配，CUDA 版 Torch 也没有说明安装源。
-- README 仍声称手写 `nn.Linear`、RMSNorm 和 AdamW，但当前实现使用 PyTorch 官方模块。
-- README 的项目树、架构图片路径、Quick Start 和“高性能”描述与当前仓库不一致。
-
-这些问题不影响正在运行的进程，但会影响新环境复现，应在下一次对外使用仓库前处理。
-
-### PRETRAIN-007：Tokenizer 包装器仍有小型接口问题
-
-- 文件：`main/tokenizer_optimized.py`
-- `tokenize()` 会隐式打印一次结果后再返回。
-- `text(idx, device)` 的 `device` 参数未使用。
-- 没有暴露 `__len__` 等常用接口，调用方仍会访问内部 tokenizer 属性。
-
-### PRETRAIN-008：自动化回归测试仍然缺失
-
-最低限度应覆盖：
-
-1. causal attention 不读取未来 token；
-2. cache decode logits 与 full forward logits 对齐；
-3. attention mask 与多 token chunk cache；
-4. batch generation 的 EOS 行为和训练状态恢复；
-5. train/val/eval sampler 互不影响；
-6. checkpoint 中断恢复后的下一 step 与连续训练一致。
-
-### PRETRAIN-009：checkpoint 的实验元数据仍不完整
-
-`data_pipeline` 已为 tokenizer 和 `.bin` 记录部分指纹，但 checkpoint 本身仍不能确认使用了哪份 tokenizer、数据、清洗规则和代码版本。
-
-建议至少保存 Git commit/dirty 状态、完整参数、包与 CUDA 版本、tokenizer SHA256、数据 meta/SHA256、随机种子和 sampler 状态。
-
-## 当前处理顺序
-
-1. 当前预训练继续运行，不中途更换 tokenizer 或数据格式。
-2. 模型产出后做固定 prompt 和固定验证样本评估。
-3. 若决定修 tokenizer，则同时处理 PRETRAIN-003 和 PRETRAIN-004，随后重建全部数据并从头训练。
-4. 其余工程清理和回归测试不阻塞当前模型产出。
+我的建议顺序是：先做 2K/4K dense 长上下文基线，整理共享 RoPE、GQA、静态 KV cache和明确初始化；训练侧接上 BF16、Flash 实际派发、梯度累积与 activation checkpointing；基线稳定后先实验 AttnRes，再单独实验 mHC；MLA、MoE、Kimi Linear 暂时放到后面的独立分支。这样每次结构变化都能测出真实收益，也不会把长上下文、推理缓存和研究型残差混成一团。
