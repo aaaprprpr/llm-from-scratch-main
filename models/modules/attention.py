@@ -13,11 +13,6 @@ class CausalSelfAttention_RoPE(nn.Module):
     def __init__(self, d_model: int, n_head: int):
         super().__init__()
 
-        if d_model <= 0:
-            raise ValueError(f"d_model must be positive, got {d_model}")
-
-        if n_head <= 0:
-            raise ValueError(f"n_head must be positive, got {n_head}")
 
         if d_model % n_head != 0:
             raise ValueError(

@@ -13,7 +13,8 @@ class RoPE(nn.Module):
     def __init__(self, theta: float, d_k: int, device=None):
         super().__init__()
         # 注意力头维度必须偶数，两两一对旋转
-        assert d_k % 2 == 0, "RoPE requires d_k to be even."
+        if d_k % 2 != 0:
+            raise ValueError(f"RoPE requires d_k to be even, got {d_k}")
         self.theta = float(theta)
         self.d_k = int(d_k)
         self.device = device
@@ -151,9 +152,10 @@ class RoPE(nn.Module):
         x: (..., seq_len, d_k)
         token_positions: (seq_len,) or (..., seq_len)
         """
-        assert (
-            x.size(-1) == self.d_k
-        ), f"Expected last dim d_k={self.d_k}, got {x.size(-1)}"
+        if x.size(-1) != self.d_k:
+            raise ValueError(
+                f"Expected last dim d_k={self.d_k}, got {x.size(-1)}"
+            )
         seq_len = x.size(-2)
 
         if token_positions is None:

@@ -28,12 +28,6 @@ class Transformer(nn.Module):
     ):
         super().__init__()
 
-        if d_model <= 0:
-            raise ValueError(f"d_model must be positive, got {d_model}")
-
-        if n_head <= 0:
-            raise ValueError(f"n_head must be positive, got {n_head}")
-
         if d_model % n_head != 0:
             raise ValueError(
                 f"d_model ({d_model}) must be divisible by " f"n_head ({n_head})"
@@ -44,20 +38,6 @@ class Transformer(nn.Module):
         if head_dim % 2 != 0:
             raise ValueError(f"RoPE requires an even head_dim, got {head_dim}")
 
-        if d_ff <= 0:
-            raise ValueError(f"d_ff must be positive, got {d_ff}")
-
-        if theta <= 0:
-            raise ValueError(f"theta must be positive, got {theta}")
-
-        if vocab_size <= 0:
-            raise ValueError(f"vocab_size must be positive, got {vocab_size}")
-
-        if context_length <= 0:
-            raise ValueError(f"context_length must be positive, got {context_length}")
-
-        if num_layers <= 0:
-            raise ValueError(f"num_layers must be positive, got {num_layers}")
 
         self.rope = RoPE(theta=theta, d_k=head_dim)
         self.rope._maybe_extend_cache(
