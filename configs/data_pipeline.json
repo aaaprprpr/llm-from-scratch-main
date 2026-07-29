@@ -254,15 +254,17 @@
     "overwrite": false
   },
   "build_bin": {
+    "input": "data/preprocessed",
     "tokenizer": "bpe/tokenizer",
-    "train_text": "data/train.txt",
-    "val_text": "data/val.txt",
     "train_bin": "data/train.bin",
     "val_bin": "data/val.bin",
+    "train_ratio": 0.95,
+    "seed": 42,
     "eos_token": "<|endoftext|>",
-    "chunk_lines": 2000,
-    "workers": 8,
-    "dtype": "auto",
+    "shuffle_block_records": 1000,
+    "batch_records": 512,
+    "workers": "auto",
+    "dtype": "uint16",
     "overwrite": false
   }
 }

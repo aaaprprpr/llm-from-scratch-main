@@ -6,8 +6,8 @@
 
 ```text
 download.py    -> 下载/管理原始 dataset，并生成结构样本
-preprocess.py  -> 从已下载 dataset 读取，adapter 格式化，清洗并切 train/val
-build_bin.py   -> 从清洗后的 train/val 文本生成 token bin
+preprocess.py  -> adapter 格式化、清洗、去重，输出完整 text 记录
+build_bin.py   -> 记录级 train/val 划分、分词，生成连续 token bin
 ```
 
 ## 1. 下载数据集
@@ -40,10 +40,10 @@ python .\data_pipeline\download.py
 
 - 读取 `preprocess.dataset_sources` 中启用的数据源；
 - 从对应的 `data/downloads/...` 目录加载 dataset；
-- 按每个数据源的 `adapter` 转成一条一条预训练文本；
-- 清洗文本；
-- 按固定随机种子切分 train/val；
-- 输出 `data/train.txt`、`data/val.txt` 和 `data/preprocess.meta.json`。
+- 按每个数据源的 `adapter` 转成完整的预训练文本记录；
+- 清洗并精确去重；
+- 输出只有 `text` 列的 `data/preprocessed` Arrow Dataset；
+- 将被过滤的正文和原因写入 `data/preprocessed.report.json`。
 
 运行：
 
@@ -51,15 +51,7 @@ python .\data_pipeline\download.py
 python .\data_pipeline\preprocess.py
 ```
 
-当前清洗规则：
-
-- 删除空文本；
-- 删除少于 `min_chars` 个字符的文本；
-- 不要求文本必须包含中文，英文和中英混合文本都会保留；
-- 默认保留繁体，不转换也不丢弃；
-- 会把内部换行和连续空白压成单行，保证 `train.txt` 里一行是一条文档记录。
-
-如需兼容手工 txt，可以把路径写进 `preprocess.raw_text_inputs`。这只是兼容入口，主路径仍然是从已下载 dataset 直接处理。
+这一阶段不做 train/val 划分、分词或训练长度切块，记录内部的段落和对话轮次不会被拆开。
 
 ## 3. 生成 bin 文件
 
@@ -73,10 +65,12 @@ python .\data_pipeline\build_bin.py
 
 该阶段会：
 
+- 直接读取 `data/preprocessed`，不经过 txt；
+- 用固定 seed 在完整记录层划分 train/val，按随机块顺序读取并在块内打乱；
 - 从 tokenizer 查询 EOS id；
-- 根据词表大小选择 `uint16` 或 `uint32`；
-- 保持输入顺序进行多进程编码；
+- 完整编码每条记录，只在记录末尾追加一次 EOS；
+- 多进程编码后分别写入无文件头的连续 token 流；
 - 先写临时文件，成功后再替换目标；
-- 为每个 bin 写入 `.meta.json`，记录 token 数、dtype、EOS 和 tokenizer SHA256。
+- 为每个 bin 写入 `.meta.json`，记录划分参数、记录数、token 数、dtype、EOS 和 tokenizer SHA256。
 
-当前预训练加载代码固定按 `uint16` 读取，因此在词表超过 65,536、自动切换到 `uint32` 时，必须同步修改训练加载逻辑。
+当前预训练加载代码按 `uint16` 读取，因此配置也固定为 `uint16`；词表超过 65,536 时需要同时修改训练端。
