@@ -94,6 +94,91 @@ def get_batch(
     return x, y, next_position
 
 
+class TokenBatchLoader:
+    def __init__(
+        self,
+        data,
+        batch_size: int,
+        context_length: int,
+        device,
+        position: int = 0,
+    ):
+        self.data = data
+        self.batch_size = batch_size
+        self.context_length = context_length
+        self.device = torch.device(device)
+        self.position = position
+        self.tokens_per_batch = batch_size * context_length
+        self.window_length = self.tokens_per_batch + 1
+
+        if self.device.type != "cuda":
+            self.copy_stream = None
+            return
+
+        self.copy_stream = torch.cuda.Stream(device=self.device)
+        self.host_buffers = [
+            torch.empty(
+                self.window_length,
+                dtype=torch.long,
+                pin_memory=True,
+            )
+            for _ in range(2)
+        ]
+        self.copy_events = [None, None]
+        self.ready_batch = None
+        self._preload(slot=0)
+
+    def _preload(self, slot: int) -> None:
+        previous_copy = self.copy_events[slot]
+        if previous_copy is not None:
+            previous_copy.synchronize()
+
+        max_batch_start = len(self.data) - self.window_length
+        if self.position > max_batch_start:
+            self.position = 0
+
+        np.copyto(
+            self.host_buffers[slot].numpy(),
+            self.data[self.position : self.position + self.window_length],
+            casting="safe",
+        )
+        next_position = self.position + self.tokens_per_batch
+
+        with torch.cuda.stream(self.copy_stream):
+            device_window = self.host_buffers[slot].to(
+                self.device,
+                non_blocking=True,
+            )
+            copy_done = torch.cuda.Event()
+            copy_done.record(self.copy_stream)
+
+        self.copy_events[slot] = copy_done
+        self.ready_batch = (slot, device_window, copy_done, next_position)
+        self.position = next_position
+
+    def next(self):
+        if self.copy_stream is None:
+            x, y, self.position = get_batch(
+                self.data,
+                self.batch_size,
+                self.context_length,
+                self.device,
+                self.position,
+            )
+            return x, y, self.position
+
+        slot, device_window, copy_done, next_position = self.ready_batch
+        current_stream = torch.cuda.current_stream(self.device)
+        current_stream.wait_event(copy_done)
+        device_window.record_stream(current_stream)
+
+        self._preload(slot=1 - slot)
+
+        x = device_window[:-1].view(self.batch_size, self.context_length)
+        y = device_window[1:].view(self.batch_size, self.context_length)
+        return x, y, next_position
+
+
 def save_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,

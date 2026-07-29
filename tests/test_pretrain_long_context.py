@@ -18,6 +18,7 @@ from pretrain.train_model import (
     load_checkpoint,
     load_token_bin,
     save_checkpoint,
+    TokenBatchLoader,
 )
 
 try:
@@ -394,6 +395,36 @@ class PretrainDataAndCheckpointTest(unittest.TestCase):
             ),
         )
         self.assertEqual(position, 8)
+
+    def test_token_batch_loader_cpu_fallback(self):
+        loader = TokenBatchLoader(
+            np.arange(24, dtype=np.uint16),
+            batch_size=2,
+            context_length=4,
+            device="cpu",
+        )
+
+        first_x, first_y, first_position = loader.next()
+        second_x, second_y, second_position = loader.next()
+
+        torch.testing.assert_close(
+            first_x,
+            torch.tensor([[0, 1, 2, 3], [4, 5, 6, 7]]),
+        )
+        torch.testing.assert_close(
+            first_y,
+            torch.tensor([[1, 2, 3, 4], [5, 6, 7, 8]]),
+        )
+        torch.testing.assert_close(
+            second_x,
+            torch.tensor([[8, 9, 10, 11], [12, 13, 14, 15]]),
+        )
+        torch.testing.assert_close(
+            second_y,
+            torch.tensor([[9, 10, 11, 12], [13, 14, 15, 16]]),
+        )
+        self.assertEqual(first_position, 8)
+        self.assertEqual(second_position, 16)
 
     def test_load_token_bin_uses_metadata_dtype(self):
         with tempfile.TemporaryDirectory() as directory:

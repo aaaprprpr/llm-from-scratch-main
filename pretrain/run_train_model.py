@@ -27,8 +27,8 @@ from config_loader import Config
 from pretrain.tokenizer_optimized import Tokenizer
 from pretrain.train_model import (
     lr_cosine_schedule,
-    get_batch,
     load_token_bin,
+    TokenBatchLoader,
     save_checkpoint,
     load_checkpoint,
 )
@@ -152,19 +152,19 @@ def estimate_loss(
     if eval_iters <= 0:
         raise ValueError(f"eval_iters must be positive, got {eval_iters}")
     was_training = model.training
-    position = start_position
     total_loss = torch.zeros((), device=device)
+    batches = TokenBatchLoader(
+        data,
+        batch_size,
+        context_length,
+        device,
+        position=start_position,
+    )
 
     model.eval()
     try:
         for _ in range(eval_iters):
-            x, y, position = get_batch(
-                data,
-                batch_size,
-                context_length,
-                device,
-                position,
-            )  # (B, T)
+            x, y, _ = batches.next()
             with attention_kernel_context(device, require_flash_attention):
                 with autocast_context(device, amp_dtype):
                     logits, _ = model(x, use_cache=False)  # logits size (B, T, V)
@@ -348,6 +348,13 @@ def main():
             f"Resuming from iteration {start_iter}, "
             f"train_position {train_position}, tokens_seen {tokens_seen}"
         )
+    train_batches = TokenBatchLoader(
+        train_data,
+        batch_size,
+        sequence_length,
+        device,
+        position=train_position,
+    )
 
     # initialize wandb
     if logging_config["use_wandb"]:
@@ -387,13 +394,7 @@ def main():
         accumulated_loss = torch.zeros((), device=device)
 
         for _ in range(gradient_accumulation_steps):
-            x, y, train_position = get_batch(
-                train_data,
-                batch_size,
-                sequence_length,
-                device,
-                train_position,
-            )
+            x, y, train_position = train_batches.next()
 
             with attention_kernel_context(device, require_flash):
                 with autocast_context(device, amp_dtype):
