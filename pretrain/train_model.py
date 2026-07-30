@@ -1,11 +1,14 @@
 import json
 import math
 import os
+from contextlib import nullcontext
 from pathlib import Path
 from typing import BinaryIO, IO
 
-import torch
 import numpy as np
+import torch
+import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 
 def load_token_bin(path: str | os.PathLike) -> np.memmap:
@@ -18,6 +21,144 @@ def load_token_bin(path: str | os.PathLike) -> np.memmap:
             f"{metadata_path} contains unsupported dtype {dtype_name!r}"
         )
     return np.memmap(path, dtype=np.dtype(dtype_name), mode="r")
+
+
+def get_device(config) -> torch.device:
+    device_name = config.get("train", "device", default="auto")
+    if device_name != "auto":
+        return torch.device(device_name)
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def resolve_amp_dtype(precision: str, device: torch.device):
+    if precision == "float32":
+        return None
+    if precision != "bfloat16":
+        raise ValueError(
+            f"train.precision must be 'float32' or 'bfloat16', got {precision!r}"
+        )
+    if device.type != "cuda":
+        return None
+    if not torch.cuda.is_bf16_supported():
+        raise RuntimeError(
+            "当前 CUDA 设备不支持 bfloat16；请把 train.precision 改为 float32"
+        )
+    return torch.bfloat16
+
+
+def autocast_context(device: torch.device, amp_dtype):
+    if amp_dtype is None:
+        return nullcontext()
+    return torch.autocast(device_type=device.type, dtype=amp_dtype)
+
+
+def attention_kernel_context(device: torch.device, require_flash: bool):
+    if device.type == "cuda" and require_flash:
+        return sdpa_kernel(SDPBackend.FLASH_ATTENTION)
+    return nullcontext()
+
+
+def verify_flash_attention(device: torch.device, dtype) -> None:
+    if device.type != "cuda":
+        raise RuntimeError(
+            "train.require_flash_attention=true，但当前训练设备不是 CUDA"
+        )
+    if dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError("FlashAttention baseline requires float16 or bfloat16")
+
+    generator = torch.Generator(device=device).manual_seed(0)
+    q = torch.randn(
+        1,
+        8,
+        128,
+        64,
+        device=device,
+        dtype=dtype,
+        generator=generator,
+        requires_grad=True,
+    )
+    try:
+        with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+            output = F.scaled_dot_product_attention(q, q, q, is_causal=True)
+            output.square().mean().backward()
+            torch.cuda.synchronize(device)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            "当前设备或 PyTorch 构建无法运行 FlashAttention SDPA"
+        ) from exc
+    print("FlashAttention SDPA forward/backward verification passed")
+
+
+def resolve_training_parameters(model_config: dict, train_config: dict):
+    sequence_length = train_config.get(
+        "sequence_length",
+        model_config["context_length"],
+    )
+    if sequence_length <= 0:
+        raise ValueError(
+            f"train.sequence_length must be positive, got {sequence_length}"
+        )
+    if sequence_length > model_config["context_length"]:
+        raise ValueError(
+            f"train.sequence_length {sequence_length} exceeds model.context_length "
+            f"{model_config['context_length']}"
+        )
+
+    batch_size = train_config["batch_size"]
+    if not isinstance(batch_size, int) or batch_size <= 0:
+        raise ValueError(
+            f"train.batch_size must be a positive integer, got {batch_size}"
+        )
+    tokens_per_micro_batch = batch_size * sequence_length
+
+    configured_tokens_per_update = train_config.get("tokens_per_update")
+    if configured_tokens_per_update is not None:
+        if configured_tokens_per_update < tokens_per_micro_batch:
+            raise ValueError(
+                "train.tokens_per_update cannot be smaller than one micro-batch "
+                f"({tokens_per_micro_batch})"
+            )
+        if configured_tokens_per_update % tokens_per_micro_batch != 0:
+            raise ValueError(
+                "train.tokens_per_update must be divisible by "
+                f"batch_size * sequence_length ({tokens_per_micro_batch})"
+            )
+        gradient_accumulation_steps = (
+            configured_tokens_per_update // tokens_per_micro_batch
+        )
+    else:
+        gradient_accumulation_steps = train_config.get(
+            "gradient_accumulation_steps",
+            1,
+        )
+        if gradient_accumulation_steps <= 0:
+            raise ValueError(
+                "train.gradient_accumulation_steps must be positive"
+            )
+    tokens_per_update = tokens_per_micro_batch * gradient_accumulation_steps
+
+    eval_tokens = train_config.get("eval_tokens")
+    if eval_tokens is None:
+        eval_iters = train_config["eval_iters"]
+    else:
+        if eval_tokens <= 0:
+            raise ValueError(
+                f"train.eval_tokens must be positive, got {eval_tokens}"
+            )
+        eval_iters = max(
+            1,
+            (eval_tokens + tokens_per_micro_batch - 1)
+            // tokens_per_micro_batch,
+        )
+
+    return (
+        sequence_length,
+        batch_size,
+        tokens_per_micro_batch,
+        gradient_accumulation_steps,
+        tokens_per_update,
+        eval_iters,
+    )
 
 
 def lr_cosine_schedule(
@@ -177,6 +318,48 @@ class TokenBatchLoader:
         x = device_window[:-1].view(self.batch_size, self.context_length)
         y = device_window[1:].view(self.batch_size, self.context_length)
         return x, y, next_position
+
+
+@torch.inference_mode()
+def estimate_loss(
+    model,
+    data,
+    batch_size,
+    context_length,
+    device,
+    eval_iters,
+    amp_dtype=None,
+    require_flash_attention=False,
+    start_position=0,
+):
+    """在固定数据窗口上计算平均 loss，不修改训练游标。"""
+    if eval_iters <= 0:
+        raise ValueError(f"eval_iters must be positive, got {eval_iters}")
+    was_training = model.training
+    total_loss = torch.zeros((), device=device)
+    batches = TokenBatchLoader(
+        data,
+        batch_size,
+        context_length,
+        device,
+        position=start_position,
+    )
+
+    model.eval()
+    try:
+        for _ in range(eval_iters):
+            x, y, _ = batches.next()
+            with attention_kernel_context(device, require_flash_attention):
+                with autocast_context(device, amp_dtype):
+                    logits, _ = model(x, use_cache=False)
+                    loss = F.cross_entropy(
+                        logits.reshape(-1, logits.size(-1)),
+                        y.reshape(-1),
+                    )
+            total_loss += loss
+        return (total_loss / eval_iters).item()
+    finally:
+        model.train(was_training)
 
 
 def save_checkpoint(

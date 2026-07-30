@@ -1,20 +1,11 @@
 import argparse
-import csv
 import json
-import os
 import sys
 import time
-from contextlib import nullcontext
 from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-from torch.nn.attention import SDPBackend, sdpa_kernel
-
-try:
-    import wandb
-except ImportError:
-    wandb = None
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -24,14 +15,22 @@ sys.path = [
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from config_loader import Config
-from pretrain.tokenizer_optimized import Tokenizer
+from tokenizer import Tokenizer
 from pretrain.train_model import (
+    attention_kernel_context,
+    autocast_context,
+    estimate_loss,
+    get_device,
     lr_cosine_schedule,
     load_token_bin,
-    TokenBatchLoader,
-    save_checkpoint,
     load_checkpoint,
+    resolve_amp_dtype,
+    resolve_training_parameters,
+    save_checkpoint,
+    TokenBatchLoader,
+    verify_flash_attention,
 )
+from pretrain.training_tracker import print_config, TrainingTracker
 from models.model import Transformer as Model
 
 CONFIG_PATH = PROJECT_ROOT / "configs" / "pretrain.json"
@@ -58,126 +57,6 @@ def load_config(config_path=CONFIG_PATH) -> Config:
     return Config(config_path)
 
 
-def get_device(config: Config):
-    device_name = config.get("train", "device", default="auto")
-    if device_name != "auto":
-        return torch.device(device_name)
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-def resolve_amp_dtype(precision: str, device: torch.device):
-    if precision == "float32":
-        return None
-    if precision != "bfloat16":
-        raise ValueError(
-            f"train.precision must be 'float32' or 'bfloat16', got {precision!r}"
-        )
-    if device.type != "cuda":
-        return None
-    if not torch.cuda.is_bf16_supported():
-        raise RuntimeError(
-            "当前 CUDA 设备不支持 bfloat16；请把 train.precision 改为 float32"
-        )
-    return torch.bfloat16
-
-
-def autocast_context(device: torch.device, amp_dtype):
-    if amp_dtype is None:
-        return nullcontext()
-    return torch.autocast(device_type=device.type, dtype=amp_dtype)
-
-
-def attention_kernel_context(device: torch.device, require_flash: bool):
-    if device.type == "cuda" and require_flash:
-        return sdpa_kernel(SDPBackend.FLASH_ATTENTION)
-    return nullcontext()
-
-
-def verify_flash_attention(device: torch.device, dtype):
-    if device.type != "cuda":
-        raise RuntimeError(
-            "train.require_flash_attention=true，但当前训练设备不是 CUDA"
-        )
-    if dtype not in (torch.float16, torch.bfloat16):
-        raise ValueError("FlashAttention baseline requires float16 or bfloat16")
-
-    generator = torch.Generator(device=device).manual_seed(0)
-    q = torch.randn(
-        1,
-        8,
-        128,
-        64,
-        device=device,
-        dtype=dtype,
-        generator=generator,
-        requires_grad=True,
-    )
-    try:
-        with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
-            output = F.scaled_dot_product_attention(q, q, q, is_causal=True)
-            output.square().mean().backward()
-            torch.cuda.synchronize(device)
-    except RuntimeError as exc:
-        raise RuntimeError(
-            "当前设备或 PyTorch 构建无法运行 FlashAttention SDPA"
-        ) from exc
-    print("FlashAttention SDPA forward/backward verification passed")
-
-
-def print_config(config: Config):
-    print("=" * 20 + " Training Configurations " + "=" * 20)
-    for section, values in config.data.items():
-        print(f"[{section}]")
-        if isinstance(values, dict):
-            for key, value in values.items():
-                print(f"{key:20}: {value}")
-        else:
-            print(values)
-    print("=" * 65)
-
-
-@torch.inference_mode()
-def estimate_loss(
-    model,
-    data,
-    batch_size,
-    context_length,
-    device,
-    eval_iters,
-    amp_dtype=None,
-    require_flash_attention=False,
-    start_position=0,
-):
-    """在固定数据窗口上计算平均 loss，不修改训练游标。"""
-    if eval_iters <= 0:
-        raise ValueError(f"eval_iters must be positive, got {eval_iters}")
-    was_training = model.training
-    total_loss = torch.zeros((), device=device)
-    batches = TokenBatchLoader(
-        data,
-        batch_size,
-        context_length,
-        device,
-        position=start_position,
-    )
-
-    model.eval()
-    try:
-        for _ in range(eval_iters):
-            x, y, _ = batches.next()
-            with attention_kernel_context(device, require_flash_attention):
-                with autocast_context(device, amp_dtype):
-                    logits, _ = model(x, use_cache=False)  # logits size (B, T, V)
-                    loss = F.cross_entropy(
-                        logits.reshape(-1, logits.size(-1)),
-                        y.reshape(-1),
-                    )  # 等同于 (B*T, V) 以及 (B*T, )
-            total_loss += loss
-        return (total_loss / eval_iters).item()
-    finally:
-        model.train(was_training)
-
-
 def main():
     args = parse_args()
     config = load_config(args.config)
@@ -197,63 +76,14 @@ def main():
         raise ValueError(f"train.seed must be a non-negative integer, got {seed}")
     torch.manual_seed(seed)
 
-    sequence_length = train_config.get(
-        "sequence_length",
-        model_config["context_length"],
-    )
-    if sequence_length <= 0:
-        raise ValueError(
-            f"train.sequence_length must be positive, got {sequence_length}"
-        )
-    if sequence_length > model_config["context_length"]:
-        raise ValueError(
-            f"train.sequence_length {sequence_length} exceeds model.context_length "
-            f"{model_config['context_length']}"
-        )
-
-    batch_size = train_config["batch_size"]
-    if not isinstance(batch_size, int) or batch_size <= 0:
-        raise ValueError(
-            f"train.batch_size must be a positive integer, got {batch_size}"
-        )
-    tokens_per_micro_batch = batch_size * sequence_length
-    configured_tokens_per_update = train_config.get("tokens_per_update")
-    if configured_tokens_per_update is not None:
-        if configured_tokens_per_update < tokens_per_micro_batch:
-            raise ValueError(
-                "train.tokens_per_update cannot be smaller than one micro-batch "
-                f"({tokens_per_micro_batch})"
-            )
-        if configured_tokens_per_update % tokens_per_micro_batch != 0:
-            raise ValueError(
-                "train.tokens_per_update must be divisible by "
-                f"batch_size * sequence_length ({tokens_per_micro_batch})"
-            )
-        gradient_accumulation_steps = (
-            configured_tokens_per_update // tokens_per_micro_batch
-        )
-    else:
-        gradient_accumulation_steps = train_config.get(
-            "gradient_accumulation_steps",
-            1,
-        )
-        if gradient_accumulation_steps <= 0:
-            raise ValueError(
-                "train.gradient_accumulation_steps must be positive"
-            )
-    tokens_per_update = tokens_per_micro_batch * gradient_accumulation_steps
-
-    eval_tokens = train_config.get("eval_tokens")
-    if eval_tokens is None:
-        eval_iters = train_config["eval_iters"]
-    else:
-        if eval_tokens <= 0:
-            raise ValueError(f"train.eval_tokens must be positive, got {eval_tokens}")
-        eval_iters = max(
-            1,
-            (eval_tokens + tokens_per_micro_batch - 1)
-            // tokens_per_micro_batch,
-        )
+    (
+        sequence_length,
+        batch_size,
+        tokens_per_micro_batch,
+        gradient_accumulation_steps,
+        tokens_per_update,
+        eval_iters,
+    ) = resolve_training_parameters(model_config, train_config)
 
     precision = train_config.get("precision", "float32")
     amp_dtype = resolve_amp_dtype(precision, device)
@@ -277,10 +107,10 @@ def main():
     out_dir = config.resolve_path("paths", "out_root") / time.strftime(
         "run_%Y%m%d_%H%M%S"
     )
-    os.makedirs(out_dir, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     # 在日志开头记录训练配置
-    print_config(config)
+    print_config(config.data)
     print(f"{'out_dir':20}: {out_dir}")
     run_config = json.loads(json.dumps(config.data))
     run_config["runtime"] = {
@@ -301,16 +131,6 @@ def main():
     )
 
     resume_path = config.optional_path("paths", "resume")
-    metrics_path = os.path.join(out_dir, "metrics.csv")
-    write_header = not (resume_path and os.path.exists(metrics_path))
-    mode = "w" if write_header else "a"
-
-    with open(metrics_path, mode, newline="") as f:
-        writer = csv.writer(f)
-        if write_header:
-            writer.writerow(
-                ["step", "tokens_seen", "train_loss", "val_loss", "lr"]
-            )
 
     tokenizer = Tokenizer(str(config.resolve_path("paths", "tokenizer_vocab")))
 
@@ -355,29 +175,21 @@ def main():
         device,
         position=train_position,
     )
-
-    # initialize wandb
-    if logging_config["use_wandb"]:
-        if wandb is None:
-            raise RuntimeError(
-                "logging.use_wandb=true，但当前环境没有安装 wandb"
-            )
-        wandb.init(project=logging_config["wandb_project"], config=config.data)
+    tracker = TrainingTracker(
+        run_dir=out_dir,
+        device=device,
+        start_step=start_iter,
+        train_position=train_position,
+        tokens_seen=tokens_seen,
+        use_wandb=logging_config["use_wandb"],
+        wandb_project=logging_config["wandb_project"],
+        wandb_config=config.data,
+    )
 
     # ==============================
     # 训练循环
-    last_log_step = start_iter
-    last_log_tokens = tokens_seen
-    cuda_step_events = []
-    accumulated_training_time = 0.0
-
     for it in range(start_iter, train_config["max_iters"]):
-        if device.type == "cuda":
-            step_start = torch.cuda.Event(enable_timing=True)
-            step_end = torch.cuda.Event(enable_timing=True)
-            step_start.record()
-        else:
-            step_start = time.perf_counter()
+        tracker.start_training_step()
 
         # 更新学习率（余弦调度）
         lr = lr_cosine_schedule(
@@ -406,19 +218,14 @@ def main():
                 (loss / gradient_accumulation_steps).backward()
 
             accumulated_loss += loss.detach().float()
-            tokens_seen += tokens_per_micro_batch
+            tracker.record_batch(train_position, tokens_per_micro_batch)
 
         step_loss = accumulated_loss / gradient_accumulation_steps
         grad_norm = torch.nn.utils.clip_grad_norm_(
             model.parameters(), optimizer_config["max_norm"]
         )
         optimizer.step()
-
-        if device.type == "cuda":
-            step_end.record()
-            cuda_step_events.append((step_start, step_end))
-        else:
-            accumulated_training_time += time.perf_counter() - step_start
+        tracker.end_training_step()
 
         # 到这里才算真正完成一次更新
         completed_steps = it + 1
@@ -426,31 +233,7 @@ def main():
 
         # 每隔一定步数（日志间隔）打印训练进度
         if completed_steps % train_config["log_interval"] == 0 or last_step:
-            if device.type == "cuda":
-                cuda_step_events[-1][1].synchronize()
-                training_time = sum(
-                    start.elapsed_time(end) for start, end in cuda_step_events
-                ) / 1000.0
-            else:
-                training_time = accumulated_training_time
-            steps_since_log = completed_steps - last_log_step
-            ms_per_step = training_time * 1000 / steps_since_log
-            tokens_per_second = (
-                (tokens_seen - last_log_tokens) / training_time
-            )
-
-            print(
-                f"step {completed_steps}: "
-                f"loss {step_loss.item():.4f}, "
-                f"time {ms_per_step:.2f}ms/step, "
-                f"tokens/s {tokens_per_second:.0f}, "
-                f"grad_norm {grad_norm.item():.4f}"
-            )
-
-            last_log_step = completed_steps
-            last_log_tokens = tokens_seen
-            cuda_step_events.clear()
-            accumulated_training_time = 0.0
+            tracker.log_training_step(completed_steps, step_loss, grad_norm)
 
         # 每隔一定步数（评估间隔）执行评估并记录日志
         if completed_steps % train_config["eval_interval"] == 0 or last_step:
@@ -474,39 +257,7 @@ def main():
                 amp_dtype=amp_dtype,
                 require_flash_attention=require_flash,
             )
-            print(
-                f"Step {completed_steps}: "
-                f"train loss {train_loss:.4f}, "
-                f"val loss {val_loss:.4f}, "
-                f"lr {lr:.2e}"
-            )
-
-            if logging_config["use_wandb"]:
-                wandb.log(
-                    {
-                        "step": completed_steps,
-                        "tokens_seen": tokens_seen,
-                        "train/loss": train_loss,
-                        "val/loss": val_loss,
-                        "lr": lr,
-                    }
-                )
-
-            with open(metrics_path, "a", newline="") as f:
-                writer = csv.writer(f)
-                writer.writerow(
-                    [
-                        completed_steps,
-                        tokens_seen,
-                        (
-                            train_loss.item()
-                            if torch.is_tensor(train_loss)
-                            else train_loss
-                        ),
-                        val_loss.item() if torch.is_tensor(val_loss) else val_loss,
-                        lr,
-                    ]
-                )
+            tracker.log_evaluation(completed_steps, train_loss, val_loss, lr)
 
         # 每隔一定步数（检查点间隔）从模型生成文本并保存结果
         checkpoint_interval = (
@@ -533,14 +284,14 @@ def main():
                 f"[Generated at iter {completed_steps}, temperature {temperature}, top_p {top_p}]: {full_sentence}"
             )
 
-            ckpt_path = os.path.join(out_dir, f"ckpt_step_{completed_steps}.pt")
+            ckpt_path = out_dir / f"ckpt_step_{completed_steps}.pt"
             save_checkpoint(
                 model,
                 optimizer,
                 completed_steps,
                 ckpt_path,
-                train_position=train_position,
-                tokens_seen=tokens_seen,
+                train_position=tracker.train_position,
+                tokens_seen=tracker.tokens_seen,
                 model_args=model_config,
                 config=run_config,
             )

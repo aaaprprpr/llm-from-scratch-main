@@ -73,7 +73,7 @@ def init_worker(
     os.environ["RAYON_NUM_THREADS"] = str(tokenizer_threads)
     os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
-    from pretrain.tokenizer_optimized import Tokenizer
+    from tokenizer import Tokenizer
 
     global _worker_tokenizer, _worker_eos_id, _worker_dtype
     _worker_tokenizer = Tokenizer(tokenizer_path)
@@ -457,7 +457,7 @@ def main() -> None:
     tokenizer_threads = max(1, available_cpus // workers)
 
     from datasets import load_from_disk
-    from pretrain.tokenizer_optimized import Tokenizer
+    from tokenizer import Tokenizer
 
     dataset = load_from_disk(str(input_dataset))
     if getattr(dataset, "column_names", None) != ["text"]:

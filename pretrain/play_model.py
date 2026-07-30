@@ -12,7 +12,7 @@ import torch
 
 from config_loader import Config
 from models.model import Transformer
-from pretrain.tokenizer_optimized import Tokenizer
+from tokenizer import Tokenizer
 
 CONFIG_PATH = PROJECT_ROOT / "configs" / "pretrain.json"
 
