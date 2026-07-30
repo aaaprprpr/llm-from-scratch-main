@@ -20,13 +20,13 @@
     "seed": 42,
     "sequence_length": 2048,
     "batch_size": 1,
-    "tokens_per_update": 4096,
+    "tokens_per_update": 32768,
     "precision": "bfloat16",
-    "activation_checkpointing": true,
+    "activation_checkpointing": false,
     "require_flash_attention": true,
-    "max_iters": 1000,
-    "eval_interval": 10,
-    "eval_tokens": 40960,
+    "max_iters": 93277,
+    "eval_interval": 1000,
+    "eval_tokens": 262144,
     "log_interval": 10
   },
   "optimizer": {
@@ -34,10 +34,10 @@
     "max_norm": 1.0
   },
   "lr_schedule": {
-    "max_lr": 0.001,
-    "min_lr": 0.00001,
+    "max_lr": 0.0006,
+    "min_lr": 0.00006,
     "warmup_iters": 1000,
-    "lr_decay_iters": 130000
+    "lr_decay_iters": 93277
   },
   "logging": {
     "use_wandb": false,
