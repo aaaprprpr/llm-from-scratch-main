@@ -50,10 +50,10 @@ def checkpoint_step(path: Path) -> int:
     return int(match.group(1)) if match else -1
 
 
-def find_latest_checkpoint(logs_path: Path) -> Path:
+def find_latest_checkpoint(logs_path: Path, stage_name: str = "SFT") -> Path:
     checkpoints = list(logs_path.glob("run_*/ckpt_step_*.pt"))
     if not checkpoints:
-        raise FileNotFoundError(f"没有找到 SFT checkpoint：{logs_path}")
+        raise FileNotFoundError(f"没有找到 {stage_name} checkpoint：{logs_path}")
     return max(
         checkpoints,
         key=lambda path: (checkpoint_step(path), path.stat().st_mtime),
