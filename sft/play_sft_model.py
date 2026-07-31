@@ -1,4 +1,3 @@
-import re
 import sys
 from pathlib import Path
 
@@ -10,42 +9,19 @@ sys.path = [
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import torch
-from transformers import AutoTokenizer
 
-from config_loader import Config
 from models.model import Transformer
-
-CONFIG_PATH = PROJECT_ROOT / "configs" / "sft.json"
-
-
-def load_config() -> Config:
-    return Config(CONFIG_PATH)
-
-
-def checkpoint_step(path: Path) -> int:
-    match = re.search(r"ckpt_step_(\d+)\.pt$", path.name)
-    return int(match.group(1)) if match else -1
+from pretrain.train_model import autocast_context, get_device, resolve_amp_dtype
+from sft.utils import (
+    build_prompt,
+    clean_answer,
+    find_latest_checkpoint,
+    load_config,
+    load_tokenizer,
+)
 
 
-def find_latest_checkpoint(config: Config) -> Path:
-    sft_logs_path = config.resolve_path("paths", "sft_logs")
-    checkpoints = list(sft_logs_path.glob("run_*/ckpt_step_*.pt"))
-    if not checkpoints:
-        raise FileNotFoundError(f"没有找到 SFT checkpoint：{sft_logs_path}")
-    return max(
-        checkpoints, key=lambda path: (checkpoint_step(path), path.stat().st_mtime)
-    )
-
-
-def load_tokenizer(config: Config):
-    tokenizer = AutoTokenizer.from_pretrained(config.resolve_path("paths", "tokenizer"))
-    tokenizer.chat_template = config.resolve_path("paths", "chat_template").read_text(
-        encoding="utf-8"
-    )
-    return tokenizer
-
-
-def load_model(config: Config, checkpoint_path: Path, device: torch.device):
+def load_model(config, checkpoint_path: Path, device: torch.device):
     checkpoint = torch.load(
         checkpoint_path,
         map_location="cpu",
@@ -61,25 +37,7 @@ def load_model(config: Config, checkpoint_path: Path, device: torch.device):
     return model, model_args
 
 
-def build_prompt(tokenizer, prompt: str) -> torch.Tensor:
-    messages = [{"role": "user", "content": prompt}]
-    enc = tokenizer.apply_chat_template(
-        messages,
-        tokenize=True,
-        add_generation_prompt=True,
-        return_tensors="pt",
-        return_dict=True,
-    )
-    return enc["input_ids"]
-
-
-def clean_answer(text: str) -> str:
-    text = text.split("<|im_end|>", 1)[0]
-    text = text.split("<|endoftext|>", 1)[0]
-    return text.strip()
-
-
-@torch.no_grad()
+@torch.inference_mode()
 def generate_answer(
     model,
     tokenizer,
@@ -87,18 +45,20 @@ def generate_answer(
     device: torch.device,
     context_length: int,
     play_config: dict,
+    amp_dtype=None,
 ):
     input_ids = build_prompt(tokenizer, prompt).to(device)
     im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
 
-    output_ids = model.generate(
-        input_ids,
-        max_new_tokens=play_config["max_new_tokens"],
-        temperature=play_config["temperature"],
-        top_p=play_config["top_p"],
-        eos_id=im_end_id,
-        context_length=context_length,
-    )
+    with autocast_context(device, amp_dtype):
+        output_ids = model.generate(
+            input_ids,
+            max_new_tokens=play_config["max_new_tokens"],
+            temperature=play_config["temperature"],
+            top_p=play_config["top_p"],
+            eos_id=im_end_id,
+            context_length=context_length,
+        )
 
     new_ids = output_ids[0, input_ids.size(1) :].tolist()
     text = tokenizer.decode(
@@ -112,8 +72,14 @@ def generate_answer(
 def main():
     config = load_config()
     play_config = config.require("play")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    checkpoint_path = find_latest_checkpoint(config)
+    device = get_device(config)
+    amp_dtype = resolve_amp_dtype(
+        config.get("train", "precision", default="bfloat16"),
+        device,
+    )
+    checkpoint_path = find_latest_checkpoint(
+        config.resolve_path("paths", "sft_logs")
+    )
 
     print(f"使用设备：{device}")
     print(f"加载 SFT checkpoint：{checkpoint_path}")
@@ -125,7 +91,13 @@ def main():
     print("-" * 50)
     for prompt in play_config["prompts"]:
         answer = generate_answer(
-            model, tokenizer, prompt, device, context_length, play_config
+            model,
+            tokenizer,
+            prompt,
+            device,
+            context_length,
+            play_config,
+            amp_dtype,
         )
         print(f"用户：{prompt}")
         print(f"助手：{answer}")
@@ -140,7 +112,13 @@ def main():
         if not prompt:
             break
         answer = generate_answer(
-            model, tokenizer, prompt, device, context_length, play_config
+            model,
+            tokenizer,
+            prompt,
+            device,
+            context_length,
+            play_config,
+            amp_dtype,
         )
         print(f"助手：{answer}")
         print("=" * 80)

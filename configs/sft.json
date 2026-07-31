@@ -19,6 +19,10 @@
   },
   "train": {
     "device": "auto",
+    "precision": "bfloat16",
+    "activation_checkpointing": false,
+    "require_flash_attention": false,
+    "num_workers": 0,
     "max_seq_len": 256,
     "micro_batch_size": 16,
     "gradient_accumulation_steps": 1,

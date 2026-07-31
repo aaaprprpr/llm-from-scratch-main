@@ -22,13 +22,19 @@ from sft.datasets.alpaca_zh import AlpacaZhDataset, load_alpaca_zh
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Sampler, random_split
-from transformers import AutoTokenizer
 
 from models.model import Transformer
+from pretrain.train_model import (
+    attention_kernel_context,
+    autocast_context,
+    get_device,
+    lr_cosine_schedule,
+    resolve_amp_dtype,
+    verify_flash_attention,
+)
 from sft.collator import SFTCollator
 from sft.tokenize_sft import IGNORE_INDEX, tokenize_chat_example
-
-CONFIG_PATH = PROJECT_ROOT / "configs" / "sft.json"
+from sft.utils import build_prompt, clean_answer, load_config, load_tokenizer
 
 
 class LengthBucketBatchSampler(Sampler):
@@ -73,29 +79,6 @@ class LengthBucketBatchSampler(Sampler):
 
     def __len__(self):
         return math.ceil(len(self.dataset) / self.batch_size)
-
-
-def load_config() -> Config:
-    return Config(CONFIG_PATH)
-
-
-def get_device(config: Config):
-    device_name = config.get("train", "device", default="auto")
-    if device_name != "auto":
-        return torch.device(device_name)
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-def load_tokenizer(config: Config):
-    tokenizer = AutoTokenizer.from_pretrained(config.resolve_path("paths", "tokenizer"))
-    tokenizer.chat_template = config.resolve_path("paths", "chat_template").read_text(
-        encoding="utf-8"
-    )
-
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    return tokenizer
 
 
 def file_sha256(path: Path) -> str:
@@ -145,7 +128,7 @@ def load_or_build_dataset(config: Config, tokenizer):
     cache_key = build_cache_key(config)
 
     if cache_path.exists():
-        cached = torch.load(cache_path, map_location="cpu", weights_only=False)
+        cached = torch.load(cache_path, map_location="cpu", weights_only=True)
         if cached.get("cache_key") == cache_key:
             dataset = cached["dataset"]
             skipped = cached.get("skipped", 0)
@@ -188,8 +171,16 @@ def split_dataset(config: Config, dataset):
     return random_split(dataset, [train_size, val_size], generator=generator)
 
 
-def build_dataloader(config: Config, dataset, tokenizer, shuffle: bool, epoch: int = 0):
+def build_dataloader(
+    config: Config,
+    dataset,
+    tokenizer,
+    shuffle: bool,
+    epoch: int = 0,
+    pin_memory: bool = False,
+):
     train_config = config.require("train")
+    num_workers = train_config.get("num_workers", 0)
     batch_sampler = LengthBucketBatchSampler(
         dataset=dataset,
         batch_size=train_config["micro_batch_size"],
@@ -199,7 +190,14 @@ def build_dataloader(config: Config, dataset, tokenizer, shuffle: bool, epoch: i
         epoch=epoch,
     )
     collator = SFTCollator(pad_token_id=tokenizer.pad_token_id)
-    return DataLoader(dataset, batch_sampler=batch_sampler, collate_fn=collator)
+    return DataLoader(
+        dataset,
+        batch_sampler=batch_sampler,
+        collate_fn=collator,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=num_workers > 0,
+    )
 
 
 def build_model(config: Config, device):
@@ -234,69 +232,67 @@ def causal_lm_loss(logits, labels):
     )
 
 
-def sft_lr_schedule(step, max_lr, min_lr, warmup_steps, decay_steps):
-    if warmup_steps > 0 and step < warmup_steps:
-        return max_lr * (step + 1) / warmup_steps
-
-    if decay_steps <= warmup_steps:
-        return max_lr
-
-    if step >= decay_steps:
-        return min_lr
-
-    decay_ratio = (step - warmup_steps) / (decay_steps - warmup_steps)
-    cosine = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
-    return min_lr + cosine * (max_lr - min_lr)
-
-
-@torch.no_grad()
-def estimate_loss(config: Config, model, dataloader, device):
-    model.eval()
-    losses = []
-    eval_batches = config.require("train", "eval_batches")
-
-    for step, batch in enumerate(dataloader):
-        if step >= eval_batches:
-            break
-
-        input_ids = batch["input_ids"].to(device)
-        labels = batch["labels"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
-
-        with torch.autocast(
-            device_type=device.type,
-            dtype=torch.bfloat16,
-            enabled=device.type == "cuda",
-        ):
-            logits, _ = model(input_ids, attention_mask=attention_mask)
-            loss = causal_lm_loss(logits, labels)
-
-        losses.append(loss.item())
-
-    model.train()
-    return sum(losses) / len(losses)
-
-
-def build_prompt(tokenizer, prompt: str) -> torch.Tensor:
-    messages = [{"role": "user", "content": prompt}]
-    enc = tokenizer.apply_chat_template(
-        messages,
-        tokenize=True,
-        add_generation_prompt=True,
-        return_tensors="pt",
-        return_dict=True,
+def move_batch_to_device(batch, device):
+    non_blocking = device.type == "cuda"
+    return (
+        batch["input_ids"].to(device, non_blocking=non_blocking),
+        batch["labels"].to(device, non_blocking=non_blocking),
+        batch["attention_mask"].to(device, non_blocking=non_blocking),
     )
-    return enc["input_ids"]
 
 
-def clean_answer(text: str) -> str:
-    text = text.split("<|im_end|>", 1)[0]
-    text = text.split("<|endoftext|>", 1)[0]
-    return text.strip()
+@torch.inference_mode()
+def estimate_loss(
+    config: Config,
+    model,
+    dataloader,
+    device,
+    amp_dtype=None,
+    require_flash_attention=False,
+):
+    eval_batches = config.require("train", "eval_batches")
+    was_training = model.training
+    total_loss = torch.zeros((), device=device)
+    evaluated_batches = 0
+
+    model.eval()
+    try:
+        for step, batch in enumerate(dataloader):
+            if step >= eval_batches:
+                break
+
+            input_ids, labels, attention_mask = move_batch_to_device(batch, device)
+
+            with attention_kernel_context(device, require_flash_attention):
+                with autocast_context(device, amp_dtype):
+                    logits, _ = model(
+                        input_ids,
+                        attention_mask=attention_mask,
+                        use_cache=False,
+                    )
+                    loss = causal_lm_loss(logits, labels)
+
+            total_loss += loss
+            evaluated_batches += 1
+
+        if evaluated_batches == 0:
+            raise ValueError("验证集没有可用 batch")
+        return (total_loss / evaluated_batches).item()
+    finally:
+        model.train(was_training)
 
 
-@torch.no_grad()
-def write_samples(config: Config, model, tokenizer, device, model_args, run_dir, step):
+@torch.inference_mode()
+def write_samples(
+    config: Config,
+    model,
+    tokenizer,
+    device,
+    model_args,
+    run_dir,
+    step,
+    amp_dtype=None,
+):
     play_config = config.require("play")
     path = run_dir / f"samples_step_{step}.txt"
     im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
@@ -307,14 +303,15 @@ def write_samples(config: Config, model, tokenizer, device, model_args, run_dir,
         with path.open("w", encoding="utf-8") as f:
             for prompt in play_config["prompts"]:
                 input_ids = build_prompt(tokenizer, prompt).to(device)
-                output_ids = model.generate(
-                    input_ids,
-                    max_new_tokens=play_config["max_new_tokens"],
-                    temperature=play_config["temperature"],
-                    top_p=play_config["top_p"],
-                    eos_id=im_end_id,
-                    context_length=model_args["context_length"],
-                )
+                with autocast_context(device, amp_dtype):
+                    output_ids = model.generate(
+                        input_ids,
+                        max_new_tokens=play_config["max_new_tokens"],
+                        temperature=play_config["temperature"],
+                        top_p=play_config["top_p"],
+                        eos_id=im_end_id,
+                        context_length=model_args["context_length"],
+                    )
                 new_ids = output_ids[0, input_ids.size(1) :].tolist()
                 text = tokenizer.decode(
                     new_ids,
@@ -376,7 +373,7 @@ def load_checkpoint_if_needed(resume_path, model, optimizer, device):
     checkpoint = torch.load(
         resume_path,
         map_location="cpu",
-        weights_only=False,
+        weights_only=True,
         mmap=True,
     )
     model.load_state_dict(checkpoint["model"], strict=True)
@@ -406,14 +403,34 @@ def train(config: Config):
     train_config = config.require("train")
     torch.manual_seed(train_config["seed"])
     device = get_device(config)
-    print(f"使用设备：{device}")
+    amp_dtype = resolve_amp_dtype(
+        train_config.get("precision", "bfloat16"),
+        device,
+    )
+    require_flash = train_config.get("require_flash_attention", False)
+    if require_flash:
+        verify_flash_attention(device, amp_dtype)
+    pin_memory = device.type == "cuda"
+
+    effective_precision = (
+        "bfloat16 autocast" if amp_dtype == torch.bfloat16 else "float32"
+    )
+    print(f"使用设备：{device}，精度：{effective_precision}")
 
     tokenizer = load_tokenizer(config)
     dataset = load_or_build_dataset(config, tokenizer)
     train_dataset, val_dataset = split_dataset(config, dataset)
-    val_loader = build_dataloader(config, val_dataset, tokenizer, shuffle=False)
+    val_loader = build_dataloader(
+        config,
+        val_dataset,
+        tokenizer,
+        shuffle=False,
+        pin_memory=pin_memory,
+    )
 
     model, model_args = build_model(config, device)
+    if train_config.get("activation_checkpointing", False):
+        model.gradient_checkpointing_enable()
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=train_config["max_learning_rate"],
@@ -426,11 +443,11 @@ def train(config: Config):
         resume_path, model, optimizer, device
     )
 
-    train_loader_for_len = build_dataloader(
-        config, train_dataset, tokenizer, shuffle=True, epoch=start_epoch
+    micro_batches_per_epoch = math.ceil(
+        len(train_dataset) / train_config["micro_batch_size"]
     )
     steps_per_epoch = math.ceil(
-        len(train_loader_for_len) / train_config["gradient_accumulation_steps"]
+        micro_batches_per_epoch / train_config["gradient_accumulation_steps"]
     )
     total_steps = train_config["num_epochs"] * steps_per_epoch
     decay_steps = train_config["lr_decay_steps"] or total_steps
@@ -438,41 +455,35 @@ def train(config: Config):
     model.train()
     for epoch in range(start_epoch, train_config["num_epochs"]):
         train_loader = build_dataloader(
-            config, train_dataset, tokenizer, shuffle=True, epoch=epoch
+            config,
+            train_dataset,
+            tokenizer,
+            shuffle=True,
+            epoch=epoch,
+            pin_memory=pin_memory,
         )
         accum_steps = 0
-        accum_loss = 0.0
+        accum_loss = torch.zeros((), device=device)
         optimizer.zero_grad(set_to_none=True)
 
         for batch_index, batch in enumerate(train_loader):
             if epoch == start_epoch and batch_index < start_batch_index:
                 continue
 
-            lr = sft_lr_schedule(
-                global_step,
-                train_config["max_learning_rate"],
-                train_config["min_learning_rate"],
-                train_config["warmup_steps"],
-                decay_steps,
-            )
-            for param_group in optimizer.param_groups:
-                param_group["lr"] = lr
+            input_ids, labels, attention_mask = move_batch_to_device(batch, device)
 
-            input_ids = batch["input_ids"].to(device)
-            labels = batch["labels"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
+            with attention_kernel_context(device, require_flash):
+                with autocast_context(device, amp_dtype):
+                    logits, _ = model(
+                        input_ids,
+                        attention_mask=attention_mask,
+                        use_cache=False,
+                    )
+                    loss = causal_lm_loss(logits, labels)
 
-            with torch.autocast(
-                device_type=device.type,
-                dtype=torch.bfloat16,
-                enabled=device.type == "cuda",
-            ):
-                logits, _ = model(input_ids, attention_mask=attention_mask)
-                loss = causal_lm_loss(logits, labels)
-
-            (loss / train_config["gradient_accumulation_steps"]).backward()
+                (loss / train_config["gradient_accumulation_steps"]).backward()
             accum_steps += 1
-            accum_loss += loss.item()
+            accum_loss += loss.detach().float()
 
             last_micro_batch = batch_index + 1 == len(train_loader)
             should_step = (
@@ -482,6 +493,16 @@ def train(config: Config):
             if not should_step:
                 continue
 
+            lr = lr_cosine_schedule(
+                global_step,
+                train_config["max_learning_rate"],
+                train_config["min_learning_rate"],
+                train_config["warmup_steps"],
+                decay_steps,
+            )
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = lr
+
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 model.parameters(), train_config["grad_clip"]
             )
@@ -489,7 +510,7 @@ def train(config: Config):
             optimizer.zero_grad(set_to_none=True)
 
             global_step += 1
-            train_loss = accum_loss / accum_steps
+            train_loss = (accum_loss / accum_steps).item()
             next_batch_index = batch_index + 1
             last_step = (
                 epoch + 1 == train_config["num_epochs"] and next_batch_index == len(train_loader)
@@ -504,7 +525,14 @@ def train(config: Config):
                 )
 
             if global_step % train_config["eval_every"] == 0 or last_step:
-                val_loss = estimate_loss(config, model, val_loader, device)
+                val_loss = estimate_loss(
+                    config,
+                    model,
+                    val_loader,
+                    device,
+                    amp_dtype=amp_dtype,
+                    require_flash_attention=require_flash,
+                )
                 print(
                     f"epoch {epoch + 1} step {global_step}: "
                     f"val_loss={val_loss:.4f}"
@@ -513,7 +541,14 @@ def train(config: Config):
 
             if global_step % train_config["save_every"] == 0 or last_step:
                 write_samples(
-                    config, model, tokenizer, device, model_args, run_dir, global_step
+                    config,
+                    model,
+                    tokenizer,
+                    device,
+                    model_args,
+                    run_dir,
+                    global_step,
+                    amp_dtype=amp_dtype,
                 )
                 save_checkpoint(
                     model,
@@ -527,7 +562,7 @@ def train(config: Config):
                 )
 
             accum_steps = 0
-            accum_loss = 0.0
+            accum_loss.zero_()
 
         start_batch_index = 0
 

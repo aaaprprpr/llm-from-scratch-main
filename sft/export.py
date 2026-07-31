@@ -1,35 +1,29 @@
-import re
+import sys
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path = [
+    path for path in sys.path if Path(path or Path.cwd()).resolve() != SCRIPT_DIR
+]
+sys.path.insert(0, str(PROJECT_ROOT))
 
 import torch
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+from sft.utils import find_latest_checkpoint
+
 LOGS_PATH = PROJECT_ROOT / "output" / "sft_logs"
 OUTPUT_PATH = PROJECT_ROOT / "output" / "sft_weights" / "model.pt"
 
 
-def checkpoint_step(path: Path) -> int:
-    match = re.search(r"ckpt_step_(\d+)\.pt$", path.name)
-    return int(match.group(1)) if match else -1
-
-
-def find_latest_checkpoint() -> Path:
-    checkpoints = list(LOGS_PATH.glob("run_*/ckpt_step_*.pt"))
-    if not checkpoints:
-        raise FileNotFoundError(f"没有找到 SFT checkpoint：{LOGS_PATH}")
-    return max(
-        checkpoints, key=lambda path: (checkpoint_step(path), path.stat().st_mtime)
-    )
-
-
 def main():
-    checkpoint_path = find_latest_checkpoint()
+    checkpoint_path = find_latest_checkpoint(LOGS_PATH)
     print(f"加载 SFT checkpoint：{checkpoint_path}")
 
     checkpoint = torch.load(
         checkpoint_path,
         map_location="cpu",
-        weights_only=False,
+        weights_only=True,
         mmap=True,
     )
 
