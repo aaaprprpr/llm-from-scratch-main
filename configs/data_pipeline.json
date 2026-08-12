@@ -33,8 +33,36 @@
       "notes": "确认来源：旧版 download.py 使用 load_dataset(\"wikimedia/wikipedia\", \"20231101.zh\", split=\"train\")。"
     },
     {
+      "source_id": "tigerresearch_pretrain_zh",
+      "enabled": false,
+      "source_type": "huggingface",
+      "purpose": "pretrain",
+      "description": "TigerResearch 开源中文预训练语料，包含书籍、新闻和百科类连续文本。",
+      "source_url": "https://huggingface.co/datasets/TigerResearch/pretrain_zh",
+      "dataset": "TigerResearch/pretrain_zh",
+      "config": null,
+      "split": "train",
+      "revision": null,
+      "license": null,
+      "output": "data_pipeline/data/downloads/tigerresearch_pretrain_zh",
+      "format": "disk",
+      "expected_columns": [
+        "dataType",
+        "title",
+        "content",
+        "uniqueKey",
+        "titleUkey",
+        "id"
+      ],
+      "adapter": "plain_text",
+      "overwrite": false,
+      "size_note": "约 1690 万条、36.5 GB Parquet；下载并保存到本地时需要额外磁盘空间。",
+      "safety_note": "数据来源和许可说明不完整，书籍、新闻及百科文本使用前需自行确认。",
+      "notes": "预处理只输出 title 与 content 组成的完整文本，不保留 dataType、哈希和 id。"
+    },
+    {
       "source_id": "sharegpt_chinese",
-      "enabled": true,
+      "enabled": false,
       "source_type": "huggingface",
       "purpose": "pretrain_candidate",
       "description": "中文 ShareGPT 多轮对话数据。",
@@ -57,7 +85,7 @@
     },
     {
       "source_id": "chinese_question_answering_dataset",
-      "enabled": true,
+      "enabled": false,
       "source_type": "huggingface",
       "purpose": "pretrain_candidate",
       "description": "中文问答数据。",
@@ -82,7 +110,7 @@
     },
     {
       "source_id": "chinese_simpleqa",
-      "enabled": true,
+      "enabled": false,
       "source_type": "huggingface",
       "purpose": "pretrain_candidate",
       "description": "中文 SimpleQA 问答数据。",
@@ -110,7 +138,7 @@
     },
     {
       "source_id": "chinese_safe",
-      "enabled": true,
+      "enabled": false,
       "source_type": "huggingface",
       "purpose": "pretrain_candidate",
       "description": "中文安全分类/安全文本数据。",
@@ -135,7 +163,7 @@
     },
     {
       "source_id": "belle_train_3_5m_cn",
-      "enabled": true,
+      "enabled": false,
       "source_type": "huggingface",
       "purpose": "pretrain_candidate",
       "description": "中文 BELLE 指令/对话数据。",
@@ -159,7 +187,7 @@
     },
     {
       "source_id": "tieba_some_interesting",
-      "enabled": true,
+      "enabled": false,
       "source_type": "huggingface",
       "purpose": "pretrain_candidate",
       "description": "贴吧类中文数据。",
@@ -184,7 +212,7 @@
     },
     {
       "source_id": "baidu_tieba_kangyabeiguo",
-      "enabled": true,
+      "enabled": false,
       "source_type": "huggingface",
       "purpose": "pretrain_candidate",
       "description": "百度贴吧抗压背锅吧数据。",
@@ -216,42 +244,47 @@
         "enabled": true
       },
       {
+        "source_id": "tigerresearch_pretrain_zh",
+        "enabled": false
+      },
+      {
         "source_id": "sharegpt_chinese",
-        "enabled": true
+        "enabled": false
       },
       {
         "source_id": "chinese_question_answering_dataset",
-        "enabled": true
+        "enabled": false
       },
       {
         "source_id": "chinese_simpleqa",
-        "enabled": true
+        "enabled": false
       },
       {
         "source_id": "chinese_safe",
-        "enabled": true
+        "enabled": false
       },
       {
         "source_id": "belle_train_3_5m_cn",
-        "enabled": true
+        "enabled": false
       },
       {
         "source_id": "tieba_some_interesting",
-        "enabled": true
+        "enabled": false
       },
       {
         "source_id": "baidu_tieba_kangyabeiguo",
-        "enabled": true
+        "enabled": false
       }
     ],
     "missing_dataset_policy": "error",
     "output": "data_pipeline/data/preprocessed",
     "fix_text": true,
+    "convert_to_simplified": true,
     "deduplicate": true,
     "max_repetition_ratio": 0.8,
     "workers": "auto",
     "map_batch_size": 1000,
-    "overwrite": false
+    "overwrite": true
   },
   "build_bin": {
     "input": "data_pipeline/data/preprocessed",
@@ -265,6 +298,6 @@
     "batch_records": 512,
     "workers": "auto",
     "dtype": "uint16",
-    "overwrite": false
+    "overwrite": true
   }
 }

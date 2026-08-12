@@ -17,7 +17,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from config_loader import Config
 
 # 当前 Windows 环境里先 import torch 再 import datasets/pyarrow 会崩。
-from sft.datasets.alpaca_zh import AlpacaZhDataset, load_alpaca_zh
+from sft.datasets import load_chat_dataset
 
 import torch
 import torch.nn.functional as F
@@ -33,7 +33,11 @@ from pretrain.train_model import (
     verify_flash_attention,
 )
 from sft.collator import SFTCollator
-from sft.tokenize_sft import IGNORE_INDEX, tokenize_chat_example
+from sft.tokenize_sft import (
+    IGNORE_INDEX,
+    iter_tokenized_examples,
+    resolve_tokenize_workers,
+)
 from sft.utils import build_prompt, clean_answer, load_config, load_tokenizer
 
 
@@ -112,6 +116,8 @@ def build_cache_key(config: Config) -> dict:
     dataset_path = config.resolve_path("paths", "dataset")
     tokenizer_path = config.resolve_path("paths", "tokenizer")
     return {
+        "adapter": config.require("data", "adapter"),
+        "deduplicate": config.get("data", "deduplicate", default=True),
         "dataset": str(dataset_path),
         "dataset_fingerprint": path_fingerprint(dataset_path),
         "tokenizer": str(tokenizer_path),
@@ -123,6 +129,44 @@ def build_cache_key(config: Config) -> dict:
     }
 
 
+def prepare_chat_examples(chat_dataset, deduplicate: bool):
+    examples = []
+    seen_answers = set()
+    invalid = 0
+    duplicates = 0
+
+    for example in chat_dataset:
+        if example is None:
+            invalid += 1
+            continue
+
+        answers = tuple(
+            " ".join(message["content"].split())
+            for message in example["messages"]
+            if message["role"] == "assistant"
+        )
+        if not answers:
+            invalid += 1
+            continue
+        if deduplicate and answers in seen_answers:
+            duplicates += 1
+            continue
+
+        seen_answers.add(answers)
+        examples.append(example)
+
+    return examples, invalid, duplicates
+
+
+def print_dataset_stats(dataset, skip_stats: dict) -> None:
+    skipped = sum(skip_stats.values())
+    print(
+        f"数据处理完成：保留 {len(dataset)} 条，跳过 {skipped} 条"
+        f"（无效 {skip_stats['invalid']}，重复 {skip_stats['duplicates']}，"
+        f"超长 {skip_stats['too_long']}）"
+    )
+
+
 def load_or_build_dataset(config: Config, tokenizer):
     cache_path = config.resolve_path("paths", "tokenized_cache")
     cache_key = build_cache_key(config)
@@ -131,35 +175,69 @@ def load_or_build_dataset(config: Config, tokenizer):
         cached = torch.load(cache_path, map_location="cpu", weights_only=True)
         if cached.get("cache_key") == cache_key:
             dataset = cached["dataset"]
-            skipped = cached.get("skipped", 0)
+            skip_stats = cached.get(
+                "skip_stats",
+                {
+                    "invalid": 0,
+                    "duplicates": 0,
+                    "too_long": cached.get("skipped", 0),
+                },
+            )
             print(f"使用 tokenized cache：{cache_path}")
-            print(f"数据处理完成：保留 {len(dataset)} 条，跳过 {skipped} 条")
+            print_dataset_stats(dataset, skip_stats)
             return dataset
 
-    raw_dataset = load_alpaca_zh(config.resolve_path("paths", "dataset"))
-    chat_dataset = AlpacaZhDataset(raw_dataset)
+    chat_dataset = load_chat_dataset(
+        config.require("data", "adapter"),
+        config.resolve_path("paths", "dataset"),
+    )
     max_seq_len = config.require("train", "max_seq_len")
+    chat_examples, invalid, duplicates = prepare_chat_examples(
+        chat_dataset,
+        deduplicate=config.get("data", "deduplicate", default=True),
+    )
+    tokenize_workers = resolve_tokenize_workers(
+        config.get("data", "tokenize_workers", default="auto")
+    )
+    tokenize_chunksize = int(
+        config.get("data", "tokenize_chunksize", default=32)
+    )
 
     tokenized = []
-    skipped = 0
-    for example in chat_dataset:
-        item = tokenize_chat_example(example, tokenizer, max_seq_len=max_seq_len)
+    too_long = 0
+    print(f"首次构建 tokenized cache，使用 {tokenize_workers} 个进程")
+    items = iter_tokenized_examples(
+        chat_examples,
+        tokenizer,
+        max_seq_len=max_seq_len,
+        workers=tokenize_workers,
+        tokenizer_path=config.resolve_path("paths", "tokenizer"),
+        chat_template_path=config.resolve_path("paths", "chat_template"),
+        chunksize=tokenize_chunksize,
+    )
+    for item in items:
         if item is None:
-            skipped += 1
+            too_long += 1
             continue
         tokenized.append(item)
+
+    skip_stats = {
+        "invalid": invalid,
+        "duplicates": duplicates,
+        "too_long": too_long,
+    }
 
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
             "cache_key": cache_key,
             "dataset": tokenized,
-            "skipped": skipped,
+            "skip_stats": skip_stats,
         },
         cache_path,
     )
 
-    print(f"数据处理完成：保留 {len(tokenized)} 条，跳过 {skipped} 条")
+    print_dataset_stats(tokenized, skip_stats)
     print(f"已保存 tokenized cache：{cache_path}")
     return tokenized
 
@@ -203,12 +281,13 @@ def build_dataloader(
 def build_model(config: Config, device):
     model_args = config.require("model")
     model = Transformer(**model_args)
-    state_dict = torch.load(
+    checkpoint = torch.load(
         config.resolve_path("paths", "pretrained_weights"),
         map_location="cpu",
         weights_only=True,
         mmap=True,
     )
+    state_dict = checkpoint.get("model", checkpoint)
     model.load_state_dict(state_dict, strict=True)
     model.to(device)
     return model, model_args
@@ -221,23 +300,41 @@ def move_optimizer_to_device(optimizer, device):
                 state[key] = value.to(device)
 
 
-def causal_lm_loss(logits, labels):
+def causal_lm_loss(
+    logits,
+    labels,
+    end_token_id: int,
+    end_token_weight: float,
+):
     # logits[:, t] 预测 input_ids[:, t + 1]，所以 labels 也要右移一格来对齐。
     shift_logits = logits[:, :-1, :].contiguous()
     shift_labels = labels[:, 1:].contiguous()
-    return F.cross_entropy(
+    token_losses = F.cross_entropy(
         shift_logits.view(-1, shift_logits.size(-1)),
         shift_labels.view(-1),
         ignore_index=IGNORE_INDEX,
+        reduction="none",
     )
+    flat_labels = shift_labels.view(-1)
+    loss_weights = flat_labels.ne(IGNORE_INDEX).to(token_losses.dtype)
+    loss_weights.masked_fill_(
+        flat_labels.eq(end_token_id),
+        end_token_weight,
+    )
+    return (token_losses * loss_weights).sum(), loss_weights.sum()
 
 
 def move_batch_to_device(batch, device):
     non_blocking = device.type == "cuda"
+    attention_mask = batch["attention_mask"]
+    if bool(attention_mask.all()):
+        attention_mask = None
+    else:
+        attention_mask = attention_mask.to(device, non_blocking=non_blocking)
     return (
         batch["input_ids"].to(device, non_blocking=non_blocking),
         batch["labels"].to(device, non_blocking=non_blocking),
-        batch["attention_mask"].to(device, non_blocking=non_blocking),
+        attention_mask,
     )
 
 
@@ -247,12 +344,15 @@ def estimate_loss(
     model,
     dataloader,
     device,
+    end_token_id: int,
+    end_token_weight: float,
     amp_dtype=None,
     require_flash_attention=False,
 ):
     eval_batches = config.require("train", "eval_batches")
     was_training = model.training
     total_loss = torch.zeros((), device=device)
+    total_loss_weight = torch.zeros((), device=device)
     evaluated_batches = 0
 
     model.eval()
@@ -270,14 +370,20 @@ def estimate_loss(
                         attention_mask=attention_mask,
                         use_cache=False,
                     )
-                    loss = causal_lm_loss(logits, labels)
+                    loss_sum, loss_weight = causal_lm_loss(
+                        logits,
+                        labels,
+                        end_token_id=end_token_id,
+                        end_token_weight=end_token_weight,
+                    )
 
-            total_loss += loss
+            total_loss += loss_sum
+            total_loss_weight += loss_weight
             evaluated_batches += 1
 
         if evaluated_batches == 0:
             raise ValueError("验证集没有可用 batch")
-        return (total_loss / evaluated_batches).item()
+        return (total_loss / total_loss_weight).item()
     finally:
         model.train(was_training)
 
@@ -401,6 +507,14 @@ def write_metric(metrics_file, step, train_loss, val_loss, lr):
 
 def train(config: Config):
     train_config = config.require("train")
+    tokenizer = load_tokenizer(config)
+    dataset = load_or_build_dataset(config, tokenizer)
+    train_dataset, val_dataset = split_dataset(config, dataset)
+    end_token_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
+    end_token_weight = float(train_config.get("end_token_weight", 1.0))
+    if end_token_weight <= 0:
+        raise ValueError("train.end_token_weight 必须大于 0")
+
     torch.manual_seed(train_config["seed"])
     device = get_device(config)
     amp_dtype = resolve_amp_dtype(
@@ -417,9 +531,6 @@ def train(config: Config):
     )
     print(f"使用设备：{device}，精度：{effective_precision}")
 
-    tokenizer = load_tokenizer(config)
-    dataset = load_or_build_dataset(config, tokenizer)
-    train_dataset, val_dataset = split_dataset(config, dataset)
     val_loader = build_dataloader(
         config,
         val_dataset,
@@ -463,7 +574,8 @@ def train(config: Config):
             pin_memory=pin_memory,
         )
         accum_steps = 0
-        accum_loss = torch.zeros((), device=device)
+        accum_loss_sum = torch.zeros((), device=device)
+        accum_loss_weight = torch.zeros((), device=device)
         optimizer.zero_grad(set_to_none=True)
 
         for batch_index, batch in enumerate(train_loader):
@@ -479,11 +591,17 @@ def train(config: Config):
                         attention_mask=attention_mask,
                         use_cache=False,
                     )
-                    loss = causal_lm_loss(logits, labels)
+                    loss_sum, loss_weight = causal_lm_loss(
+                        logits,
+                        labels,
+                        end_token_id=end_token_id,
+                        end_token_weight=end_token_weight,
+                    )
 
-                (loss / train_config["gradient_accumulation_steps"]).backward()
+                loss_sum.backward()
             accum_steps += 1
-            accum_loss += loss.detach().float()
+            accum_loss_sum += loss_sum.detach().float()
+            accum_loss_weight += loss_weight.detach().float()
 
             last_micro_batch = batch_index + 1 == len(train_loader)
             should_step = (
@@ -503,6 +621,10 @@ def train(config: Config):
             for param_group in optimizer.param_groups:
                 param_group["lr"] = lr
 
+            for parameter in model.parameters():
+                if parameter.grad is not None:
+                    parameter.grad.div_(accum_loss_weight)
+
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 model.parameters(), train_config["grad_clip"]
             )
@@ -510,7 +632,7 @@ def train(config: Config):
             optimizer.zero_grad(set_to_none=True)
 
             global_step += 1
-            train_loss = (accum_loss / accum_steps).item()
+            train_loss = (accum_loss_sum / accum_loss_weight).item()
             next_batch_index = batch_index + 1
             last_step = (
                 epoch + 1 == train_config["num_epochs"] and next_batch_index == len(train_loader)
@@ -532,6 +654,8 @@ def train(config: Config):
                     device,
                     amp_dtype=amp_dtype,
                     require_flash_attention=require_flash,
+                    end_token_id=end_token_id,
+                    end_token_weight=end_token_weight,
                 )
                 print(
                     f"epoch {epoch + 1} step {global_step}: "
@@ -562,7 +686,8 @@ def train(config: Config):
                 )
 
             accum_steps = 0
-            accum_loss.zero_()
+            accum_loss_sum.zero_()
+            accum_loss_weight.zero_()
 
         start_batch_index = 0
 

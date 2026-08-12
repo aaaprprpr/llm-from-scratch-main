@@ -24,7 +24,7 @@
     "precision": "bfloat16",
     "activation_checkpointing": false,
     "require_flash_attention": true,
-    "max_iters": 93277,
+    "max_iters": 29682,
     "eval_interval": 1000,
     "eval_tokens": 262144,
     "log_interval": 10
@@ -36,8 +36,8 @@
   "lr_schedule": {
     "max_lr": 0.0006,
     "min_lr": 0.00006,
-    "warmup_iters": 1000,
-    "lr_decay_iters": 93277
+    "warmup_iters": 500,
+    "lr_decay_iters": 29682
   },
   "logging": {
     "use_wandb": false,

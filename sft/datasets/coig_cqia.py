@@ -11,13 +11,13 @@ from sft.datasets.instruction import (
 from sft.schema import ChatExample
 
 
-def load_alpaca_zh(path: str | Path) -> HFDataset:
-    return load_instruction_dataset(path, "Alpaca 中文数据集")
+def load_coig_cqia(path: str | Path) -> HFDataset:
+    return load_instruction_dataset(path, "COIG-CQIA 数据集")
 
 
-def adapt_alpaca_example(example: Mapping[str, object]) -> ChatExample | None:
+def adapt_coig_cqia_example(example: Mapping[str, object]) -> ChatExample | None:
     return adapt_instruction_example(example)
 
 
-class AlpacaZhDataset(InstructionDataset):
+class COIGCQIADataset(InstructionDataset):
     pass
