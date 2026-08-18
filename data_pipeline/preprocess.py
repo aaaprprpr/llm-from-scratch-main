@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -49,7 +48,6 @@ FILTER_REASONS = {
 class PreprocessStats:
     dataset_sources: int = 0
     dataset_rows: int = 0
-    duplicates: int = 0
     accepted: int = 0
 
 
@@ -316,13 +314,12 @@ def clean_batch(
     max_repetition_ratio: float,
     fix_text: bool,
     convert_to_simplified: bool,
-    rejected_dir: str,
+    filter_stats_dir: str,
 ) -> dict[str, list[Any]]:
     adapter = ADAPTERS[adapter_name]
     batch_size = len(next(iter(batch.values()), []))
     texts = []
-    digests = []
-    rejected = []
+    filtered_by_reason: Counter[str] = Counter()
 
     for index in range(batch_size):
         row = {name: values[index] for name, values in batch.items()}
@@ -334,27 +331,24 @@ def clean_batch(
             convert_to_simplified,
         )
         if text is None:
-            rejected.append(
-                {
-                    "reason": FILTER_REASONS[reason],
-                    "text": original_text or "",
-                }
-            )
+            filtered_by_reason[FILTER_REASONS[reason]] += 1
             continue
 
         texts.append(text)
-        digests.append(
-            hashlib.blake2b(text.encode("utf-8"), digest_size=16).digest()
-        )
 
-    if rejected:
-        rejected_path = Path(rejected_dir) / f"worker-{rank or 0:05d}.jsonl"
-        with rejected_path.open("a", encoding="utf-8") as stream:
-            for record in rejected:
-                stream.write(json.dumps(record, ensure_ascii=False))
-                stream.write("\n")
+    if filtered_by_reason:
+        stats_path = Path(filter_stats_dir) / f"worker-{rank or 0:05d}.jsonl"
+        with stats_path.open("a", encoding="utf-8") as stream:
+            stream.write(
+                json.dumps(
+                    filtered_by_reason,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+            stream.write("\n")
 
-    return {"text": texts, "_digest": digests}
+    return {"text": texts}
 
 
 def clean_source(
@@ -367,7 +361,7 @@ def clean_source(
     map_batch_size: int,
     stats: PreprocessStats,
     cache_dir: Path,
-    rejected_dir: Path,
+    filter_stats_dir: Path,
 ) -> list[Any]:
     from datasets import Features, Value, load_from_disk
 
@@ -390,12 +384,7 @@ def clean_source(
 
     dataset = load_from_disk(str(input_path))
     cleaned_splits = []
-    output_features = Features(
-        {
-            "text": Value("string"),
-            "_digest": Value("binary"),
-        }
-    )
+    output_features = Features({"text": Value("string")})
     num_proc = workers if workers > 1 else None
 
     for split_index, (split_name, split) in enumerate(iter_splits(dataset)):
@@ -425,7 +414,7 @@ def clean_source(
                 "max_repetition_ratio": max_repetition_ratio,
                 "fix_text": fix_text,
                 "convert_to_simplified": convert_to_simplified,
-                "rejected_dir": str(rejected_dir),
+                "filter_stats_dir": str(filter_stats_dir),
             },
             remove_columns=split.column_names,
             features=output_features,
@@ -441,7 +430,6 @@ def clean_source(
 def build_dataset(
     sources: list[dict[str, Any]],
     missing_policy: str,
-    deduplicate: bool,
     stats: PreprocessStats,
     cache_dir: Path,
     max_repetition_ratio: float,
@@ -449,9 +437,9 @@ def build_dataset(
     convert_to_simplified: bool,
     workers: int,
     map_batch_size: int,
-    rejected_dir: Path,
+    filter_stats_dir: Path,
 ):
-    from datasets import Dataset, Features, Value, concatenate_datasets
+    from datasets import concatenate_datasets
 
     cleaned_parts = []
     for source in sources:
@@ -466,64 +454,41 @@ def build_dataset(
                 map_batch_size,
                 stats,
                 cache_dir,
-                rejected_dir,
+                filter_stats_dir,
             )
         )
     if not cleaned_parts:
         raise ValueError("No valid pretraining text records remain after cleaning.")
 
     cleaned_dataset = concatenate_datasets(cleaned_parts)
-    if not deduplicate:
-        stats.accepted = len(cleaned_dataset)
-        return cleaned_dataset.remove_columns("_digest")
-
-    def generate_records():
-        seen_hashes: set[bytes] = set()
-        duplicate_path = rejected_dir / "duplicates.jsonl"
-        with duplicate_path.open("a", encoding="utf-8") as rejected_stream:
-            for text_batch in cleaned_dataset.iter(batch_size=10_000):
-                for text, digest in zip(
-                    text_batch["text"],
-                    text_batch["_digest"],
-                ):
-                    if digest in seen_hashes:
-                        stats.duplicates += 1
-                        rejected_stream.write(
-                            json.dumps(
-                                {"reason": "duplicate", "text": text},
-                                ensure_ascii=False,
-                            )
-                        )
-                        rejected_stream.write("\n")
-                        continue
-                    seen_hashes.add(digest)
-
-                    stats.accepted += 1
-                    yield {"text": text}
-
-    return Dataset.from_generator(
-        generate_records,
-        features=Features({"text": Value("string")}),
-        cache_dir=str(cache_dir),
-    )
+    stats.accepted = len(cleaned_dataset)
+    return cleaned_dataset
 
 
 def write_report(
     stats: PreprocessStats,
-    rejected_dir: Path,
+    filter_stats_dir: Path,
     output_path: Path,
 ) -> dict[str, Any]:
-    rejected_files = sorted(rejected_dir.glob("*.jsonl"))
+    stats_files = sorted(filter_stats_dir.glob("*.jsonl"))
     filtered_by_reason: Counter[str] = Counter()
-    for rejected_file in rejected_files:
-        with rejected_file.open(encoding="utf-8") as stream:
+    for stats_file in stats_files:
+        with stats_file.open(encoding="utf-8") as stream:
             for line in stream:
                 if line.strip():
-                    filtered_by_reason[json.loads(line)["reason"]] += 1
+                    batch_counts = json.loads(line)
+                    for reason, count in batch_counts.items():
+                        if reason not in FILTER_REASONS.values():
+                            raise ValueError(f"Unknown filter reason in report: {reason}")
+                        if not isinstance(count, int) or count < 0:
+                            raise ValueError(
+                                f"Invalid filter count for {reason}: {count!r}"
+                            )
+                        filtered_by_reason[reason] += count
 
     filtered_by_reason = {
         reason: filtered_by_reason.get(reason, 0)
-        for reason in (*FILTER_REASONS.values(), "duplicate")
+        for reason in FILTER_REASONS.values()
     }
     filtered = sum(filtered_by_reason.values())
     if stats.accepted + filtered != stats.dataset_rows:
@@ -539,23 +504,10 @@ def write_report(
         "filtered_records": filtered,
         "filtered_by_reason": filtered_by_reason,
     }
-    with output_path.open("w", encoding="utf-8") as report:
-        report.write('{\n  "summary": ')
-        report.write(json.dumps(summary, ensure_ascii=False, indent=2))
-        report.write(',\n  "records": [')
-        first_record = True
-        for rejected_file in rejected_files:
-            with rejected_file.open(encoding="utf-8") as stream:
-                for line in stream:
-                    record = line.strip()
-                    if not record:
-                        continue
-                    report.write("\n    " if first_record else ",\n    ")
-                    report.write(record)
-                    first_record = False
-        if not first_record:
-            report.write("\n  ")
-        report.write("]\n}\n")
+    output_path.write_text(
+        json.dumps({"summary": summary}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     return summary
 
 
@@ -577,7 +529,6 @@ def main() -> None:
 
     output_path = PROJECT_ROOT / config.get("output", DEFAULT_OUTPUT)
     overwrite = config.get("overwrite", False)
-    deduplicate = config.get("deduplicate", True)
     max_repetition_ratio = config.get("max_repetition_ratio", 0.8)
     fix_text = config.get("fix_text", True)
     convert_to_simplified = config.get("convert_to_simplified", False)
@@ -615,12 +566,11 @@ def main() -> None:
             dir=output_path.parent,
         ) as cache_dir:
             cache_path = Path(cache_dir)
-            rejected_dir = cache_path / "rejected"
-            rejected_dir.mkdir()
-            dataset = build_dataset(
+            filter_stats_dir = cache_path / "filter-stats"
+            filter_stats_dir.mkdir()
+            with build_dataset(
                 sources,
                 missing_policy,
-                deduplicate,
                 stats,
                 cache_path,
                 max_repetition_ratio,
@@ -628,10 +578,11 @@ def main() -> None:
                 convert_to_simplified,
                 workers,
                 map_batch_size,
-                rejected_dir,
-            )
-            dataset.save_to_disk(str(temporary_output))
-            report = write_report(stats, rejected_dir, temporary_report)
+                filter_stats_dir,
+            ) as dataset:
+                output_records = len(dataset)
+                dataset.save_to_disk(str(temporary_output))
+            report = write_report(stats, filter_stats_dir, temporary_report)
 
         if output_path.exists():
             shutil.rmtree(output_path)
@@ -645,7 +596,7 @@ def main() -> None:
         raise
 
     print(json.dumps(report, ensure_ascii=False, indent=2))
-    print(f"Wrote {len(dataset):,} records to {output_path.resolve()}")
+    print(f"Wrote {output_records:,} records to {output_path.resolve()}")
 
 
 if __name__ == "__main__":

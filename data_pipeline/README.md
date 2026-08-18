@@ -6,7 +6,7 @@
 
 ```text
 download.py    -> 下载/管理原始 dataset，并生成结构样本
-preprocess.py  -> adapter 格式化、清洗、去重，输出完整 text 记录
+preprocess.py  -> adapter 格式化、清洗，输出完整 text 记录
 build_bin.py   -> 记录级 train/val 划分、分词，生成连续 token bin
 ```
 
@@ -42,9 +42,9 @@ python .\data_pipeline\download.py
 - 读取 `preprocess.dataset_sources` 中启用的数据源；
 - 从对应的 `data_pipeline/data/downloads/...` 目录加载 dataset；
 - 按每个数据源的 `adapter` 转成完整的预训练文本记录；
-- 清洗并精确去重；
+- 清洗文本；预训练数据量较大，因此保留重复记录，不做全局去重；
 - 输出只有 `text` 列的 `data_pipeline/data/preprocessed` Arrow Dataset；
-- 将被过滤的正文和原因写入 `data_pipeline/data/preprocessed.report.json`。
+- 将过滤原因的汇总计数写入 `data_pipeline/data/preprocessed.report.json`，不保存被过滤正文。
 
 运行：
 
