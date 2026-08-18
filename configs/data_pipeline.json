@@ -34,10 +34,10 @@
     },
     {
       "source_id": "tigerresearch_pretrain_zh",
-      "enabled": false,
+      "enabled": true,
       "source_type": "huggingface",
       "purpose": "pretrain",
-      "description": "TigerResearch 开源中文预训练语料，包含书籍、新闻和百科类连续文本。",
+      "description": "TigerResearch 开源中文预训练语料，包含书籍、互联网文本和百科类连续文本。",
       "source_url": "https://huggingface.co/datasets/TigerResearch/pretrain_zh",
       "dataset": "TigerResearch/pretrain_zh",
       "config": null,
@@ -245,7 +245,7 @@
       },
       {
         "source_id": "tigerresearch_pretrain_zh",
-        "enabled": false
+        "enabled": true
       },
       {
         "source_id": "sharegpt_chinese",
