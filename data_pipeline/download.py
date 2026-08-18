@@ -232,7 +232,11 @@ def download_one(
 
     guard_dangerous_configs(source)
 
-    from datasets import load_dataset
+    from datasets import DownloadConfig, enable_progress_bars, load_dataset
+    from huggingface_hub.utils import enable_progress_bars as enable_hub_progress_bars
+
+    enable_progress_bars()
+    enable_hub_progress_bars()
 
     load_kwargs = {
         "path": source["dataset"],
@@ -240,8 +244,16 @@ def download_one(
         "split": source["split"],
         "revision": source["revision"],
     }
+    print(f"Dataset: {source['dataset']}", flush=True)
+    print(f"Split: {source['split']}", flush=True)
+    print(f"Expected size: {source.get('size_note') or 'unknown'}", flush=True)
+    print(f"Save to: {output.resolve()}", flush=True)
     dataset = load_dataset(
-        **{key: value for key, value in load_kwargs.items() if value is not None}
+        **{key: value for key, value in load_kwargs.items() if value is not None},
+        download_config=DownloadConfig(
+            download_desc=f"Downloading {source['dataset']}",
+            disable_tqdm=False,
+        ),
     )
 
     output.parent.mkdir(parents=True, exist_ok=True)

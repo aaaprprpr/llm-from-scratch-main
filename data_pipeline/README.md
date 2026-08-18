@@ -30,6 +30,7 @@ python .\data_pipeline\download.py
 
 - Hugging Face 数据源统一使用 `format: "disk"`，下载为 `data_pipeline/data/downloads/<source_id>`。
 - `download.py` 不再导出 txt。
+- 下载前会打印 dataset、split、预估总量和保存目录；下载时 Hugging Face 会显示当前文件名及真实字节数。
 - `wikimedia/wikipedia` 必须显式写 `config: "20231101.zh"` 和 `split: "train"`。不要把 wiki 配成 `config: null`，避免误拉全量 wikipedia。
 
 ## 2. 数据预处理
