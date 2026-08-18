@@ -1,3 +1,5 @@
+import math
+
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -17,6 +19,8 @@ __all__ = [
 
 
 class Transformer(nn.Module):
+    initializer_std = 0.02
+
     def __init__(
         self,
         d_model: int,  # 嵌入维度
@@ -32,6 +36,11 @@ class Transformer(nn.Module):
         if d_model % n_head != 0:
             raise ValueError(
                 f"d_model ({d_model}) must be divisible by " f"n_head ({n_head})"
+            )
+
+        if not isinstance(num_layers, int) or num_layers <= 0:
+            raise ValueError(
+                f"num_layers must be a positive integer, got {num_layers}"
             )
 
         head_dim = d_model // n_head
@@ -53,6 +62,28 @@ class Transformer(nn.Module):
         self.embedding = nn.Embedding(vocab_size, d_model)  # 词嵌入
         self.lm_head = nn.Linear(d_model, vocab_size, bias=False)  # 语言模型头
         self.gradient_checkpointing = False
+        self.reset_parameters()
+
+    def _init_module(self, module: nn.Module) -> None:
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=self.initializer_std)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=self.initializer_std)
+        elif isinstance(module, nn.RMSNorm):
+            nn.init.ones_(module.weight)
+
+    def reset_parameters(self) -> None:
+        """统一初始化模型，并按残差分支数缩放输出投影。"""
+        self.apply(self._init_module)
+
+        # 每个 block 有 attention 和 FFN 两个残差分支。把写回
+        # residual stream 的投影缩放 1/sqrt(2L)，避免残差方差随深度累积。
+        residual_std = self.initializer_std / math.sqrt(2.0 * len(self.layers))
+        for layer in self.layers:
+            nn.init.normal_(layer.attn.out_proj.weight, mean=0.0, std=residual_std)
+            nn.init.normal_(layer.ffn.w2.weight, mean=0.0, std=residual_std)
 
     def gradient_checkpointing_enable(self):
         self.gradient_checkpointing = True
