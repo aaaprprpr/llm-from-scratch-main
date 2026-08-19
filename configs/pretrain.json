@@ -19,25 +19,29 @@
     "device": "auto",
     "seed": 42,
     "sequence_length": 2048,
-    "batch_size": 1,
+    "batch_size": 4,
     "tokens_per_update": 32768,
     "precision": "bfloat16",
     "activation_checkpointing": false,
     "require_flash_attention": true,
-    "max_iters": 29682,
+    "max_iters": 152588,
     "eval_interval": 1000,
-    "eval_tokens": 262144,
+    "eval_tokens": 65536,
     "log_interval": 10
   },
   "optimizer": {
-    "weight_decay": 0.01,
+    "weight_decay": 0.1,
+    "beta1": 0.9,
+    "beta2": 0.95,
+    "eps": 1e-8,
+    "fused": true,
     "max_norm": 1.0
   },
   "lr_schedule": {
-    "max_lr": 0.0006,
-    "min_lr": 0.00006,
-    "warmup_iters": 500,
-    "lr_decay_iters": 29682
+    "max_lr": 0.0003,
+    "min_lr": 0.00003,
+    "warmup_iters": 1500,
+    "lr_decay_iters": 152588
   },
   "logging": {
     "use_wandb": false,

@@ -84,12 +84,18 @@ def main():
         tokens_per_update,
         eval_iters,
     ) = resolve_training_parameters(model_config, train_config)
+    planned_train_tokens = train_config["max_iters"] * tokens_per_update
 
     precision = train_config.get("precision", "float32")
     amp_dtype = resolve_amp_dtype(precision, device)
     require_flash = train_config.get("require_flash_attention", False)
     if require_flash:
         verify_flash_attention(device, amp_dtype)
+
+    fused_optimizer_requested = optimizer_config.get("fused", False)
+    if not isinstance(fused_optimizer_requested, bool):
+        raise ValueError("optimizer.fused must be a boolean")
+    use_fused_optimizer = fused_optimizer_requested and device.type == "cuda"
 
     print(f"using device: {device}")
     print(
@@ -101,7 +107,8 @@ def main():
     print(
         f"precision: "
         f"{'bfloat16 autocast' if amp_dtype == torch.bfloat16 else 'float32'}, "
-        f"eval_iters: {eval_iters}"
+        f"eval_iters: {eval_iters}, "
+        f"fused_optimizer: {use_fused_optimizer}"
     )
 
     out_dir = config.resolve_path("paths", "out_root") / time.strftime(
@@ -123,6 +130,8 @@ def main():
         "effective_precision": (
             "bfloat16" if amp_dtype == torch.bfloat16 else "float32"
         ),
+        "planned_train_tokens": planned_train_tokens,
+        "fused_optimizer": use_fused_optimizer,
         "seed": seed,
     }
     (out_dir / "config.json").write_text(
@@ -136,15 +145,47 @@ def main():
 
     train_data = load_token_bin(config.resolve_path("paths", "train_data"))
     val_data = load_token_bin(config.resolve_path("paths", "val_data"))
+    print(
+        f"train data: {len(train_data):,} tokens; "
+        f"planned: {planned_train_tokens:,} tokens "
+        f"({planned_train_tokens / len(train_data):.2%} of one pass)"
+    )
+    print(
+        f"validation data: {len(val_data):,} tokens; "
+        f"sampled per evaluation: {eval_iters * tokens_per_micro_batch:,} tokens"
+    )
 
     # model, optimizer  优化器手写换官方了
     model = Model(**model_config).to(device)
+    model_parameters = sum(parameter.numel() for parameter in model.parameters())
+    print(
+        f"model parameters: {model_parameters:,}; "
+        f"planned tokens/parameter: {planned_train_tokens / model_parameters:.2f}"
+    )
     if train_config.get("activation_checkpointing", False):
         model.gradient_checkpointing_enable()
+
+    decay_parameters = []
+    no_decay_parameters = []
+    for parameter in model.parameters():
+        if not parameter.requires_grad:
+            continue
+        target = decay_parameters if parameter.ndim >= 2 else no_decay_parameters
+        target.append(parameter)
+
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        [
+            {
+                "params": decay_parameters,
+                "weight_decay": optimizer_config["weight_decay"],
+            },
+            {"params": no_decay_parameters, "weight_decay": 0.0},
+        ],
         lr=lr_config["max_lr"],
-        weight_decay=optimizer_config["weight_decay"],
+        betas=(optimizer_config["beta1"], optimizer_config["beta2"]),
+        eps=optimizer_config["eps"],
+        weight_decay=0.0,
+        fused=use_fused_optimizer,
     )  # 这个初始化的 lr 只是个占位。后面都会被 cosine 的强行覆盖.
 
     # 检查点恢复
