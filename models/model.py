@@ -30,6 +30,7 @@ class Transformer(nn.Module):
         vocab_size: int,  # 词表大小
         context_length: int,  # 最大长度
         num_layers: int,  # 块数
+        tie_word_embeddings: bool = False,
     ):
         super().__init__()
 
@@ -41,6 +42,12 @@ class Transformer(nn.Module):
         if not isinstance(num_layers, int) or num_layers <= 0:
             raise ValueError(
                 f"num_layers must be a positive integer, got {num_layers}"
+            )
+
+        if not isinstance(tie_word_embeddings, bool):
+            raise TypeError(
+                "tie_word_embeddings must be bool, got "
+                f"{type(tie_word_embeddings).__name__}"
             )
 
         head_dim = d_model // n_head
@@ -61,8 +68,25 @@ class Transformer(nn.Module):
         self.context_length = context_length  # 最大长度
         self.embedding = nn.Embedding(vocab_size, d_model)  # 词嵌入
         self.lm_head = nn.Linear(d_model, vocab_size, bias=False)  # 语言模型头
+        self.tie_word_embeddings = tie_word_embeddings
         self.gradient_checkpointing = False
         self.reset_parameters()
+        if self.tie_word_embeddings:
+            self.tie_weights()
+
+    def tie_weights(self) -> None:
+        """让输入词嵌入和输出分类头使用同一个 Parameter。"""
+        if self.embedding.weight.shape != self.lm_head.weight.shape:
+            raise RuntimeError(
+                "Cannot tie embedding and lm_head with different shapes: "
+                f"{tuple(self.embedding.weight.shape)} != "
+                f"{tuple(self.lm_head.weight.shape)}"
+            )
+        self.lm_head.weight = self.embedding.weight
+
+        # 这里检查对象身份，而不只是数值相等；优化器必须只看到一份参数。
+        if self.lm_head.weight is not self.embedding.weight:
+            raise RuntimeError("Failed to tie embedding and lm_head weights")
 
     def _init_module(self, module: nn.Module) -> None:
         if isinstance(module, nn.Linear):

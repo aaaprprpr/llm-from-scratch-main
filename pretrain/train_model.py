@@ -199,7 +199,7 @@ def lr_cosine_schedule(
     max_lr,
     min_lr,
     warmup_steps,
-    decay_end_step,
+    total_steps,
 ):
     if step < 0:
         raise ValueError(f"step must be non-negative, got {step}")
@@ -207,8 +207,8 @@ def lr_cosine_schedule(
     if warmup_steps < 0:
         raise ValueError(f"warmup_steps must be non-negative, got {warmup_steps}")
 
-    if decay_end_step <= warmup_steps:
-        raise ValueError("decay_end_step must be greater than warmup_steps")
+    if total_steps <= warmup_steps:
+        raise ValueError("total_steps must be greater than warmup_steps")
 
     if not 0 <= min_lr <= max_lr:
         raise ValueError(f"Expected 0 <= min_lr <= max_lr, got {min_lr}, {max_lr}")
@@ -217,10 +217,13 @@ def lr_cosine_schedule(
     if warmup_steps > 0 and step < warmup_steps:
         return max_lr * (step + 1) / warmup_steps
 
-    if step >= decay_end_step:
+    # step 是从 0 开始的更新索引，所以最后一次更新是 total_steps - 1。
+    if step >= total_steps - 1:
         return min_lr
 
-    decay_ratio = (step - warmup_steps) / (decay_end_step - warmup_steps)
+    decay_ratio = (step - warmup_steps) / (
+        total_steps - 1 - warmup_steps
+    )
     cosine = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
 
     return min_lr + cosine * (max_lr - min_lr)
@@ -436,6 +439,20 @@ def load_checkpoint(
         map_location=map_location,
         weights_only=True,
     )
+
+    # 旧检查点没有该字段，等价于未共享权重。不能把两份不同的旧权重
+    # 依次加载到一个共享 Parameter 中，否则后加载的 lm_head 会静默覆盖 embedding。
+    checkpoint_model_args = obj.get("model_args") or {}
+    checkpoint_tied = bool(checkpoint_model_args.get("tie_word_embeddings", False))
+    model_tied = bool(getattr(model, "tie_word_embeddings", False))
+    if checkpoint_tied != model_tied:
+        raise ValueError(
+            "Checkpoint/model mismatch for tie_word_embeddings: "
+            f"checkpoint={checkpoint_tied}, model={model_tied}. "
+            "Legacy checkpoints without this field are treated as untied and "
+            "cannot be resumed with the tied pretraining configuration."
+        )
+
     model.load_state_dict(obj["model"])
     optimizer.load_state_dict(obj["optimizer"])
     return (

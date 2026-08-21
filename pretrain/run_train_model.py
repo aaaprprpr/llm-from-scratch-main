@@ -85,7 +85,6 @@ def main():
         tokens_per_update,
         eval_iters,
     ) = resolve_training_parameters(model_config, train_config)
-    planned_train_tokens = train_config["max_iters"] * tokens_per_update
 
     precision = train_config.get("precision", "float32")
     amp_dtype = resolve_amp_dtype(precision, device)
@@ -120,26 +119,6 @@ def main():
     # 在日志开头记录训练配置
     print_config(config.data)
     print(f"{'out_dir':20}: {out_dir}")
-    run_config = json.loads(json.dumps(config.data))
-    run_config["runtime"] = {
-        "sequence_length": sequence_length,
-        "gradient_accumulation_steps": gradient_accumulation_steps,
-        "tokens_per_update": tokens_per_update,
-        "eval_iters": eval_iters,
-        "actual_eval_tokens": eval_iters * tokens_per_micro_batch,
-        "device": str(device),
-        "effective_precision": (
-            "bfloat16" if amp_dtype == torch.bfloat16 else "float32"
-        ),
-        "planned_train_tokens": planned_train_tokens,
-        "fused_optimizer": use_fused_optimizer,
-        "seed": seed,
-    }
-    (out_dir / "config.json").write_text(
-        json.dumps(run_config, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
     resume_path = config.optional_path("paths", "resume")
 
     tokenizer_path = config.resolve_path("paths", "tokenizer_vocab")
@@ -162,10 +141,30 @@ def main():
         expected_tokenizer_size=tokenizer_size,
         expected_tokenizer_sha256=tokenizer_sha256,
     )
+
+    # 固定形状的 micro-batch 无法只处理最后几个零头 token，因此向上取整；
+    # 最后一次更新若越过数据末尾，TokenBatchLoader 会从开头接续。
+    total_train_updates = (
+        len(train_data) + tokens_per_update - 1
+    ) // tokens_per_update
+    planned_train_tokens = total_train_updates * tokens_per_update
+    planned_dataset_passes = planned_train_tokens / len(train_data)
+    warmup_iters = lr_config["warmup_iters"]
+    if warmup_iters >= total_train_updates:
+        raise ValueError(
+            f"lr_schedule.warmup_iters ({warmup_iters}) must be smaller than "
+            f"the computed total updates ({total_train_updates})"
+        )
+
     print(
         f"train data: {len(train_data):,} tokens; "
         f"planned: {planned_train_tokens:,} tokens "
-        f"({planned_train_tokens / len(train_data):.2%} of one pass)"
+        f"({planned_dataset_passes:.6f} passes)"
+    )
+    print(
+        f"computed training plan: {total_train_updates:,} updates; "
+        f"cosine decay end: step {total_train_updates:,}; "
+        f"warmup: {warmup_iters:,} updates"
     )
     print(
         f"validation data: {len(val_data):,} tokens; "
@@ -174,10 +173,46 @@ def main():
 
     # model, optimizer  优化器手写换官方了
     model = Model(**model_config).to(device)
+    embeddings_tied = model.embedding.weight is model.lm_head.weight
+    if bool(model_config.get("tie_word_embeddings", False)) != embeddings_tied:
+        raise RuntimeError(
+            "Configured tie_word_embeddings does not match the constructed model"
+        )
     model_parameters = sum(parameter.numel() for parameter in model.parameters())
     print(
         f"model parameters: {model_parameters:,}; "
-        f"planned tokens/parameter: {planned_train_tokens / model_parameters:.2f}"
+        f"planned tokens/parameter: {planned_train_tokens / model_parameters:.2f}; "
+        f"word embeddings tied: {embeddings_tied}"
+    )
+
+    run_config = json.loads(json.dumps(config.data))
+    run_config["runtime"] = {
+        "sequence_length": sequence_length,
+        "gradient_accumulation_steps": gradient_accumulation_steps,
+        "tokens_per_update": tokens_per_update,
+        "total_train_updates": total_train_updates,
+        "lr_decay_end_step": total_train_updates,
+        "eval_iters": eval_iters,
+        "actual_eval_tokens": eval_iters * tokens_per_micro_batch,
+        "train_dataset_tokens": len(train_data),
+        "validation_dataset_tokens": len(val_data),
+        "planned_train_tokens": planned_train_tokens,
+        "planned_dataset_passes": planned_dataset_passes,
+        "model_parameters": model_parameters,
+        "planned_tokens_per_parameter": (
+            planned_train_tokens / model_parameters
+        ),
+        "word_embeddings_tied": embeddings_tied,
+        "device": str(device),
+        "effective_precision": (
+            "bfloat16" if amp_dtype == torch.bfloat16 else "float32"
+        ),
+        "fused_optimizer": use_fused_optimizer,
+        "seed": seed,
+    }
+    (out_dir / "config.json").write_text(
+        json.dumps(run_config, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
     if train_config.get("activation_checkpointing", False):
         model.gradient_checkpointing_enable()
@@ -241,12 +276,12 @@ def main():
         tokens_seen=tokens_seen,
         use_wandb=logging_config["use_wandb"],
         wandb_project=logging_config["wandb_project"],
-        wandb_config=config.data,
+        wandb_config=run_config,
     )
 
     # ==============================
     # 训练循环
-    for it in range(start_iter, train_config["max_iters"]):
+    for it in range(start_iter, total_train_updates):
         tracker.start_training_step()
 
         # 更新学习率（余弦调度）
@@ -254,8 +289,8 @@ def main():
             it,
             lr_config["max_lr"],
             lr_config["min_lr"],
-            lr_config["warmup_iters"],
-            lr_config["lr_decay_iters"],
+            warmup_iters,
+            total_train_updates,
         )
         for param_group in optimizer.param_groups:
             param_group["lr"] = lr
@@ -287,11 +322,11 @@ def main():
 
         # 到这里才算真正完成一次更新
         completed_steps = it + 1
-        last_step = completed_steps == train_config["max_iters"]
+        last_step = completed_steps == total_train_updates
 
         # 每隔一定步数（日志间隔）打印训练进度
         if completed_steps % train_config["log_interval"] == 0 or last_step:
-            tracker.log_training_step(completed_steps, step_loss, grad_norm)
+            tracker.log_training_step(completed_steps, step_loss, grad_norm, lr)
 
         # 每隔一定步数（评估间隔）执行评估并记录日志
         if completed_steps % train_config["eval_interval"] == 0 or last_step:
@@ -317,19 +352,15 @@ def main():
             )
             tracker.log_evaluation(completed_steps, train_loss, val_loss, lr)
 
-        # 每隔一定步数（检查点间隔）从模型生成文本并保存结果
-        checkpoint_interval = (
-            train_config["eval_interval"]
-            * logging_config["checkpoint_interval_multiplier"]
-        )
-        if completed_steps % checkpoint_interval == 0 or last_step:
-
+        # 采样不再和大体积检查点绑定：每次验证时生成，并单独记入 CSV。
+        if completed_steps % train_config["eval_interval"] == 0 or last_step:
             context = sample_config["prompt"]
             temperature = sample_config["temperature"]
             top_p = sample_config["top_p"]
             idx = tokenizer.idx(context, device=device)
+            prompt_token_count = idx.size(1)
             with torch.inference_mode(), autocast_context(device, amp_dtype):
-                full_sentence = model.generate(
+                generated_ids = model.generate(
                     idx,
                     max_new_tokens=sample_config["max_new_tokens"],
                     temperature=temperature,
@@ -337,11 +368,31 @@ def main():
                     eos_id=tokenizer.special_token_to_id.get("<|endoftext|>"),
                     context_length=model_config["context_length"],
                 )
-            full_sentence = tokenizer.text(full_sentence, device=device)
+            full_text = tokenizer.text(generated_ids, device=device)
+            completion = tokenizer.text(
+                generated_ids[:, prompt_token_count:],
+                device=device,
+            )
             print(
-                f"[Generated at iter {completed_steps}, temperature {temperature}, top_p {top_p}]: {full_sentence}"
+                f"[Generated at iter {completed_steps}, temperature "
+                f"{temperature}, top_p {top_p}]: {full_text}"
+            )
+            tracker.log_sample(
+                completed_steps,
+                context,
+                completion,
+                full_text,
+                temperature,
+                top_p,
+                sample_config["max_new_tokens"],
             )
 
+        # 检查点仍按较稀疏的独立周期保存。
+        checkpoint_interval = (
+            train_config["eval_interval"]
+            * logging_config["checkpoint_interval_multiplier"]
+        )
+        if completed_steps % checkpoint_interval == 0 or last_step:
             ckpt_path = out_dir / f"ckpt_step_{completed_steps}.pt"
             save_checkpoint(
                 model,

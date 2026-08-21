@@ -20,6 +20,7 @@ env/
 !requirements.txt
 !docs/post-training-plan.txt
 data_pipeline/dataset_samples/*.sample.json
+data_pipeline/*.json
 .pt
 train_logs/
 sft_logs/

@@ -45,6 +45,42 @@ class TrainingTracker:
                     ["step", "tokens_seen", "train_loss", "val_loss", "lr"]
                 )
 
+        self.train_metrics_path = run_dir / "train_metrics.csv"
+        if not self.train_metrics_path.exists():
+            with self.train_metrics_path.open(
+                "w", newline="", encoding="utf-8"
+            ) as stream:
+                csv.writer(stream).writerow(
+                    [
+                        "step",
+                        "tokens_seen",
+                        "train_position",
+                        "loss",
+                        "lr",
+                        "grad_norm",
+                        "ms_per_step",
+                        "tokens_per_second",
+                    ]
+                )
+
+        self.samples_path = run_dir / "samples.csv"
+        if not self.samples_path.exists():
+            with self.samples_path.open(
+                "w", newline="", encoding="utf-8"
+            ) as stream:
+                csv.writer(stream).writerow(
+                    [
+                        "step",
+                        "tokens_seen",
+                        "prompt",
+                        "completion",
+                        "full_text",
+                        "temperature",
+                        "top_p",
+                        "max_new_tokens",
+                    ]
+                )
+
         self.wandb = None
         if use_wandb:
             try:
@@ -84,6 +120,7 @@ class TrainingTracker:
         step: int,
         loss: torch.Tensor,
         grad_norm: torch.Tensor,
+        lr: float,
     ) -> None:
         if self.device.type == "cuda":
             self.cuda_step_events[-1][1].synchronize()
@@ -98,13 +135,44 @@ class TrainingTracker:
         tokens_per_second = (
             self.tokens_seen - self.last_log_tokens
         ) / training_time
+        loss_value = loss.item()
+        grad_norm_value = grad_norm.item()
         print(
             f"step {step}: "
-            f"loss {loss.item():.4f}, "
+            f"loss {loss_value:.4f}, "
+            f"lr {lr:.2e}, "
             f"time {ms_per_step:.2f}ms/step, "
             f"tokens/s {tokens_per_second:.0f}, "
-            f"grad_norm {grad_norm.item():.4f}"
+            f"grad_norm {grad_norm_value:.4f}"
         )
+
+        with self.train_metrics_path.open(
+            "a", newline="", encoding="utf-8"
+        ) as stream:
+            csv.writer(stream).writerow(
+                [
+                    step,
+                    self.tokens_seen,
+                    self.train_position,
+                    loss_value,
+                    lr,
+                    grad_norm_value,
+                    ms_per_step,
+                    tokens_per_second,
+                ]
+            )
+
+        if self.wandb is not None:
+            self.wandb.log(
+                {
+                    "step": step,
+                    "tokens_seen": self.tokens_seen,
+                    "train/step_loss": loss_value,
+                    "train/grad_norm": grad_norm_value,
+                    "train/tokens_per_second": tokens_per_second,
+                    "lr": lr,
+                }
+            )
 
         self.last_log_step = step
         self.last_log_tokens = self.tokens_seen
@@ -139,4 +207,30 @@ class TrainingTracker:
         with self.metrics_path.open("a", newline="", encoding="utf-8") as stream:
             csv.writer(stream).writerow(
                 [step, self.tokens_seen, train_loss, val_loss, lr]
+            )
+
+    def log_sample(
+        self,
+        step: int,
+        prompt: str,
+        completion: str,
+        full_text: str,
+        temperature: float,
+        top_p: float,
+        max_new_tokens: int,
+    ) -> None:
+        with self.samples_path.open(
+            "a", newline="", encoding="utf-8"
+        ) as stream:
+            csv.writer(stream).writerow(
+                [
+                    step,
+                    self.tokens_seen,
+                    prompt,
+                    completion,
+                    full_text,
+                    temperature,
+                    top_p,
+                    max_new_tokens,
+                ]
             )
