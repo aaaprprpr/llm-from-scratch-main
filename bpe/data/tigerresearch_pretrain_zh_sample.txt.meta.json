@@ -1,0 +1,26 @@
+{
+  "output_file": "C:\\Users\\guojia\\Desktop\\llm-from-scratch-main\\bpe\\data\\tigerresearch_pretrain_zh_sample.txt",
+  "target_bytes": 536870912,
+  "actual_bytes": 536871522,
+  "records_written": 159923,
+  "records_skipped": 1077,
+  "seed": 42,
+  "sha256": "ec0acf6d1b53c3ced42c7886e33b4b694b8426159f79f4f9ca000cfd4c470511",
+  "text_fields": [
+    "title",
+    "content"
+  ],
+  "dataset_paths": [
+    "C:\\Users\\guojia\\Desktop\\llm-from-scratch-main\\data_pipeline\\data\\downloads\\tigerresearch_pretrain_zh"
+  ],
+  "available_records": 16905023,
+  "sampled_records_by_source": {
+    "tigerresearch_pretrain_zh": 159923
+  },
+  "sampled_records_by_category": {
+    "zh-news": 84031,
+    "zh-books": 9049,
+    "zh-baike2": 49735,
+    "zh-baike": 17108
+  }
+}
