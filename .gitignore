@@ -45,3 +45,4 @@ hf/dpo_model
 data_pipeline/data/*
 !data_pipeline/data/README.md
 output
+*.arrow

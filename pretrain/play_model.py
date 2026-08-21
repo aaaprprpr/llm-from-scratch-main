@@ -20,8 +20,8 @@ CONFIG_PATH = PROJECT_ROOT / "configs" / "pretrain.json"
 CHECKPOINT_PATH = None
 
 MAX_NEW_TOKENS = 50
-TEMPERATURE = 0.6
-TOP_P = 0.9
+TEMPERATURE = 1.0
+TOP_P = 0.95
 
 PROMPTS = [
     "中国的首都是",
@@ -31,10 +31,11 @@ PROMPTS = [
     "hello ,i am",
     "今天天气",
     "我今天吃了",
-    "打个胶先，",
-    "你是一个可爱的小傻逼，回答问题：你是傻逼吗？答：",
-    "上路被三人越塔，",
-    "乌兹，永远的",
+    '今天早上起床以后，我',
+    '因为外面下着很大的雨，所以我',
+    '一年有十二个月，分别是',
+    '从前有一个住在山里的小男孩，他每天都会',
+    '近年来，随着计算机技术的发展，人工智能在'
 ]
 
 

@@ -1,0 +1,52 @@
+{
+  "sampling": {
+    "input_paths": [
+      "../data_pipeline/data/downloads/tigerresearch_pretrain_zh"
+    ],
+    "output_file": "data/tigerresearch_pretrain_zh_sample.txt",
+    "target_size_mib": 512,
+    "seed": 42,
+    "text_fields": [
+      "title",
+      "content"
+    ],
+    "category_field": "dataType",
+    "field_separator": "\n",
+    "record_separator": "\n\n",
+    "min_text_characters": 32,
+    "max_text_characters_per_record": null,
+    "deduplicate_leading_title": true,
+    "batch_records": 2048,
+    "overwrite": false
+  },
+  "bpe": {
+    "input_files": [
+      "data/tigerresearch_pretrain_zh_sample.txt"
+    ],
+    "output_dir": "tokenizer_24576",
+    "vocab_size": 24576,
+    "min_frequency": 10,
+    "max_token_length": 20,
+    "continuing_subword_prefix": "",
+    "threads": "auto",
+    "show_progress": true,
+    "overwrite_output": false,
+    "special_tokens": [
+      "<|endoftext|>",
+      "<|im_start|>",
+      "<|im_end|>"
+    ],
+    "bos_token": "<|endoftext|>",
+    "eos_token": "<|endoftext|>",
+    "pad_token": "<|endoftext|>",
+    "additional_special_tokens": [
+      "<|im_start|>",
+      "<|im_end|>"
+    ],
+    "test_texts": [
+      "你好，这是重新训练的中文分词器。",
+      "hello, world\n中国的首都是北京。",
+      "temperature=0.8, learning_rate=3e-4"
+    ]
+  }
+}

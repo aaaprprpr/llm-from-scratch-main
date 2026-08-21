@@ -1,73 +1,146 @@
-from tokenizers import Tokenizer
-from tokenizers.models import BPE
-from tokenizers.trainers import BpeTrainer
-from tokenizers.pre_tokenizers import ByteLevel, Split, Sequence
-from transformers import PreTrainedTokenizerFast, AutoTokenizer
-from tokenizers.normalizers import NFC
-from tokenizers.decoders import ByteLevel as ByteLevelDecoder
-from tokenizers.processors import ByteLevel as ByteLevelProcessor
-from glob import glob
+from __future__ import annotations
+
+import glob
+import json
 import os
+from pathlib import Path
+from typing import Any
 
-# ===================== 1. 初始化 BPE 分词器 =====================
-tokenizer = Tokenizer(BPE(unk_token=None))  # 没有 unk token
-qwen_pattern = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"  # 预分词：字节级
-tokenizer.pre_tokenizer = Sequence(
-    [
-        Split(pattern=qwen_pattern, behavior="isolated"),
-        ByteLevel(add_prefix_space=False, use_regex=False),
-    ]
-)
-tokenizer.normalizer = NFC()
-tokenizer.decoder = ByteLevelDecoder(add_prefix_space=False)
-tokenizer.post_processor = ByteLevelProcessor(add_prefix_space=False, use_regex=False)
-# ===================== 2. 训练配置 =====================
-trainer = BpeTrainer(
-    vocab_size=8192,  # 词表大小：base 是 151851，你可以自己设
-    min_frequency=10,
-    special_tokens=[
-        "<|endoftext|>",
-        "<|im_start|>",
-        "<|im_end|>",
-    ],
-    show_progress=True,
-    initial_alphabet=ByteLevel.alphabet(),
-    continuing_subword_prefix="",
-    num_workers=16,
-    # limit_alphabet=500,
-    max_token_length=20,
+
+BASE_DIR = Path(__file__).resolve().parent
+CONFIG_PATH = BASE_DIR / "config.json"
+QWEN_PATTERN = (
+    r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}|"
+    r" ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
 )
 
-# ===================== 3. 开始训练 =====================
-# files = glob("../data/simplified/*.txt")
-files = ["../data/val.txt"]
-tokenizer.train(files=files, trainer=trainer)
 
-# ===================== 4. 保存词表 =====================
-# os.makedirs("outputs", exist_ok=True)
-# tokenizer.save("tokenizer/qwen_style_tokenizer.json")# 保存格式：vocab.json + merges.txt
-# tokenizer.model.save("outputs") # 也可以单独导出 vocab.json  会生成 vocab.json + merges.txt
+def load_config() -> dict[str, Any]:
+    with CONFIG_PATH.open("r", encoding="utf-8") as file:
+        config = json.load(file)
+    if "bpe" not in config:
+        raise ValueError(f"Missing 'bpe' section in {CONFIG_PATH}")
+    return config
 
-# ===================== 5. 封装成 Transformers 可用格式 =====================
-wrapped_tokenizer = PreTrainedTokenizerFast(
-    tokenizer_object=tokenizer,
-    bos_token="<|endoftext|>",
-    eos_token="<|endoftext|>",
-    unk_token=None,
-    pad_token="<|endoftext|>",
-    additional_special_tokens=["<|im_start|>", "<|im_end|>"],
-    model_input_names=["input_ids", "attention_mask"],
-)
 
-# 保存成可以直接加载的分词器文件夹
-wrapped_tokenizer.save_pretrained("./tokenizer")
-print("词表大小：", wrapped_tokenizer.vocab_size)
+def resolve_path(value: str) -> Path:
+    path = Path(value)
+    return path.resolve() if path.is_absolute() else (BASE_DIR / path).resolve()
 
-# 加载自己训练的分词器测试分词
-tokenizer = AutoTokenizer.from_pretrained("./tokenizer")
-text = "你好，这是我自己训练的分词器！"
-tokens = tokenizer.tokenize(text)
-ids = tokenizer.encode(text)
-print("分词：", tokens)
-print("ID：", ids)
-print("还原：", tokenizer.decode(ids))
+
+def resolve_input_files(patterns: list[str]) -> list[Path]:
+    files: set[Path] = set()
+    for pattern in patterns:
+        absolute_pattern = str(resolve_path(pattern))
+        for match in glob.glob(absolute_pattern, recursive=True):
+            path = Path(match)
+            if path.is_file():
+                files.add(path.resolve())
+    if not files:
+        raise FileNotFoundError(
+            "No tokenizer training files matched bpe.input_files in "
+            f"{CONFIG_PATH}"
+        )
+    return sorted(files)
+
+
+def build_tokenizer():
+    from tokenizers import Regex, Tokenizer
+    from tokenizers.decoders import ByteLevel as ByteLevelDecoder
+    from tokenizers.models import BPE
+    from tokenizers.normalizers import NFC
+    from tokenizers.pre_tokenizers import ByteLevel, Sequence, Split
+    from tokenizers.processors import ByteLevel as ByteLevelProcessor
+
+    tokenizer = Tokenizer(BPE(unk_token=None))
+    tokenizer.normalizer = NFC()
+    tokenizer.pre_tokenizer = Sequence(
+        [
+            Split(pattern=Regex(QWEN_PATTERN), behavior="isolated"),
+            ByteLevel(add_prefix_space=False, use_regex=False),
+        ]
+    )
+    tokenizer.decoder = ByteLevelDecoder(add_prefix_space=False)
+    tokenizer.post_processor = ByteLevelProcessor(
+        add_prefix_space=False, use_regex=False
+    )
+    return tokenizer
+
+
+def train_tokenizer(config: dict[str, Any]):
+    settings = config["bpe"]
+    threads = settings.get("threads", "auto")
+    if threads != "auto":
+        threads = int(threads)
+        if threads <= 0:
+            raise ValueError("bpe.threads must be 'auto' or a positive integer")
+        os.environ["RAYON_NUM_THREADS"] = str(threads)
+
+    from tokenizers.pre_tokenizers import ByteLevel
+    from tokenizers.trainers import BpeTrainer
+    from transformers import AutoTokenizer, PreTrainedTokenizerFast
+
+    input_files = resolve_input_files(list(settings["input_files"]))
+    output_dir = resolve_path(settings["output_dir"])
+    if output_dir.exists() and any(output_dir.iterdir()) and not settings.get(
+        "overwrite_output", False
+    ):
+        raise FileExistsError(
+            f"Tokenizer output directory is not empty: {output_dir}. "
+            "Set bpe.overwrite_output=true to replace its tokenizer files."
+        )
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    tokenizer = build_tokenizer()
+    trainer = BpeTrainer(
+        vocab_size=int(settings["vocab_size"]),
+        min_frequency=int(settings["min_frequency"]),
+        special_tokens=list(settings["special_tokens"]),
+        show_progress=bool(settings.get("show_progress", True)),
+        initial_alphabet=ByteLevel.alphabet(),
+        continuing_subword_prefix=str(
+            settings.get("continuing_subword_prefix", "")
+        ),
+        max_token_length=int(settings["max_token_length"]),
+    )
+
+    total_size = sum(path.stat().st_size for path in input_files)
+    print(
+        f"Training BPE from {len(input_files)} file(s), "
+        f"{total_size / (1024 ** 2):.2f} MiB"
+    )
+    for path in input_files:
+        print(f"  - {path}")
+    tokenizer.train(files=[str(path) for path in input_files], trainer=trainer)
+
+    wrapped = PreTrainedTokenizerFast(
+        tokenizer_object=tokenizer,
+        bos_token=settings["bos_token"],
+        eos_token=settings["eos_token"],
+        unk_token=None,
+        pad_token=settings["pad_token"],
+        additional_special_tokens=list(settings["additional_special_tokens"]),
+        model_input_names=["input_ids", "attention_mask"],
+    )
+    wrapped.save_pretrained(output_dir)
+    print(f"Saved tokenizer to {output_dir}")
+    print(f"Vocabulary size: {wrapped.vocab_size}")
+
+    reloaded = AutoTokenizer.from_pretrained(output_dir, local_files_only=True)
+    for text in settings.get("test_texts", []):
+        token_ids = reloaded.encode(text, add_special_tokens=False)
+        decoded = reloaded.decode(token_ids, clean_up_tokenization_spaces=False)
+        if decoded != text:
+            raise RuntimeError(
+                f"Tokenizer round-trip failed: input={text!r}, decoded={decoded!r}"
+            )
+        print(f"Test: {text!r} -> {len(token_ids)} tokens -> round-trip OK")
+    return wrapped
+
+
+def main() -> None:
+    train_tokenizer(load_config())
+
+
+if __name__ == "__main__":
+    main()
