@@ -1,3 +1,4 @@
+import hashlib
 import json
 import math
 import os
@@ -11,7 +12,22 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 
-def load_token_bin(path: str | os.PathLike) -> np.memmap:
+def tokenizer_fingerprint(path: str | os.PathLike) -> str:
+    path = Path(path)
+    target = path / "tokenizer.json" if path.is_dir() else path
+    digest = hashlib.sha256()
+    with target.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def load_token_bin(
+    path: str | os.PathLike,
+    *,
+    expected_tokenizer_size: int | None = None,
+    expected_tokenizer_sha256: str | None = None,
+) -> np.memmap:
     path = Path(path)
     metadata_path = path.with_suffix(path.suffix + ".meta.json")
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -19,6 +35,23 @@ def load_token_bin(path: str | os.PathLike) -> np.memmap:
     if dtype_name not in {"uint16", "uint32"}:
         raise ValueError(
             f"{metadata_path} contains unsupported dtype {dtype_name!r}"
+        )
+    if (
+        expected_tokenizer_size is not None
+        and metadata.get("tokenizer_size") != expected_tokenizer_size
+    ):
+        raise ValueError(
+            f"{metadata_path} was built with tokenizer size "
+            f"{metadata.get('tokenizer_size')!r}, but pretraining expects "
+            f"{expected_tokenizer_size}. Rebuild the token binaries."
+        )
+    if (
+        expected_tokenizer_sha256 is not None
+        and metadata.get("tokenizer_sha256") != expected_tokenizer_sha256
+    ):
+        raise ValueError(
+            f"{metadata_path} was built with a different tokenizer "
+            "fingerprint. Rebuild the token binaries."
         )
     return np.memmap(path, dtype=np.dtype(dtype_name), mode="r")
 

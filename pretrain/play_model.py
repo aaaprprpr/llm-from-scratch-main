@@ -51,7 +51,12 @@ def find_checkpoint(config: Config) -> Path:
     return max(checkpoints, key=lambda path: path.stat().st_mtime)
 
 
-def load_model(config: Config, checkpoint_path: Path, device: torch.device):
+def load_model(
+    config: Config,
+    checkpoint_path: Path,
+    device: torch.device,
+    tokenizer_size: int,
+):
     checkpoint = torch.load(
         checkpoint_path,
         map_location="cpu",
@@ -67,6 +72,13 @@ def load_model(config: Config, checkpoint_path: Path, device: torch.device):
     else:
         state_dict = checkpoint
         model_args = config.require("model")
+
+    if model_args["vocab_size"] != tokenizer_size:
+        raise ValueError(
+            f"Checkpoint vocabulary size {model_args['vocab_size']} does not "
+            f"match tokenizer size {tokenizer_size}. Use the tokenizer that "
+            "was used to build this checkpoint."
+        )
 
     model = Transformer(**model_args)
     model.load_state_dict(state_dict, strict=True)
@@ -86,7 +98,12 @@ def main():
     tokenizer = Tokenizer(
         str(config.resolve_path("paths", "tokenizer_vocab"))
     )
-    model, model_args = load_model(config, checkpoint_path, device)
+    model, model_args = load_model(
+        config,
+        checkpoint_path,
+        device,
+        len(tokenizer.tokenizer),
+    )
     context_length = model_args["context_length"]
     eos_id = tokenizer.special_token_to_id.get("<|endoftext|>")
     use_bfloat16 = device.type == "cuda" and torch.cuda.is_bf16_supported()

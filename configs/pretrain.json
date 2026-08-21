@@ -2,12 +2,12 @@
   "paths": {
     "train_data": "data_pipeline/data/train.bin",
     "val_data": "data_pipeline/data/val.bin",
-    "tokenizer_vocab": "bpe/tokenizer",
+    "tokenizer_vocab": "bpe/tokenizer_24576",
     "out_root": "output/train_logs",
     "resume": null
   },
   "model": {
-    "vocab_size": 8192,
+    "vocab_size": 24576,
     "context_length": 4096,
     "n_head": 16,
     "theta": 10000.0,

@@ -27,6 +27,7 @@ from pretrain.train_model import (
     resolve_amp_dtype,
     resolve_training_parameters,
     save_checkpoint,
+    tokenizer_fingerprint,
     TokenBatchLoader,
     verify_flash_attention,
 )
@@ -141,10 +142,26 @@ def main():
 
     resume_path = config.optional_path("paths", "resume")
 
-    tokenizer = Tokenizer(str(config.resolve_path("paths", "tokenizer_vocab")))
+    tokenizer_path = config.resolve_path("paths", "tokenizer_vocab")
+    tokenizer = Tokenizer(str(tokenizer_path))
+    tokenizer_size = len(tokenizer.tokenizer)
+    if tokenizer_size != model_config["vocab_size"]:
+        raise ValueError(
+            f"Tokenizer size {tokenizer_size} does not match model.vocab_size "
+            f"{model_config['vocab_size']}"
+        )
+    tokenizer_sha256 = tokenizer_fingerprint(tokenizer_path)
 
-    train_data = load_token_bin(config.resolve_path("paths", "train_data"))
-    val_data = load_token_bin(config.resolve_path("paths", "val_data"))
+    train_data = load_token_bin(
+        config.resolve_path("paths", "train_data"),
+        expected_tokenizer_size=tokenizer_size,
+        expected_tokenizer_sha256=tokenizer_sha256,
+    )
+    val_data = load_token_bin(
+        config.resolve_path("paths", "val_data"),
+        expected_tokenizer_size=tokenizer_size,
+        expected_tokenizer_sha256=tokenizer_sha256,
+    )
     print(
         f"train data: {len(train_data):,} tokens; "
         f"planned: {planned_train_tokens:,} tokens "
