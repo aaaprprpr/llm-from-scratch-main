@@ -7,15 +7,15 @@
 平台首先解决以下问题：
 
 - 将 Hugging Face Dataset、TXT、JSONL 等来源导入统一格式。
-- 在几十 GB、上千万文档规模下随机访问和抽样，不把全文加载进内存。
+- 在几十 GB、上千万文档规模下随机访问并建立全量人工清洗任务，不把全文加载进内存。
 - 让人看到经过自动归一化后、真正准备交给 tokenizer 的文本。
-- 快速标记 Document 的 Keep / Drop / Unsure、质量和原因。
-- 删除低质量 Block；后续再增加 Span 编辑。
+- 对全部 Document 逐条执行 Keep / Drop / Unsure、质量和原因标注。
+- 支持拖选删除和直接修改正文，并保留原始/预处理/当前结果三种视图。
 - 原始数据只读，人工行为可追踪、可撤销、可重复物化。
 - 输出 Hugging Face Dataset，继续交给现有 `build_bin.py`。
 - 为未来规则模型、LightGBM 或小型 Encoder 积累可靠监督数据。
 
-V0.1 不以“实现通用数据编辑器”为目标。面对上千万条记录，人不可能逐条精修；第一优先级是抽样、快速判定、来源对比和形成可信标签。
+V0.1 不实现复杂的协同富文本编辑，但必须支持单人直接删改正文，且任务范围覆盖导入数据的全部文档。工作列表通过 ordinal 即时映射 Arrow 行，不允许用抽样悄悄缩小待清洗数据范围；SQLite 只保存真正发生的人工操作和被修改文档的最终文本覆盖值。
 
 ---
 
@@ -52,7 +52,7 @@ Deterministic Prepare（schema adapter + preprocess 规则）
     ↓
 Review Snapshot（人工看到的文本）
     ↓
-Sampling Queue + Human Review
+Full Dataset Worklist + Human Cleaning
     ↓
 Materialize at event_seq N
     ↓
@@ -352,22 +352,24 @@ selected_text_sha256
 
 ### 5.4 V0.1 编辑能力
 
-第一版只支持：
+第一版支持：
 
 - Document Keep / Drop / Unsure；
 - quality、primary category、flags、notes；
 - Block Keep / Drop；
+- 在“当前清洗结果”中拖选删除、退格删除和直接输入修改；
+- 稀疏保存被修改文档的最终文本覆盖值，未修改正文不进入 SQLite；
 - 撤销最近操作。
 
-Span delete/replace、Block move/merge/split 不进入 V0.1。它们会显著增加 offset、冲突、撤销和 materialize 复杂度，而且对千万级预训练语料的单位时间收益很低。
+Block move/merge/split 和多用户协同冲突处理不进入 V0.1。V0.1 保存修改后的最终正文；如果后续需要逐个 Span 的结构化原因、区间审计或多人合并，再升级为显式 Span operation。
 
-V0.2 增加 Span edit 时，所有 Span edit 都引用不可变原始 Block；同一 Block 的区间不允许重叠，materialize 时从右向左应用。Block Drop 优先于 Block 内 Span edit。
+V0.2 若增加结构化 Span operation，所有区间都引用不可变原始 Block；同一 Block 的区间不允许重叠，materialize 时从右向左应用。Block Drop 优先于 Block 内 Span edit。
 
 ---
 
 ## 6. SQLite 模型
 
-SQLite 使用 WAL、foreign keys 和显式 schema migration。正文不进入 SQLite。
+SQLite 使用 WAL、foreign keys 和显式 schema migration。基础正文不进入 SQLite；只有实际人工修改过的文档稀疏保存最终文本覆盖值。
 
 核心表：
 
@@ -453,38 +455,36 @@ materializations
 
 撤销通过追加补偿事件实现，不删除历史。API 修改必须携带当前 `revision`，不匹配时返回冲突，避免两个标签页互相覆盖。
 
-不必把 1800 万文档全部复制成 SQLite index。Arrow row 本身支持 O(1) 读取；SQLite 只存进入抽样队列或已经操作的文档。定位键使用 `(source_id, source_revision, source_row, doc_id)`。
+不必把 1800 万文档全部复制成 SQLite index。全量任务按各 Source 的固定顺序和 `row_count` 将全局 ordinal 即时映射到 Arrow row；SQLite 只存任务定义和已经发生的人工操作。定位键使用 `(source_id, source_revision, source_row, doc_id)`。
 
 ---
 
-## 7. Sampling Queue
+## 7. Full Dataset Worklist
 
-人工标注不能从“第一条一直翻到最后一条”。平台必须先创建可复现的 Queue：
+每个导入来源的全部 Document 都必须进入清洗范围。Worklist 保存固定的 Source revision 列表和每个来源的 `row_count`，使用累计区间将 ordinal 即时映射到具体 Arrow row：
 
 ```text
-uniform_random
-source_quota
-length_stratified
-rule_flagged
-model_uncertainty（后期）
+global ordinal
+    ↓ cumulative source ranges
+(source_id, source_revision, source_row)
+    ↓ Arrow random access
+Document
 ```
 
-每个 Queue 记录 seed、来源配额、过滤条件和生成时间。UI 只浏览 Queue，不对 1800 万行做巨大的 OFFSET 分页。
+创建一份上千万条的全量任务时，不得预先向 SQLite 写入上千万条 `queue_items`。UI 的总数等于全部固定 Source revision 的行数之和；进度等于已经产生 Document Review 的数量。
 
-第一批监督数据必须包含固定种子的均匀随机样本和独立 holdout。不能一开始只标模型认为“可疑”的文本，否则训练出的自动筛选器会有严重选择偏差。
+允许提供搜索、过滤、跳转和“下一条未处理”等导航能力，但这些只改变当前视图，不能缩小任务的全量范围，也不能把未显示的数据当成已清洗。
 
-推荐工作流：
+工作流：
 
 ```text
-来源分层随机样本
+全部 Document
     ↓
-人工标注
+逐条 Keep / Drop / Unsure 或 Block 清理
     ↓
-规则/模型候选
+保存稀疏人工操作与进度
     ↓
-人工复核
-    ↓
-持续保留随机审计样本
+按固定 event_seq 物化完整清洗结果
 ```
 
 ---
@@ -525,8 +525,8 @@ UI 采用单文档审核台，而不是先实现复杂文件管理器：
 
 ```text
 ┌──────────────┬──────────────────────────────┬──────────────┐
-│ Queue/进度   │ Document + Blocks            │ Provenance   │
-│ 来源配额     │                              │ URL/License  │
+│ 全量任务/进度│ Document + Blocks            │ Provenance   │
+│ 跳转/过滤    │                              │ 来源位置     │
 │ 快速筛选     │ Keep / Drop / Unsure         │ Review/Event │
 └──────────────┴──────────────────────────────┴──────────────┘
 ```
@@ -534,27 +534,28 @@ UI 采用单文档审核台，而不是先实现复杂文件管理器：
 快捷键：
 
 ```text
-A       Keep
-D       Drop
-S       Unsure
+↑       保留并保存，进入下一条
+→       跳过/待定并保存，进入下一条
+←       保存当前状态，返回上一条
+Ctrl+D  丢弃整条并进入下一条
 0..3    Quality
-X       Drop 当前 Block
-Ctrl+Z  Undo
-J / →   Next
-K / ←   Previous
+X       删除当前段落
+Ctrl+Z  撤销当前文档内的未保存修改
+Ctrl+Y / Ctrl+Shift+Z  重做当前文档内的未保存修改
 ```
 
-每次操作立即事务保存，UI 显示“已持久化”，不依赖离开页面时批量保存。
+正文修改、文字/段落拖动和整段删除先进入当前文档的本地历史，使用条目方向键或 Ctrl+D 时与文档决定一起事务保存；已保存事件的补偿 API 保留，但 V0.1 页面不放单独撤销按钮。
 
 必须提供：
 
-- Raw Text / Review Text 切换，默认展示 Review Text；
-- Review Text 与最终 Materialized Text 预览；
-- source/revision/row/url/license；
+- 单一段落卡片视图直接展示并编辑当前清洗结果，不重复展示原文与基础清理文本；
+- 段内支持持久高亮选择、删除和拖动文字，段落卡片支持整段删除、恢复与排序；
+- 当前清洗结果支持拖选删除和直接输入修改；
+- 右侧以小字号、保留原始换行的方式显示只读原始正文；
+- 来源版本、行号、原始路径和网页地址；
 - 字符数和 tokenizer token 数；
-- Block 删除前后 diff；
-- 当前队列进度和来源分布。
-- decision、quality、primary category、flags 的快捷标注。
+- 当前全量清洗进度。
+- 保留/丢弃/跳过快捷操作；质量和内容类型均为可选辅助信息。
 
 V0.1 不需要一次渲染几千条虚拟列表。一个 Queue item 一次加载一个 Document，上一条/下一条即可；列表和搜索后续添加。
 
@@ -652,7 +653,7 @@ Materialize 输出已经是人看到并确认的最终正文，只运行 validat
 
 ## 12. MVP 路线
 
-### V0.1：快速审核闭环
+### V0.1：全量人工清洗闭环
 
 Backend：
 
@@ -662,27 +663,28 @@ Backend：
 - [x] 分批 Arrow 写入和原子提交。
 - [x] Prepare Review Snapshot，并保留 provenance。
 - [x] SQLite migration、Project、Queue、Review、Event 表。
-- [x] 固定种子随机/来源配额 Queue。
+- [x] 不落全量 SQLite 索引的虚拟全量清洗任务。
 - [x] Document API 和确定性 Block parser。
 - [x] Document Keep / Drop / Unsure、quality、notes。
 - [x] Primary category、flags 和 guideline version。
 - [x] Block Keep / Drop。
+- [x] 修改后正文的稀疏持久化、撤销和物化。
 - [x] 单步 Undo。
 - [x] `keep_only/drop_rejected` Materialize。
 - [x] Materialization manifest 和 validation-only check。
 
 Frontend：
 
-- [x] Project/Queue 选择。
-- [x] 单 Document + Blocks 查看。
+- [x] 项目选择；每个项目的网页流程只使用最新的全量清洗队列，不暴露抽样队列选择。
+- [x] 单文档原始/预处理/当前结果查看。
 - [x] provenance 面板。
 - [x] 快捷键标注和自动前进。
 - [x] Block Drop 和最终正文预览。
+- [x] 当前结果拖选删除和直接文本编辑。
 - [x] Review 保存状态、错误提示和进度。
 
 V0.1 明确不做：
 
-- Span replace/delete；
 - Block move/merge/split；
 - 通用 JSON 大数组（除非引入真正流式 parser）；
 - Browser Extension；
@@ -691,9 +693,9 @@ V0.1 明确不做：
 - 自动分类模型；
 - 通用爬虫。
 
-### V0.2：精细编辑与数据分析
+### V0.2：结构化编辑与数据分析
 
-- Span delete/replace 和 hash/offset 冲突检查。
+- 结构化 Span operation、修改原因和 hash/offset 冲突检查。
 - Browser Extension、整页/选区 DOM 导入。
 - Dataset/来源统计、搜索、过滤和批量操作。
 - 近重复检测和 boilerplate 聚类。

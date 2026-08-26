@@ -67,6 +67,8 @@ class DocumentService:
         if not 0 <= source_row < len(review_dataset):
             raise IndexError(f"queue source_row is outside Dataset: {source_row}")
         row = review_dataset[source_row]
+        if item["doc_id"] is None:
+            item["doc_id"] = row["doc_id"]
         self._validate_item_row(item, row)
 
         prepare_manifest = json.loads(
@@ -108,11 +110,20 @@ class DocumentService:
             project_id,
             row["doc_id"],
         )
+        item["state"] = "done" if document_review is not None else "pending"
         if document_review is not None:
             if document_review["content_sha256"] != row["content_sha256"]:
                 raise ValueError("stale document review content hash")
             if int(document_review["source_row"]) != source_row:
                 raise ValueError("stale document review source_row")
+
+        block_materialized_text = render_blocks(row["text"], blocks, dropped)
+        materialized_text = (
+            document_review["edited_text"]
+            if document_review is not None
+            and document_review.get("edited_text") is not None
+            else block_materialized_text
+        )
 
         return {
             "queue": self.database.get_queue(queue_id),
@@ -125,7 +136,8 @@ class DocumentService:
             "metadata": json.loads(row["metadata_json"]),
             "raw_text": raw_row["text"],
             "review_text": row["text"],
-            "materialized_text": render_blocks(row["text"], blocks, dropped),
+            "block_materialized_text": block_materialized_text,
+            "materialized_text": materialized_text,
             "blocks": rendered_blocks,
             "document_review": document_review,
             "provenance": {

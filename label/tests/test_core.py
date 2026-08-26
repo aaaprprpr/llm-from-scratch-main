@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 import gc
+import sqlite3
 from pathlib import Path
 
 from label.backend.blocks import BLOCK_PARSER_VERSION, parse_blocks, render_blocks
@@ -22,6 +23,55 @@ from label.backend.identity import (
 )
 from label.backend.schema import FieldMapping, ImportedDocument, canonical_row
 from data_pipeline.build_bin import load_input_dataset
+
+
+class MigrationTests(unittest.TestCase):
+    def test_version_one_database_adds_sparse_edited_text_column(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "version-one.sqlite3"
+            connection = sqlite3.connect(path)
+            connection.executescript(
+                """
+                CREATE TABLE schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL
+                );
+                INSERT INTO schema_migrations VALUES (1, 'old');
+                CREATE TABLE document_reviews (
+                    project_id TEXT NOT NULL,
+                    doc_id TEXT NOT NULL,
+                    source_row INTEGER NOT NULL,
+                    content_sha256 TEXT NOT NULL,
+                    decision TEXT NOT NULL,
+                    quality INTEGER,
+                    primary_category TEXT,
+                    flags_json TEXT NOT NULL,
+                    notes TEXT NOT NULL,
+                    guideline_version TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(project_id, doc_id)
+                );
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            database = CurationDatabase(path)
+            try:
+                columns = {
+                    row["name"]
+                    for row in database.connection.execute(
+                        "PRAGMA table_info(document_reviews)"
+                    )
+                }
+                version = database.connection.execute(
+                    "SELECT MAX(version) AS version FROM schema_migrations"
+                ).fetchone()["version"]
+                self.assertIn("edited_text", columns)
+                self.assertEqual(version, 2)
+            finally:
+                database.close()
 
 
 class IdentityAndSchemaTests(unittest.TestCase):
@@ -140,8 +190,8 @@ class DatabaseTests(unittest.TestCase):
         ]
         self.queue_id = self.database.create_queue(
             project_id=self.project_id,
-            name="random",
-            sampling_policy={"type": "uniform_random"},
+            name="materialized test queue",
+            sampling_policy={"type": "materialized_test"},
             sampling_seed=42,
             candidates=candidates,
             queue_id="queue-1",
@@ -163,6 +213,40 @@ class DatabaseTests(unittest.TestCase):
             flags=("boilerplate",),
             notes="note",
         )
+
+    def test_full_dataset_queue_maps_ordinals_without_materialized_items(self):
+        queue_id = self.database.create_virtual_queue(
+            project_id=self.project_id,
+            name="full",
+            policy={
+                "type": "full_dataset",
+                "sources": [
+                    {
+                        "source_id": "source-a",
+                        "source_revision": "revision-a",
+                        "row_count": 2,
+                    },
+                    {
+                        "source_id": "source-b",
+                        "source_revision": "revision-b",
+                        "row_count": 3,
+                    },
+                ],
+            },
+        )
+        self.assertEqual(self.database.get_queue(queue_id)["state_counts"], {"pending": 5, "done": 0})
+        self.assertEqual(self.database.get_queue_item(queue_id, 1)["source_row"], 1)
+        crossed = self.database.get_queue_item(queue_id, 2)
+        self.assertEqual(crossed["source_id"], "source-b")
+        self.assertEqual(crossed["source_row"], 0)
+        self.assertEqual(self.database.get_queue_item(queue_id, 4)["source_row"], 2)
+        with self.assertRaises(KeyError):
+            self.database.get_queue_item(queue_id, 5)
+        stored = self.database.connection.execute(
+            "SELECT COUNT(*) AS count FROM queue_items WHERE queue_id = ?",
+            (queue_id,),
+        ).fetchone()["count"]
+        self.assertEqual(stored, 0)
 
     def test_review_revision_snapshot_and_undo(self):
         first, first_event = self.database.set_document_review(

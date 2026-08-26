@@ -27,6 +27,7 @@ export type DocumentReview = {
   primary_category: string | null;
   flags: string[];
   notes: string;
+  edited_text: string | null;
   revision: number;
 };
 
@@ -44,6 +45,7 @@ export type ReviewBlock = {
   end_cp: number;
   content_sha256: string;
   text: string;
+  separator_after: string;
   review: BlockReview | null;
 };
 
@@ -62,6 +64,7 @@ export type QueueDocument = {
   };
   raw_text: string;
   review_text: string;
+  block_materialized_text: string;
   materialized_text: string;
   token_counts: {
     raw: number;

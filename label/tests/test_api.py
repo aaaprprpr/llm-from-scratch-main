@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -17,6 +19,13 @@ class ApiTests(unittest.TestCase):
             health = client.get("/api/health")
             self.assertEqual(health.status_code, 200)
             self.assertEqual(health.json()["status"], "ok")
+            simplified = client.post(
+                "/api/text/simplify",
+                json={"texts": ["數學與軟體", "已经是简体"]},
+            )
+            self.assertEqual(simplified.status_code, 200)
+            self.assertEqual(simplified.json()["texts"], ["数学与软体", "已经是简体"])
+            self.assertGreater(simplified.json()["changed_characters"], 0)
             created = client.post(
                 "/api/projects",
                 json={"name": "API test", "project_id": "api-project"},
@@ -45,6 +54,17 @@ class ApiTests(unittest.TestCase):
                 '{"id":"2","title":"标题二","text":"正文二"}\n',
                 encoding="utf-8",
             )
+            with patch(
+                "label.backend.routes.system.select_local_path",
+                return_value=str(source_path.parent),
+            ):
+                selected = client.post(
+                    "/api/system/select-path",
+                    json={"kind": "directory", "adapter": "huggingface_local"},
+                )
+            self.assertEqual(selected.status_code, 200)
+            self.assertEqual(selected.json()["path"], str(source_path.parent))
+
             source_request = {
                 "adapter": "jsonl",
                 "path": str(source_path),
@@ -68,12 +88,15 @@ class ApiTests(unittest.TestCase):
                 "/api/imports",
                 json={
                     **source_request,
-                    "source_id": "api-source",
-                    "license": "test",
                     "mapping": mapping,
                 },
             )
             self.assertEqual(imported.status_code, 200)
+            self.assertRegex(
+                imported.json()["source_manifest"]["source_id"],
+                r"^source-[0-9a-f]{8}$",
+            )
+            self.assertEqual(imported.json()["source_manifest"]["license"], "unknown")
             prepared = client.post(
                 "/api/prepares",
                 json={
@@ -99,18 +122,49 @@ class ApiTests(unittest.TestCase):
             queue = client.post(
                 "/api/projects/api-project/queues",
                 json={
-                    "name": "API queue",
-                    "policy": "uniform_random",
-                    "seed": 42,
-                    "sample_size": 2,
+                    "name": "Full cleaning",
+                    "policy": "full_dataset",
                 },
             )
             self.assertEqual(queue.status_code, 200)
+            self.assertEqual(queue.json()["state_counts"]["pending"], 2)
+            self.assertEqual(queue.json()["sampling_policy"]["type"], "full_dataset")
+            connection = sqlite3.connect(Path(root) / "curation.sqlite3")
+            try:
+                stored_items = connection.execute(
+                    "SELECT COUNT(*) FROM queue_items WHERE queue_id = ?",
+                    (queue.json()["queue_id"],),
+                ).fetchone()[0]
+            finally:
+                connection.close()
+            self.assertEqual(stored_items, 0)
             document = client.get(
                 f"/api/queues/{queue.json()['queue_id']}/items/0"
             )
             self.assertEqual(document.status_code, 200)
             self.assertIsNotNone(document.json()["token_counts"])
+            saved = client.put(
+                f"/api/reviews/documents/{document.json()['document']['doc_id']}",
+                json={
+                    "queue_id": queue.json()["queue_id"],
+                    "ordinal": 0,
+                    "expected_revision": 0,
+                    "decision": "keep",
+                    "edited_text": "人工修改正文",
+                },
+            )
+            self.assertEqual(saved.status_code, 200)
+            self.assertEqual(saved.json()["review"]["edited_text"], "人工修改正文")
+            edited_document = client.get(
+                f"/api/queues/{queue.json()['queue_id']}/items/0"
+            )
+            self.assertEqual(
+                edited_document.json()["materialized_text"],
+                "人工修改正文",
+            )
+            refreshed_queue = client.get("/api/projects/api-project").json()["queues"][0]
+            self.assertEqual(refreshed_queue["state_counts"]["done"], 1)
+            self.assertEqual(refreshed_queue["state_counts"]["pending"], 1)
             client.close()
             app.state.dataset_repository.clear()
 

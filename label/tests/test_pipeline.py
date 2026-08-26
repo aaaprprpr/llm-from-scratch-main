@@ -19,11 +19,7 @@ from label.backend.importers.base import SourceSpec
 from label.backend.importers.jsonl import JsonlAdapter
 from label.backend.materialize import MaterializeService
 from label.backend.prepare import PrepareConfig, PrepareService
-from label.backend.queueing import (
-    create_uniform_random_queue,
-    open_project_sources,
-    uniform_random_candidates,
-)
+from label.backend.queueing import create_full_dataset_queue
 from label.backend.schema import FieldMapping
 from data_pipeline.build_bin import build_bins, tokenizer_fingerprint
 from tokenizer import Tokenizer
@@ -92,24 +88,20 @@ class PipelineTests(unittest.TestCase):
             self.prepared.manifest.content_sequence_sha256,
         )
 
-    def test_seeded_queue_review_and_materialization_policies(self):
+    def test_full_queue_review_and_materialization_policies(self):
         database, project_id = self._open_database()
         try:
-            sources = open_project_sources(database, project_id)
-            first = uniform_random_candidates(sources, sample_size=4, seed=42)
-            second = uniform_random_candidates(sources, sample_size=4, seed=42)
-            self.assertEqual(first, second)
-            queue_id = create_uniform_random_queue(
+            queue_id = create_full_dataset_queue(
                 database,
                 project_id=project_id,
-                name="random audit",
-                sample_size=4,
-                seed=42,
+                name="full cleaning",
                 queue_id="queue-a",
             )
             self.assertEqual(sum(database.get_queue(queue_id)["state_counts"].values()), 4)
 
-            dataset = sources[0].dataset
+            dataset = load_dataset(
+                self.prepared.revision_directory / self.prepared.manifest.dataset_path
+            )
             event_sequences = []
             for row_index, decision in ((0, "keep"), (1, "drop"), (2, "unsure")):
                 row = dataset[row_index]
@@ -123,6 +115,9 @@ class PipelineTests(unittest.TestCase):
                         quality=3 if decision == "keep" else 1,
                         primary_category="encyclopedia",
                         flags=("bad_format",) if decision == "unsure" else (),
+                        edited_text=(
+                            "人工修改后的待定文本" if decision == "unsure" else None
+                        ),
                     ),
                     expected_revision=0,
                 )
@@ -143,12 +138,7 @@ class PipelineTests(unittest.TestCase):
             )
             self.assertGreater(block_event, event_sequences[-1])
 
-            queue_ordinal = next(
-                ordinal
-                for ordinal in range(4)
-                if database.get_queue_item(queue_id, ordinal)["doc_id"]
-                == kept_row["doc_id"]
-            )
+            queue_ordinal = int(kept_row["source_row"])
             document = DocumentService(database).queue_document(
                 queue_id,
                 queue_ordinal,
@@ -184,6 +174,7 @@ class PipelineTests(unittest.TestCase):
                 dropped.output_directory / dropped.manifest.dataset_path
             )
             self.assertEqual(len(dropped_dataset), 3)
+            self.assertEqual(dropped_dataset[1]["text"], "人工修改后的待定文本")
             self.assertEqual(
                 dropped.manifest.decision_counts,
                 {"drop": 1, "keep": 1, "unreviewed": 1, "unsure": 1},

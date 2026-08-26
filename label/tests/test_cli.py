@@ -26,7 +26,7 @@ class CliEndToEndTests(unittest.TestCase):
         )
         if completed.returncode:
             self.fail(
-                f"CLI failed ({completed.returncode}): {' '.join(arguments)}\n"
+                f"CLI failed ({completed.returncode}): {' '.join(map(str, arguments))}\n"
                 f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
             )
         return json.loads(completed.stdout)
@@ -88,17 +88,13 @@ class CliEndToEndTests(unittest.TestCase):
                 prepared["revision_directory"],
             )
             self.run_cli(
-                "queue-uniform",
+                "queue-full",
                 "--database",
                 database,
                 "--project-id",
                 "cli-project",
                 "--name",
                 "CLI queue",
-                "--sample-size",
-                "2",
-                "--seed",
-                "7",
                 "--queue-id",
                 "cli-queue",
             )
@@ -111,7 +107,7 @@ class CliEndToEndTests(unittest.TestCase):
                 "--ordinal",
                 "0",
             )
-            self.assertIn(shown["review_text"], {"第一条", "第二条"})
+            self.assertEqual(shown["review_text"], "第一条")
             review = self.run_cli(
                 "review-document",
                 "--database",

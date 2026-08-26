@@ -13,7 +13,7 @@ from .identity import stable_json
 from .schema import Decision, PrimaryCategory, REVIEW_FLAGS
 
 
-DATABASE_SCHEMA_VERSION = 1
+DATABASE_SCHEMA_VERSION = 2
 
 
 def utc_now() -> str:
@@ -40,6 +40,7 @@ class DocumentReviewInput:
     flags: tuple[str, ...] = ()
     notes: str = ""
     guideline_version: str = "1"
+    edited_text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -114,6 +115,9 @@ class CurationDatabase:
         if current_version == 0:
             self._apply_migration_1()
             current_version = 1
+        if current_version == 1:
+            self._apply_migration_2()
+            current_version = 2
         if current_version != DATABASE_SCHEMA_VERSION:
             raise RuntimeError(
                 f"Database migration stopped at version {current_version}"
@@ -252,6 +256,24 @@ class CurationDatabase:
             raise
         else:
             connection.commit()
+
+    def _apply_migration_2(self) -> None:
+        try:
+            self.connection.executescript(
+                """
+                BEGIN IMMEDIATE;
+                ALTER TABLE document_reviews ADD COLUMN edited_text TEXT;
+                """
+            )
+            self.connection.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (2, utc_now()),
+            )
+        except BaseException:
+            self.connection.rollback()
+            raise
+        else:
+            self.connection.commit()
 
     def create_project(
         self,
@@ -426,7 +448,82 @@ class CurationDatabase:
             )
         return queue_id
 
+    def create_virtual_queue(
+        self,
+        *,
+        project_id: str,
+        name: str,
+        policy: Mapping[str, Any],
+        queue_id: str | None = None,
+    ) -> str:
+        """Create a queue whose ordinals are resolved without queue_items rows."""
+
+        self.get_project(project_id)
+        if policy.get("type") != "full_dataset":
+            raise ValueError("virtual queues currently require full_dataset policy")
+        sources = policy.get("sources")
+        if not isinstance(sources, list) or not sources:
+            raise ValueError("full_dataset policy requires a nonempty sources list")
+        total = 0
+        for source in sources:
+            if not isinstance(source, Mapping):
+                raise ValueError("full_dataset source entries must be objects")
+            row_count = source.get("row_count")
+            if not isinstance(row_count, int) or row_count < 0:
+                raise ValueError("full_dataset source row_count must be nonnegative")
+            total += row_count
+        if total <= 0:
+            raise ValueError("full_dataset queue cannot be empty")
+
+        queue_id = queue_id or uuid.uuid4().hex
+        with self.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO review_queues(
+                    queue_id, project_id, name, sampling_policy_json,
+                    sampling_seed, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    queue_id,
+                    project_id,
+                    name.strip() or "全量人工清洗",
+                    stable_json(dict(policy)),
+                    0,
+                    utc_now(),
+                ),
+            )
+        return queue_id
+
     def get_queue_item(self, queue_id: str, ordinal: int) -> dict[str, Any]:
+        queue_row = self.connection.execute(
+            "SELECT * FROM review_queues WHERE queue_id = ?",
+            (queue_id,),
+        ).fetchone()
+        if queue_row is None:
+            raise KeyError(f"Unknown queue_id: {queue_id}")
+        policy = json.loads(queue_row["sampling_policy_json"])
+        if policy.get("type") == "full_dataset":
+            if ordinal < 0:
+                raise KeyError(f"Unknown queue item: {queue_id}/{ordinal}")
+            remaining = ordinal
+            for source in policy["sources"]:
+                row_count = int(source["row_count"])
+                if remaining < row_count:
+                    return {
+                        "queue_id": queue_id,
+                        "ordinal": ordinal,
+                        "source_id": source["source_id"],
+                        "source_revision": source["source_revision"],
+                        "source_row": remaining,
+                        "doc_id": None,
+                        "priority": 0.0,
+                        "state": "pending",
+                        "project_id": queue_row["project_id"],
+                    }
+                remaining -= row_count
+            raise KeyError(f"Unknown queue item: {queue_id}/{ordinal}")
+
         row = self.connection.execute(
             """
             SELECT qi.*, rq.project_id
@@ -449,6 +546,29 @@ class CurationDatabase:
             raise KeyError(f"Unknown queue_id: {queue_id}")
         result = dict(row)
         result["sampling_policy"] = json.loads(result.pop("sampling_policy_json"))
+        if result["sampling_policy"].get("type") == "full_dataset":
+            sources = result["sampling_policy"]["sources"]
+            source_counts: dict[str, int] = {}
+            total = 0
+            for source in sources:
+                count = int(source["row_count"])
+                total += count
+                source_id = str(source["source_id"])
+                source_counts[source_id] = source_counts.get(source_id, 0) + count
+            reviewed = int(
+                self.connection.execute(
+                    "SELECT COUNT(*) AS count FROM document_reviews WHERE project_id = ?",
+                    (result["project_id"],),
+                ).fetchone()["count"]
+            )
+            reviewed = min(reviewed, total)
+            result["state_counts"] = {
+                "pending": total - reviewed,
+                "done": reviewed,
+            }
+            result["source_counts"] = source_counts
+            return result
+
         counts = self.connection.execute(
             """
             SELECT state, COUNT(*) AS count FROM queue_items
@@ -546,6 +666,13 @@ class CurationDatabase:
             raise ValueError("source_row must be non-negative")
         if not review.content_sha256:
             raise ValueError("content_sha256 cannot be empty")
+        if review.edited_text is not None:
+            if not isinstance(review.edited_text, str):
+                raise ValueError("edited_text must be a string or null")
+            if not review.edited_text.strip():
+                raise ValueError(
+                    "edited_text cannot be empty; drop the document instead"
+                )
 
     @staticmethod
     def _document_row_to_state(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -561,6 +688,7 @@ class CurationDatabase:
             "flags": json.loads(row["flags_json"]),
             "notes": row["notes"],
             "guideline_version": row["guideline_version"],
+            "edited_text": row["edited_text"],
             "revision": row["revision"],
             "updated_at": row["updated_at"],
         }
@@ -625,8 +753,8 @@ class CurationDatabase:
                 INSERT INTO document_reviews(
                     project_id, doc_id, source_row, content_sha256, decision,
                     quality, primary_category, flags_json, notes,
-                    guideline_version, revision, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    guideline_version, edited_text, revision, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(project_id, doc_id) DO UPDATE SET
                     source_row = excluded.source_row,
                     content_sha256 = excluded.content_sha256,
@@ -636,6 +764,7 @@ class CurationDatabase:
                     flags_json = excluded.flags_json,
                     notes = excluded.notes,
                     guideline_version = excluded.guideline_version,
+                    edited_text = excluded.edited_text,
                     revision = excluded.revision,
                     updated_at = excluded.updated_at
                 """,
@@ -650,6 +779,7 @@ class CurationDatabase:
                     stable_json(flags),
                     review.notes,
                     review.guideline_version,
+                    review.edited_text,
                     revision,
                     timestamp,
                 ),
@@ -960,7 +1090,7 @@ class CurationDatabase:
             UPDATE document_reviews SET
                 source_row = ?, content_sha256 = ?, decision = ?, quality = ?,
                 primary_category = ?, flags_json = ?, notes = ?,
-                guideline_version = ?, revision = ?, updated_at = ?
+                guideline_version = ?, edited_text = ?, revision = ?, updated_at = ?
             WHERE project_id = ? AND doc_id = ?
             """,
             (
@@ -972,6 +1102,7 @@ class CurationDatabase:
                 stable_json(state["flags"]),
                 state["notes"],
                 state["guideline_version"],
+                state.get("edited_text"),
                 revision,
                 utc_now(),
                 project_id,

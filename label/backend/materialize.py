@@ -281,7 +281,11 @@ class MaterializeService:
             if not include:
                 return
             text = row["text"]
-            if parsed_blocks is not None:
+            edited_text = None if review is None else review.get("edited_text")
+            if edited_text is not None:
+                text = edited_text
+                block_drop_count += len(dropped_blocks)
+            elif parsed_blocks is not None:
                 text = render_blocks(text, parsed_blocks, dropped_blocks)
                 block_drop_count += len(dropped_blocks)
             if not text:

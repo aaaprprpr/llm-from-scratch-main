@@ -16,7 +16,7 @@ from .backend.import_service import ImportService
 from .backend.importers import ADAPTERS, SourceSpec, get_adapter
 from .backend.materialize import MATERIALIZE_VERSION, MaterializeService
 from .backend.prepare import PrepareConfig, PrepareService
-from .backend.queueing import create_source_quota_queue, create_uniform_random_queue
+from .backend.queueing import create_full_dataset_queue
 from .backend.schema import FieldMapping
 
 
@@ -116,28 +116,12 @@ def command_source_attach(args: argparse.Namespace) -> None:
         _print_json(database.list_project_sources(args.project_id))
 
 
-def command_queue_uniform(args: argparse.Namespace) -> None:
+def command_queue_full(args: argparse.Namespace) -> None:
     with CurationDatabase(args.database) as database:
-        queue_id = create_uniform_random_queue(
+        queue_id = create_full_dataset_queue(
             database,
             project_id=args.project_id,
             name=args.name,
-            sample_size=args.sample_size,
-            seed=args.seed,
-            queue_id=args.queue_id,
-        )
-        _print_json(database.get_queue(queue_id))
-
-
-def command_queue_quota(args: argparse.Namespace) -> None:
-    quotas = _read_json(args.quotas, {})
-    with CurationDatabase(args.database) as database:
-        queue_id = create_source_quota_queue(
-            database,
-            project_id=args.project_id,
-            name=args.name,
-            quotas=quotas,
-            seed=args.seed,
             queue_id=args.queue_id,
         )
         _print_json(database.get_queue(queue_id))
@@ -277,23 +261,12 @@ def build_parser() -> argparse.ArgumentParser:
     attach.add_argument("--prepare-revision-directory", required=True)
     attach.set_defaults(func=command_source_attach)
 
-    uniform = commands.add_parser("queue-uniform")
-    uniform.add_argument("--database", required=True)
-    uniform.add_argument("--project-id", required=True)
-    uniform.add_argument("--name", required=True)
-    uniform.add_argument("--sample-size", type=int, required=True)
-    uniform.add_argument("--seed", type=int, required=True)
-    uniform.add_argument("--queue-id")
-    uniform.set_defaults(func=command_queue_uniform)
-
-    quota = commands.add_parser("queue-quota")
-    quota.add_argument("--database", required=True)
-    quota.add_argument("--project-id", required=True)
-    quota.add_argument("--name", required=True)
-    quota.add_argument("--quotas", required=True, help="JSON object file")
-    quota.add_argument("--seed", type=int, required=True)
-    quota.add_argument("--queue-id")
-    quota.set_defaults(func=command_queue_quota)
+    full_queue = commands.add_parser("queue-full")
+    full_queue.add_argument("--database", required=True)
+    full_queue.add_argument("--project-id", required=True)
+    full_queue.add_argument("--name", default="全量人工清洗")
+    full_queue.add_argument("--queue-id")
+    full_queue.set_defaults(func=command_queue_full)
 
     show = commands.add_parser("show-item")
     show.add_argument("--database", required=True)
