@@ -12,6 +12,83 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 
+class OptimizerBundle:
+    """把互斥参数上的多个优化器作为一个可保存、可恢复的整体。"""
+
+    format_version = 1
+
+    def __init__(self, optimizers: dict[str, torch.optim.Optimizer]):
+        if not optimizers:
+            raise ValueError("OptimizerBundle requires at least one optimizer")
+        self.optimizers = dict(optimizers)
+
+        parameter_owners = {}
+        for optimizer_name, optimizer in self.optimizers.items():
+            for group in optimizer.param_groups:
+                for parameter in group["params"]:
+                    parameter_id = id(parameter)
+                    previous_owner = parameter_owners.get(parameter_id)
+                    if previous_owner is not None:
+                        raise ValueError(
+                            "A parameter cannot belong to multiple optimizers: "
+                            f"{previous_owner!r} and {optimizer_name!r}"
+                        )
+                    parameter_owners[parameter_id] = optimizer_name
+
+    def __contains__(self, name: str) -> bool:
+        return name in self.optimizers
+
+    def __getitem__(self, name: str) -> torch.optim.Optimizer:
+        return self.optimizers[name]
+
+    def zero_grad(self, set_to_none: bool = True) -> None:
+        for optimizer in self.optimizers.values():
+            optimizer.zero_grad(set_to_none=set_to_none)
+
+    def step(self) -> None:
+        for optimizer in self.optimizers.values():
+            optimizer.step()
+
+    def state_dict(self) -> dict:
+        return {
+            "optimizer_bundle_version": self.format_version,
+            "optimizers": {
+                name: optimizer.state_dict()
+                for name, optimizer in self.optimizers.items()
+            },
+        }
+
+    def load_state_dict(self, state_dict: dict) -> None:
+        if "optimizer_bundle_version" not in state_dict:
+            # 兼容旧版单 AdamW checkpoint。
+            if set(self.optimizers) != {"adamw"}:
+                raise ValueError(
+                    "This is a legacy single-AdamW optimizer checkpoint. "
+                    "It can only be resumed with optimizer.type='adamw', not Muon."
+                )
+            self.optimizers["adamw"].load_state_dict(state_dict)
+            return
+
+        version = state_dict["optimizer_bundle_version"]
+        if version != self.format_version:
+            raise ValueError(
+                f"Unsupported optimizer bundle version {version}; "
+                f"expected {self.format_version}"
+            )
+
+        saved_optimizers = state_dict.get("optimizers", {})
+        expected_names = set(self.optimizers)
+        saved_names = set(saved_optimizers)
+        if saved_names != expected_names:
+            raise ValueError(
+                "Checkpoint optimizer mismatch: "
+                f"saved={sorted(saved_names)}, configured={sorted(expected_names)}"
+            )
+
+        for name, optimizer in self.optimizers.items():
+            optimizer.load_state_dict(saved_optimizers[name])
+
+
 def tokenizer_fingerprint(path: str | os.PathLike) -> str:
     path = Path(path)
     target = path / "tokenizer.json" if path.is_dir() else path
@@ -400,7 +477,7 @@ def estimate_loss(
 
 def save_checkpoint(
     model: torch.nn.Module,
-    optimizer: torch.optim.Optimizer,
+    optimizer: torch.optim.Optimizer | OptimizerBundle,
     iteration: int,
     out: str | os.PathLike | BinaryIO | IO[bytes],
     train_position=None,
@@ -431,7 +508,7 @@ def save_checkpoint(
 def load_checkpoint(
     src: str | os.PathLike | BinaryIO | IO[bytes],
     model: torch.nn.Module,
-    optimizer: torch.optim.Optimizer,
+    optimizer: torch.optim.Optimizer | OptimizerBundle,
     map_location="cpu",
 ):
     obj = torch.load(

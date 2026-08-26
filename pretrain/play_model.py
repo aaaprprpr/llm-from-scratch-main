@@ -19,9 +19,9 @@ CONFIG_PATH = PROJECT_ROOT / "configs" / "pretrain.json"
 # 指定文件时加载指定 checkpoint；保持 None 就玩最近保存的预训练模型。
 CHECKPOINT_PATH = None
 
-MAX_NEW_TOKENS = 50
-TEMPERATURE = 1.0
-TOP_P = 0.95
+MAX_NEW_TOKENS = 100
+TEMPERATURE = 0.7
+TOP_P = 0.9
 
 PROMPTS = [
     "中国的首都是",

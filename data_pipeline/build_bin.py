@@ -422,6 +422,30 @@ def build_bins(
     return train_metadata, validation_metadata
 
 
+def load_input_dataset(input_dataset: Path):
+    """Load legacy preprocessing output or a labeled materialization explicitly."""
+
+    label_dataset_descriptor = input_dataset / "dataset.json"
+    if label_dataset_descriptor.is_file():
+        from label.backend.dataset_store import load_dataset
+
+        dataset = load_dataset(input_dataset)
+        if "text" not in getattr(dataset, "column_names", []):
+            raise ValueError(
+                "The label materialization must contain a text column."
+            )
+        return dataset
+
+    from datasets import load_from_disk
+
+    dataset = load_from_disk(str(input_dataset))
+    if getattr(dataset, "column_names", None) != ["text"]:
+        raise ValueError(
+            "The preprocessed dataset must be a Dataset with only a text column."
+        )
+    return dataset
+
+
 def main() -> None:
     config = Config(CONFIG_PATH).require("build_bin")
     input_dataset = PROJECT_ROOT / config["input"]
@@ -456,14 +480,9 @@ def main() -> None:
         raise ValueError("workers must be a positive integer or 'auto'.")
     tokenizer_threads = max(1, available_cpus // workers)
 
-    from datasets import load_from_disk
     from tokenizer import Tokenizer
 
-    dataset = load_from_disk(str(input_dataset))
-    if getattr(dataset, "column_names", None) != ["text"]:
-        raise ValueError(
-            "The preprocessed dataset must be a Dataset with only a text column."
-        )
+    dataset = load_input_dataset(input_dataset)
 
     tokenizer = Tokenizer(str(tokenizer_path))
     tokenizer_size = len(tokenizer.tokenizer)

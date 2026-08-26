@@ -1,10 +1,11 @@
 datasets
+fastapi
 ftfy
 numpy
-opencc-python-reimplemented
 regex
 tokenizers
 torch
 tqdm
 transformers
+uvicorn[standard]
 wandb

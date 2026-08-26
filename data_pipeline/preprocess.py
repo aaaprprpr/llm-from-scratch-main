@@ -33,7 +33,6 @@ CONTROL_CHARACTER_TRANSLATION = {
 }
 REPETITION_SAMPLE_SIZE = 4096
 _ftfy_fix_text = None
-_opencc_to_simplified = None
 KEEP_REASON = 0
 FILTER_REASONS = {
     1: "empty_or_invalid",
@@ -84,7 +83,6 @@ def clean_record(
     text: str | None,
     max_repetition_ratio: float,
     fix_text: bool,
-    convert_to_simplified: bool,
 ) -> tuple[str | None, int]:
     if not text:
         return None, 1
@@ -99,18 +97,6 @@ def clean_record(
     text = normalize_text(text)
     if not text:
         return None, 1
-    if convert_to_simplified:
-        global _opencc_to_simplified
-        if _opencc_to_simplified is None:
-            try:
-                from opencc import OpenCC
-            except ImportError as exc:
-                raise RuntimeError(
-                    "preprocess.convert_to_simplified=true requires "
-                    "opencc-python-reimplemented"
-                ) from exc
-            _opencc_to_simplified = OpenCC("tw2sp")
-        text = _opencc_to_simplified.convert(text)
     if LINK_ONLY_PATTERN.fullmatch(text):
         return None, 2
 
@@ -313,7 +299,6 @@ def clean_batch(
     adapter_name: str,
     max_repetition_ratio: float,
     fix_text: bool,
-    convert_to_simplified: bool,
     filter_stats_dir: str,
 ) -> dict[str, list[Any]]:
     adapter = ADAPTERS[adapter_name]
@@ -328,7 +313,6 @@ def clean_batch(
             original_text,
             max_repetition_ratio,
             fix_text,
-            convert_to_simplified,
         )
         if text is None:
             filtered_by_reason[FILTER_REASONS[reason]] += 1
@@ -356,7 +340,6 @@ def clean_source(
     missing_policy: str,
     max_repetition_ratio: float,
     fix_text: bool,
-    convert_to_simplified: bool,
     workers: int,
     map_batch_size: int,
     stats: PreprocessStats,
@@ -413,7 +396,6 @@ def clean_source(
                 "adapter_name": adapter_name,
                 "max_repetition_ratio": max_repetition_ratio,
                 "fix_text": fix_text,
-                "convert_to_simplified": convert_to_simplified,
                 "filter_stats_dir": str(filter_stats_dir),
             },
             remove_columns=split.column_names,
@@ -434,7 +416,6 @@ def build_dataset(
     cache_dir: Path,
     max_repetition_ratio: float,
     fix_text: bool,
-    convert_to_simplified: bool,
     workers: int,
     map_batch_size: int,
     filter_stats_dir: Path,
@@ -449,7 +430,6 @@ def build_dataset(
                 missing_policy,
                 max_repetition_ratio,
                 fix_text,
-                convert_to_simplified,
                 workers,
                 map_batch_size,
                 stats,
@@ -531,7 +511,6 @@ def main() -> None:
     overwrite = config.get("overwrite", False)
     max_repetition_ratio = config.get("max_repetition_ratio", 0.8)
     fix_text = config.get("fix_text", True)
-    convert_to_simplified = config.get("convert_to_simplified", False)
     workers = config.get("workers", "auto")
     map_batch_size = config.get("map_batch_size", 1000)
 
@@ -575,7 +554,6 @@ def main() -> None:
                 cache_path,
                 max_repetition_ratio,
                 fix_text,
-                convert_to_simplified,
                 workers,
                 map_batch_size,
                 filter_stats_dir,

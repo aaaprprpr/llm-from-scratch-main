@@ -279,7 +279,6 @@
     "missing_dataset_policy": "error",
     "output": "data_pipeline/data/preprocessed",
     "fix_text": true,
-    "convert_to_simplified": true,
     "max_repetition_ratio": 0.8,
     "workers": "auto",
     "map_batch_size": 1000,

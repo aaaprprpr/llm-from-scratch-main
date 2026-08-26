@@ -1,0 +1,27 @@
+{
+  "paths": {
+    "pretrain_config": "configs/pretrain.json",
+    "tokenizer": "bpe/tokenizer_24576",
+    "train_bin": "data_pipeline/train.bin",
+    "val_bin": "data_pipeline/val.bin",
+    "checkpoint": "output/train_logs/run_20260823_173959/ckpt_step_80000.pt",
+    "report_root": "pipeline_audit/reports"
+  },
+  "seed": 20260825,
+  "bin_audit": {
+    "sampled_token_regions": 64,
+    "tokens_per_region": 4096,
+    "decoded_documents": 20,
+    "document_search_radius": 8192,
+    "decoded_batches": 2,
+    "full_token_range_scan": false,
+    "full_scan_chunk_tokens": 4194304
+  },
+  "checkpoint_audit": {
+    "enabled": true,
+    "device": "auto",
+    "sampled_windows": 2,
+    "context_lengths": [64, 128, 256, 512, 1024, 2048],
+    "scored_tail_tokens": 32
+  }
+}
