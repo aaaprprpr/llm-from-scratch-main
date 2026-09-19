@@ -7,6 +7,64 @@
   },
   "downloads": [
     {
+      "source_id": "fineweb_edu_zh_4_5",
+      "enabled": true,
+      "source_type": "huggingface",
+      "purpose": "pretrain",
+      "description": "Fineweb-Edu-Chinese V2.1 中文教育语料，仅下载完整 4_5 高分档。",
+      "source_url": "https://huggingface.co/datasets/opencsg/Fineweb-Edu-Chinese-V2.1/tree/main/4_5",
+      "dataset": "opencsg/Fineweb-Edu-Chinese-V2.1",
+      "config": null,
+      "split": "train",
+      "data_files": {
+        "train": "4_5/*.parquet"
+      },
+      "revision": null,
+      "license": "Apache-2.0 + OpenCSG Community License; commercial permission required by dataset card",
+      "output": "data_pipeline/data/downloads/fineweb_edu_zh_4_5",
+      "format": "disk",
+      "expected_columns": [
+        "text",
+        "score",
+        "source"
+      ],
+      "adapter": "text_only",
+      "overwrite": false,
+      "size_note": "2026-09-19 官方文件列表：9,745 个 Parquet，74,294,352,764 字节，约 74.29 GB / 69.19 GiB；官方语料说明约 70 GB、17,790,513 条。缓存及 save_to_disk 另占空间。",
+      "safety_note": "按数据集说明遵守 OpenCSG 社区条款；商用需另行取得许可。",
+      "notes": "全量下载 4_5，不限制分片数量，不混入 2_3、3_4；预处理只读取 text。"
+    },
+    {
+      "source_id": "finewiki_zh",
+      "enabled": true,
+      "source_type": "huggingface",
+      "purpose": "pretrain",
+      "description": "FineWiki 中文百科知识补充，2025 年 8 月快照，仅下载完整 zh 子集。",
+      "source_url": "https://huggingface.co/datasets/HuggingFaceFW/finewiki/tree/main/data/zhwiki",
+      "dataset": "HuggingFaceFW/finewiki",
+      "config": "zh",
+      "split": "train",
+      "data_files": {
+        "train": "data/zhwiki/*.parquet"
+      },
+      "revision": null,
+      "license": "cc-by-sa-4.0",
+      "output": "data_pipeline/data/downloads/finewiki_zh",
+      "format": "disk",
+      "expected_columns": [
+        "id",
+        "url",
+        "title",
+        "text",
+        "wikitext"
+      ],
+      "adapter": "text_only",
+      "overwrite": false,
+      "size_note": "2026-09-19 官方文件列表：5 个 Parquet，5,526,531,060 字节，约 5.53 GB / 5.15 GiB；官方语料说明 5.1 GB、1,295,955 篇。缓存及 save_to_disk 另占空间。",
+      "safety_note": "遵守 CC BY-SA 4.0 的署名及相同方式共享要求。",
+      "notes": "全量下载 data/zhwiki，不下载其他语言；预处理只使用已清洗的 text，不读取 wikitext，也不重复拼接 title。"
+    },
+    {
       "source_id": "wiki_zh_20231101",
       "enabled": true,
       "source_type": "huggingface",
@@ -239,6 +297,14 @@
   ],
   "preprocess": {
     "dataset_sources": [
+      {
+        "source_id": "fineweb_edu_zh_4_5",
+        "enabled": true
+      },
+      {
+        "source_id": "finewiki_zh",
+        "enabled": true
+      },
       {
         "source_id": "wiki_zh_20231101",
         "enabled": true

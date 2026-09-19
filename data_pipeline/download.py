@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
@@ -10,6 +11,25 @@ from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DOWNLOAD_CACHE_ROOT = PROJECT_ROOT / "data_pipeline" / "data" / ".cache" / "huggingface"
+DATASET_CACHE_DIR = DOWNLOAD_CACHE_ROOT / "datasets"
+RAW_DOWNLOAD_CACHE_DIR = DATASET_CACHE_DIR / "downloads"
+
+# Set cache paths before importing datasets / huggingface_hub: both libraries
+# read these environment variables at import time. Override inherited cache
+# locations for this downloader process, while keeping HF_HOME/token settings.
+for _cache_variable, _cache_path in {
+    "HF_HUB_CACHE": DOWNLOAD_CACHE_ROOT / "hub",
+    "HUGGINGFACE_HUB_CACHE": DOWNLOAD_CACHE_ROOT / "hub",
+    "HF_DATASETS_CACHE": DATASET_CACHE_DIR,
+    "HF_DATASETS_DOWNLOADED_DATASETS_PATH": RAW_DOWNLOAD_CACHE_DIR,
+    "HF_DATASETS_EXTRACTED_DATASETS_PATH": RAW_DOWNLOAD_CACHE_DIR / "extracted",
+    "HF_XET_CACHE": DOWNLOAD_CACHE_ROOT / "xet",
+    "HF_ASSETS_CACHE": DOWNLOAD_CACHE_ROOT / "assets",
+    "HF_MODULES_CACHE": DOWNLOAD_CACHE_ROOT / "modules",
+}.items():
+    os.environ[_cache_variable] = str(_cache_path)
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path = [
     path for path in sys.path if Path(path or Path.cwd()).resolve() != SCRIPT_DIR
@@ -100,6 +120,7 @@ def write_dataset_sample(
         "dataset": source.get("dataset"),
         "config": source.get("config"),
         "split": source.get("split"),
+        "data_files": source.get("data_files"),
         "adapter": source.get("adapter"),
         "expected_columns": source.get("expected_columns"),
         "summary": dataset_summary(dataset),
@@ -128,6 +149,7 @@ def _source_record(
         "dataset": source.get("dataset"),
         "config": source.get("config"),
         "split": source.get("split"),
+        "data_files": source.get("data_files"),
         "revision": source.get("revision"),
         "license": source.get("license"),
         "format": source.get("format"),
@@ -196,6 +218,24 @@ def guard_dangerous_configs(source: dict[str, Any]) -> None:
         if source.get("split") != "train":
             raise ValueError("wikimedia/wikipedia must use split='train'.")
 
+    restricted_subsets = {
+        "opencsg/Fineweb-Edu-Chinese-V2.1": (None, "4_5/*.parquet"),
+        "HuggingFaceFW/finewiki": ("zh", "data/zhwiki/*.parquet"),
+    }
+    if source.get("dataset") in restricted_subsets:
+        config_name, pattern = restricted_subsets[source["dataset"]]
+        if source.get("config") != config_name:
+            raise ValueError(
+                f"{source['dataset']} must use config={config_name!r}."
+            )
+        if source.get("split") != "train":
+            raise ValueError(f"{source['dataset']} must use split='train'.")
+        if source.get("data_files") != {"train": pattern}:
+            raise ValueError(
+                f"{source['dataset']} must use data_files={{'train': {pattern!r}}} "
+                "to download the complete intended subset only."
+            )
+
 
 def download_one(
     source: dict[str, Any],
@@ -210,18 +250,28 @@ def download_one(
     if source.get("source_type") == "manual" or source.get("format") == "manual":
         return check_manual_source(source)
 
+    guard_dangerous_configs(source)
+
     if output.exists():
-        extra: dict[str, Any] = {"download_skipped": True}
         try:
             dataset = load_local_dataset(output)
-            sample_path = write_dataset_sample(
-                source, dataset, sample_dir, sample_rows, sample_max_chars
-            )
-            extra["sample_path"] = str(sample_path.resolve())
-            extra["summary"] = dataset_summary(dataset)
         except Exception as exc:
-            extra["sample_error"] = f"{type(exc).__name__}: {exc}"
-        return _source_record(source, "already_downloaded", output, extra)
+            print(
+                f"Existing dataset is incomplete or unreadable: {output} "
+                f"({type(exc).__name__}: {exc}); retrying download/save.",
+                flush=True,
+            )
+        else:
+            extra: dict[str, Any] = {"download_skipped": True}
+            try:
+                sample_path = write_dataset_sample(
+                    source, dataset, sample_dir, sample_rows, sample_max_chars
+                )
+                extra["sample_path"] = str(sample_path.resolve())
+                extra["summary"] = dataset_summary(dataset)
+            except Exception as exc:
+                extra["sample_error"] = f"{type(exc).__name__}: {exc}"
+            return _source_record(source, "already_downloaded", output, extra)
 
     if source.get("source_type", "huggingface") != "huggingface":
         raise ValueError(
@@ -229,8 +279,6 @@ def download_one(
         )
     if source.get("format") != "disk":
         raise ValueError("download.py only supports format='disk'. Text export belongs to preprocess.py.")
-
-    guard_dangerous_configs(source)
 
     from datasets import DownloadConfig, enable_progress_bars, load_dataset
     from huggingface_hub.utils import enable_progress_bars as enable_hub_progress_bars
@@ -243,14 +291,20 @@ def download_one(
         "name": source["config"],
         "split": source["split"],
         "revision": source["revision"],
+        "data_files": source.get("data_files"),
     }
     print(f"Dataset: {source['dataset']}", flush=True)
     print(f"Split: {source['split']}", flush=True)
+    if source.get("data_files") is not None:
+        print(f"Files (all matching shards): {source['data_files']}", flush=True)
     print(f"Expected size: {source.get('size_note') or 'unknown'}", flush=True)
     print(f"Save to: {output.resolve()}", flush=True)
+    print(f"Hugging Face cache: {DOWNLOAD_CACHE_ROOT}", flush=True)
     dataset = load_dataset(
         **{key: value for key, value in load_kwargs.items() if value is not None},
+        cache_dir=str(DATASET_CACHE_DIR),
         download_config=DownloadConfig(
+            cache_dir=str(RAW_DOWNLOAD_CACHE_DIR),
             download_desc=f"Downloading {source['dataset']}",
             disable_tqdm=False,
         ),
