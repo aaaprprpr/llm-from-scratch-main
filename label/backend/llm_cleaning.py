@@ -1,8 +1,10 @@
-"""Local LLM plans that extract and join source prose without rewriting it."""
+"""LLM plans that extract and join source prose without rewriting it."""
 from __future__ import annotations
 
+import http.client
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -11,12 +13,13 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections import Counter
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from dotenv import dotenv_values
 
 from .identity import sha256_text, stable_json
 from .schema import PrimaryCategory
@@ -77,22 +80,47 @@ class CleaningConfig:
     timeout_seconds: float = 60
     max_document_characters: int = 100000
     max_chunks: int = 64
+    provider: Literal["llamacpp", "dashscope"] = "llamacpp"
+    api_key: str = field(default="", repr=False, compare=False)
 
     def __post_init__(self):
         url = urllib.parse.urlparse(self.base_url)
-        if url.scheme != "http" or url.hostname not in {"127.0.0.1", "localhost", "::1"}:
-            raise ValueError("本地清洗服务必须使用 http://localhost 或回环 IP 地址")
-        if url.username or url.password or url.query or url.fragment or url.path not in {"", "/"}:
-            raise ValueError("base_url 只填写本地 llama.cpp 服务地址和端口，不含 /v1")
+        if self.provider not in {"llamacpp", "dashscope"}:
+            raise ValueError("清洗 provider 必须是 llamacpp 或 dashscope")
+        if url.username or url.password or url.query or url.fragment:
+            raise ValueError("base_url 不得包含用户名、密码、查询参数或片段")
+        if self.provider == "llamacpp":
+            if url.scheme != "http" or url.hostname not in {"127.0.0.1", "localhost", "::1"}:
+                raise ValueError("本地清洗服务必须使用 http://localhost 或回环 IP 地址")
+            if url.path not in {"", "/"}:
+                raise ValueError("base_url 只填写本地 llama.cpp 服务地址和端口，不含 /v1")
+        elif url.scheme != "https" or not url.hostname or not url.path.rstrip("/").endswith("/v1"):
+            raise ValueError("DashScope base_url 必须是 HTTPS API 地址，并以 /v1 结尾")
+        if not self.model.strip():
+            raise ValueError("清洗模型名称不能为空")
         if min(self.max_chunks, self.max_document_characters, self.timeout_seconds) <= 0:
             raise ValueError("清洗长度、分块数和超时必须大于零")
         if self.max_output_tokens < 128 or self.context_tokens <= self.max_output_tokens + 256:
             raise ValueError("清洗上下文或输出预算太小")
 
     @classmethod
-    def from_file(cls):
-        path = Path(__file__).resolve().parents[2] / "configs" / "label.json"
-        return cls(**json.loads(path.read_text(encoding="utf-8"))["llm_cleaning"])
+    def from_file(cls, path: Path | None = None, env_file: Path | None = None):
+        root = Path(__file__).resolve().parents[2]
+        path = Path(path) if path is not None else root / "configs" / "label.json"
+        values = json.loads(path.read_text(encoding="utf-8"))["llm_cleaning"]
+        if values.get("provider", "llamacpp") == "dashscope":
+            env = {**dotenv_values(env_file or root / ".env"), **os.environ}
+            values["api_key"] = (env.get("DASHSCOPE_API_KEY") or "").strip()
+            for name, option in (("DEFAULT_MODEL", "model"), ("DASHSCOPE_BASE_URL", "base_url")):
+                if env.get(name):
+                    values[option] = env[name].strip()
+        return cls(**values)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Never forward the API credential to a redirect destination.
+        return None
 
 
 @dataclass(frozen=True)
@@ -166,43 +194,72 @@ class LlmCleaner:
         self.config = config
         self.report_directory = report_directory
         self._lock = threading.Lock()
-        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        handlers = ([urllib.request.ProxyHandler({})] if config.provider == "llamacpp"
+                    else [_NoRedirect()])
+        self._opener = urllib.request.build_opener(*handlers)
 
     def _request(self, path: str, payload: dict | None = None) -> dict:
+        headers = {"Content-Type": "application/json"}
+        if self.config.provider == "dashscope":
+            if not self.config.api_key:
+                raise LlmCleaningError("未配置 DASHSCOPE_API_KEY，请在项目根目录 .env 中填写并重启后端")
+            headers["Authorization"] = f"Bearer {self.config.api_key}"
         request = urllib.request.Request(
             self.config.base_url.rstrip("/") + path,
             data=None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=headers,
         )
         try:
             with self._opener.open(request, timeout=self.config.timeout_seconds) as response:
                 value = json.load(response)
             if not isinstance(value, dict):
-                raise LlmCleaningError("本地模型返回了无效响应，请重试")
+                raise LlmCleaningError("模型返回了无效响应，请重试")
             return value
         except urllib.error.HTTPError as exc:
-            raise LlmCleaningError(f"本地模型接口 {path} 返回 HTTP {exc.code}，请检查服务日志") from exc
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            hint = {
+                400: "请检查模型名称、上下文和请求参数",
+                401: "请检查 DASHSCOPE_API_KEY 及其所属地域",
+                403: "请检查 API Key 权限及模型是否已开通",
+                404: "请检查 API 地址和模型名称",
+                429: "请求限流或额度不足，请稍后重试并检查账户额度",
+            }.get(exc.code, "请稍后重试或检查服务状态")
+            raise LlmCleaningError(f"模型接口 {path} 返回 HTTP {exc.code}，{hint}") from exc
+        except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
             raise LlmCleaningError(
-                f"无法连接本地模型或请求超时：{self.config.base_url}；请确认 llama.cpp 已启动"
+                f"无法连接模型或请求超时：{self.config.base_url}；请检查网络和服务状态"
             ) from exc
         except (ValueError, UnicodeError) as exc:
-            raise LlmCleaningError("本地模型返回了无法解析的响应，请重试") from exc
+            raise LlmCleaningError("模型返回了无法解析的响应，请重试") from exc
 
     def _messages(self, title: str | None, units: list[TextUnit], retry_error: str | None = None) -> list[dict]:
         paragraphs = {block_id: index for index, block_id in enumerate(dict.fromkeys(unit.block_id for unit in units))}
+        system_prompt = SYSTEM_PROMPT
+        if self.config.provider == "dashscope":
+            system_prompt += "\n输出必须符合以下 JSON Schema：\n" + json.dumps(
+                ChunkAssessment.model_json_schema(), ensure_ascii=False,
+            )
+            system_prompt += (
+                "\n提交前逐字检查：replacement 的每个非空白字符都必须依次出现在对应 unit.text 中。"
+                "原文的空括号、缺失外文或公式、疑似错字，都不能凭知识补全或纠正。"
+                "例如原文‘源自希腊语（）’，不能补入任何希腊语或拉丁字母。"
+                "无法仅靠删字修复的片段应保持原样，不输出该 edit；不要润色、纠错或补充事实。"
+            )
         return [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": json.dumps({
                 "title": (title or "")[:300],
-                **({"retry_instruction": f"上次方案校验失败：{retry_error[:160]}。请重新检查本次输入编号；edits只能裁剪对应片段，不能抄入相邻片段。保持完整正文，不要把引用或解释当成标题。"} if retry_error else {}),
                 "units": [{"id": i, "paragraph": paragraphs[unit.block_id], "continuation": unit.start > 0, "text": unit.text,
                            **({"section_hint": unit.section_hint} if unit.section_hint else {})}
                           for i, unit in enumerate(units)],
+                **({"retry_instruction": f"上次方案校验失败：{retry_error[:160]}。请重新检查本次输入编号；edits只能裁剪对应片段，不能抄入相邻片段。若错误指出某片段新增文字，必须撤回对该片段的edit，原样保留，不要再次尝试修复它。保持完整正文，不要把引用或解释当成标题。"} if retry_error else {}),
             }, ensure_ascii=False)},
         ]
 
     def _prompt_tokens(self, messages: list[dict]) -> int:
+        if self.config.provider == "dashscope":
+            # Conservative UTF-8 byte budget; no llama.cpp-only tokenizer calls.
+            # Actual usage is taken from the completion response.
+            return len(json.dumps(messages, ensure_ascii=False).encode("utf-8")) + 128
         formatted = self._request("/apply-template", {
             "messages": messages, "chat_template_kwargs": {"enable_thinking": False},
         })
@@ -232,7 +289,8 @@ class LlmCleaner:
             if len(pending) + len(planned) > self.config.max_chunks:
                 raise ValueError(f"本条超过单次清洗的 {self.config.max_chunks} 个分块上限，请先拆成较短文档")
             group = pending.pop()
-            if self._prompt_tokens(self._messages(title, group)) + self.config.max_output_tokens + 64 + RETRY_TOKEN_RESERVE <= context:
+            retry_reserve = 1024 if self.config.provider == "dashscope" else RETRY_TOKEN_RESERVE
+            if self._prompt_tokens(self._messages(title, group)) + self.config.max_output_tokens + 64 + retry_reserve <= context:
                 planned.append(group)
                 continue
             if len(group) > 1:
@@ -241,7 +299,7 @@ class LlmCleaner:
             else:
                 unit = group[0]
                 if len(unit.text) < 32:
-                    raise LlmCleaningError("本地模型上下文不足以容纳清洗提示，请增大服务上下文")
+                    raise LlmCleaningError("模型上下文不足以容纳清洗提示，请增大配置的上下文预算")
                 middle = len(unit.text) // 2
                 pending.extend([
                     [replace(unit, start=unit.start + middle, text=unit.text[middle:])],
@@ -257,7 +315,7 @@ class LlmCleaner:
         if sum(len(block["text"]) for block in blocks) > self.config.max_document_characters:
             raise ValueError(f"单条正文超过 {self.config.max_document_characters:,} 字符，请先拆成较短文档")
         if not self._lock.acquire(blocking=False):
-            raise LlmCleaningError("已有本地清洗任务运行中，请稍后重试")
+            raise LlmCleaningError("已有 LLM 清洗任务运行中，请稍后重试")
         try:
             return self._clean(blocks, title=title, provenance=provenance)
         finally:
@@ -305,13 +363,20 @@ class LlmCleaner:
             if attempt and self._prompt_tokens(messages) + self.config.max_output_tokens + 64 > context:
                 raise LlmCleaningError(f"第 {chunk_number}/{chunk_count} 块重试上下文不足；原草稿保留")
             try:
-                response = self._request("/v1/chat/completions", {
+                payload = {
                     "model": self.config.model, "messages": messages,
                     "temperature": 0, "seed": 42, "stream": False,
                     "max_tokens": self.config.max_output_tokens,
-                    "chat_template_kwargs": {"enable_thinking": False},
-                    "response_format": {"type": "json_object", "schema": ChunkAssessment.model_json_schema()},
-                })
+                    "response_format": {"type": "json_object"},
+                }
+                if self.config.provider == "dashscope":
+                    payload["enable_thinking"] = False
+                    path = "/chat/completions"
+                else:
+                    payload["chat_template_kwargs"] = {"enable_thinking": False}
+                    payload["response_format"]["schema"] = ChunkAssessment.model_json_schema()
+                    path = "/v1/chat/completions"
+                response = self._request(path, payload)
             except LlmCleaningError as exc:
                 raise LlmCleaningError(f"第 {chunk_number}/{chunk_count} 块：{exc}") from exc
             usage = response.get("usage", {})
@@ -338,11 +403,14 @@ class LlmCleaner:
 
     def _clean(self, blocks: list[dict], *, title: str | None, provenance: dict) -> dict:
         started = time.monotonic()
-        props = self._request("/props")
-        server_context = props.get("default_generation_settings", {}).get("n_ctx")
-        if not isinstance(server_context, int) or server_context <= 0:
-            raise LlmCleaningError("无法读取本地服务的实际上下文大小")
-        context = min(self.config.context_tokens, server_context)
+        props = {}
+        context = self.config.context_tokens
+        if self.config.provider == "llamacpp":
+            props = self._request("/props")
+            server_context = props.get("default_generation_settings", {}).get("n_ctx")
+            if not isinstance(server_context, int) or server_context <= 0:
+                raise LlmCleaningError("无法读取本地服务的实际上下文大小")
+            context = min(context, server_context)
         chunks = self._plan(title, split_units(blocks), context)
         removals, edits, assessments, output_groups = [], [], [], []
         reordered_chunks = 0
@@ -421,7 +489,8 @@ class LlmCleaner:
         # Save suggestions separately from human reviews, including the exact input.
         report = {
             "created_at": datetime.now(UTC).isoformat(), "provenance": provenance,
-            "title": title, "input_blocks": blocks, "system_prompt": SYSTEM_PROMPT,
+            "title": title, "input_blocks": blocks, "system_prompt": self._messages(title, [])[0]["content"],
+            "provider": self.config.provider, "base_url": self.config.base_url,
             "generation": {"temperature": 0, "seed": 42, "enable_thinking": False},
             "server_build": props.get("build_info"), "model_path": props.get("model_path"),
             "context_tokens": context, "retry_attempts": retry_attempts, "result": result,

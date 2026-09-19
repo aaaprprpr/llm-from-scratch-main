@@ -3,6 +3,7 @@ fastapi
 ftfy
 numpy
 OpenCC==1.3.0
+python-dotenv
 regex
 tokenizers
 torch

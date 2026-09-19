@@ -278,7 +278,7 @@ export function useReviewWorkspace() {
     llmInFlight.current = true;
     setBusy(true);
     setLlmCleaning(true);
-    setStatus("本地模型正在检查本条全文，长文会分块处理，请稍候…");
+    setStatus("LLM 正在检查本条全文，长文会分块处理，请稍候…");
     try {
       const result = await requestJson<LlmCleaningResult>(
         `/api/reviews/documents/${document.document.doc_id}/llm-clean`,
@@ -298,10 +298,10 @@ export function useReviewWorkspace() {
       }
       setLlmResult(result);
       setStatus(result.text_changed
-        ? "本地清洗完成：重组草稿已载入，可继续编辑、拖动拼接；右侧查看全部删改"
-        : "本地清洗完成：未修改正文，请查看模型判断");
+        ? "LLM 清洗完成：重组草稿已载入，可继续编辑、拖动拼接；右侧查看全部删改"
+        : "LLM 清洗完成：未修改正文，请查看模型判断");
     } catch (error) {
-      if (version === documentVersion.current) setStatus(`本地清洗失败：${String(error)}；草稿已保留`);
+      if (version === documentVersion.current) setStatus(`LLM 清洗失败：${String(error)}；草稿已保留`);
     } finally {
       llmInFlight.current = false;
       setLlmCleaning(false);

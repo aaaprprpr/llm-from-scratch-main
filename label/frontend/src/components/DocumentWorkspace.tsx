@@ -71,10 +71,10 @@ export default function DocumentWorkspace({
             </span>
             <strong className={textDirty ? "dirty" : ""}>{textDirty ? "尚未保存" : document.materialized_text !== document.simplified.materialized_text ? "已自动转简体" : "已保存"}</strong>
             <button className="primary llm-clean-button" onClick={onLlmClean} disabled={busy}>
-              {llmCleaning ? "本地模型清洗中…" : "LLM 清洗本条"}
+              {llmCleaning ? "LLM 清洗中…" : "LLM 清洗本条"}
             </button>
           </div>
-          {llmResult && <section className="llm-result" aria-label="本地模型清洗建议">
+          {llmResult && <section className="llm-result" aria-label="LLM 清洗建议">
             <div className="llm-result-heading">
               <strong>清洗草稿已返回 · {decisionLabels[llmResult.decision]}</strong>
               {llmResult.text_changed && <button className="secondary" disabled={busy} onClick={onUndoLlmClean}>撤销本次清洗</button>}

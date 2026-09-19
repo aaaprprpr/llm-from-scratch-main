@@ -10,6 +10,10 @@ __pycache__/
 
 venv/
 .env/
+.env
+.env.*
+!.env.example
+.venv/
 env/
 
 # IDE

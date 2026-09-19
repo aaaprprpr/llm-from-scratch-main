@@ -39,7 +39,7 @@ npm run dev
 
 默认数据根目录是 `label/data`，可通过 `LABEL_DATA_ROOT` 修改。
 
-## 本地 LLM 清洗本条
+## LLM API 清洗本条
 
 清洗工作区支持直接改字、选区删除、拖动选中文字到另一段中拼接、整段拖动重排、繁简转换、撤销和重做。最终保存的是编辑拼接后的正文。
 
@@ -58,11 +58,26 @@ npm run dev
 - 审核后按 ↑ 保留并保存，Ctrl D 丢弃整条。沿用原有翻页行为：→ 会保存为当前决定，未审核条目保存为待定。刷新页面会丢失尚未保存的草稿。
 - JSON 格式、引用编号、局部编辑或输出长度校验失败时，带上错误原因仅重试当前分块一次，已成功的分块不会重跑。重试仍失败时显示具体分块位置，整次建议不应用，原草稿保留。连接失败不自动重试。
 
-服务配置在 `configs/label.json`：默认连接 `http://127.0.0.1:8080` 的 `qwen-local`，适配 llama.cpp 的 `/props`、`/apply-template`、`/tokenize` 和 `/v1/chat/completions`。关闭思考模式，使用 JSON Schema 约束输出；连接地址只允许本机回环地址。修改配置后重启清洗台后端。
+服务配置在 `configs/label.json`，默认使用 DashScope 的 `qwen-plus`。后端自动读取**项目根目录**的 `.env`（不受启动目录影响），系统环境变量优先：
 
-长文按句子和行拆分，成对中文引号内的问号、句号和换行不作为普通切分点，避免将同一引文拆散后引发片段编号错配。超长引文仍受单片长度和上下文上限约束。逐块串行处理全部正文，不静默截断。每块用服务的聊天模板和 tokenizer 计算输入 token 数，预留输出及重试提示预算，再按实际上下文进一步拆分。默认上限为 10 万字符、64 个分块，单次接口请求超时 60 秒；长文可能花几分钟。超限会明确报错。
+```dotenv
+DASHSCOPE_API_KEY=你的百炼API密钥
+DEFAULT_MODEL=qwen-plus
+# 可选：按密钥所属地域覆盖 API 地址
+# DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+```
+
+`.env` 已加入 Git 忽略；可参考根目录 `.env.example`。依赖中新增 `python-dotenv`，已有环境执行 `python -m pip install python-dotenv`。修改配置或 `.env` 后重启后端。
+
+远程模式只调用 `/chat/completions`，使用 Bearer 认证、关闭思考和 JSON 输出模式；Schema 放在提示词中，返回后仍执行原有 Pydantic、片段编号及只删不改写校验。参数格式依据 [DashScope Chat API 文档](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions)。密钥仅由后端读取，不进入前端或建议报告。鉴权、限流、额度及连接错误会显示在原有工作区中。
+
+如需切回原有 4096 上下文的本地 llama.cpp，将 `provider` 设为 `llamacpp`、`base_url` 设为 `http://127.0.0.1:8080`、`model` 设为本地模型名，并恢复 `context_tokens=4096`、`max_output_tokens=1536`。该模式保留 `/props`、`/apply-template`、`/tokenize` 和 `/v1/chat/completions` 适配，且只允许回环地址，不读取 DashScope 环境配置。
+
+长文按句子和行拆分，成对中文引号内的问号、句号和换行不作为普通切分点，避免将同一引文拆散后引发片段编号错配。超长引文仍受单片长度和上下文上限约束。逐块串行处理全部正文，不静默截断。远程模式按包含 Schema 的完整提示词 UTF-8 字节数保守估算输入预算，预留输出及重试空间，不依赖本地 tokenizer；实际 token 用量以 API 返回值为准。本地模式仍使用服务的聊天模板与 tokenizer 计算。当前远程配置为 32768 上下文预算、4096 输出 token、10 万字符、64 个分块，单次请求超时 120 秒；长文可能花几分钟。超限会明确报错。
 
 每次完整成功的建议单独保存到 `label/data/llm_suggestions/<suggestion_id>.json`（使用自定义数据根目录时随根目录移动），记录原始草稿及分隔符、来源、模型、提示词版本、删除位置、局部裁剪、拼接计划、重试原因及结果。它不会自动写入人工审核表或成为已接受的训练数据。后续可将这些建议与人工最终结果对照，积累快速分类器的训练样本。
+
+本次工作区只导入 `data_pipeline/data/downloads/wiki_zh_20231101`，项目为 `wiki_zh_20231101`，全量人工队列为 `wiki_zh_20231101_full`。正文映射 `text`，`title`、`url`、`id` 保存为来源信息。队列包含全部 1,384,748 条文档；点击 **LLM 清洗本条** 才会调用 API 处理当前文档，创建队列不会自动批量调用模型。
 
 网页左侧选择“导入数据”，即可从空目录完成：
 
