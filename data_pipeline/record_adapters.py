@@ -30,6 +30,10 @@ def adapt_plain_text(row: Mapping[str, Any]) -> str | None:
     )
 
 
+def adapt_text_only(row: Mapping[str, Any]) -> str | None:
+    return join_parts(first_text(row, "text"))
+
+
 def adapt_classification_text(row: Mapping[str, Any]) -> str | None:
     return join_parts(first_text(row, "text", "content"))
 
@@ -107,6 +111,7 @@ def adapt_tieba_thread(row: Mapping[str, Any]) -> str | None:
 
 ADAPTERS: dict[str, Callable[[Mapping[str, Any]], str | None]] = {
     "plain_text": adapt_plain_text,
+    "text_only": adapt_text_only,
     "classification_text": adapt_classification_text,
     "instruction_input_output": adapt_instruction_input_output,
     "question_answer": adapt_question_answer,
@@ -118,6 +123,7 @@ ADAPTERS: dict[str, Callable[[Mapping[str, Any]], str | None]] = {
 
 ADAPTER_COLUMNS = {
     "plain_text": {"title", "text", "content"},
+    "text_only": {"text"},
     "classification_text": {"text", "content"},
     "instruction_input_output": {
         "instruction",
