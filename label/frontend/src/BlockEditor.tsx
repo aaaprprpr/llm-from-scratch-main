@@ -58,17 +58,17 @@ export function editableBlocksFromText(text: string, docId: string): EditableBlo
   }));
 }
 
-export function renderEditableBlocks(blocks: EditableBlock[]): string {
+export function serializeEditableBlocks(blocks: EditableBlock[]) {
   const kept = blocks.filter((block) => !block.deleted);
-  if (!kept.length) return "";
-
   const untouchedOrder = blocks.every(
     (block, index) => !block.deleted && (block.sourceOrdinal === null || block.sourceOrdinal === index),
   );
-  if (untouchedOrder) {
-    return kept.map((block) => block.text + block.separatorAfter).join("");
-  }
-  return kept.map((block) => block.text).join("\n\n");
+  return kept.map((block, index) => ({ id: block.id, text: block.text,
+    separator_after: untouchedOrder ? block.separatorAfter : index < kept.length - 1 ? "\n\n" : "" }));
+}
+
+export function renderEditableBlocks(blocks: EditableBlock[]): string {
+  return serializeEditableBlocks(blocks).map((block) => block.text + block.separator_after).join("");
 }
 
 function textOffset(root: HTMLElement, node: Node, offset: number): number {
@@ -257,6 +257,13 @@ export default function BlockEditor({
   const draggedBlockId = useRef<string | null>(null);
 
   useEffect(() => () => clearPersistentHighlight(), []);
+  useEffect(() => {
+    if (!busy) return;
+    clearPersistentHighlight();
+    setSelection(null);
+    draggedSelection.current = null;
+    draggedBlockId.current = null;
+  }, [busy]);
 
   const clearSelection = () => {
     clearPersistentHighlight();
@@ -270,6 +277,7 @@ export default function BlockEditor({
   };
 
   const captureSelection = (root: HTMLElement) => {
+    if (busy) return;
     const browserSelection = window.getSelection();
     if (!browserSelection?.rangeCount || browserSelection.isCollapsed) {
       consumeSelection();
@@ -301,7 +309,7 @@ export default function BlockEditor({
   };
 
   const replaceSelectedText = (replacement: string) => {
-    if (!selection) return;
+    if (!selection || busy) return;
     onChange(blocks.map((block) => block.id === selection.blockId ? {
       ...block,
       text: block.text.slice(0, selection.start) + replacement + block.text.slice(selection.end),
@@ -310,7 +318,7 @@ export default function BlockEditor({
   };
 
   const startSelectionDrag = (event: React.DragEvent<HTMLElement>) => {
-    if (!selection) {
+    if (!selection || busy) {
       event.preventDefault();
       return;
     }
@@ -321,6 +329,7 @@ export default function BlockEditor({
   };
 
   const dropSelection = (targetBlockId: string, targetOffset: number) => {
+    if (busy) return;
     const source = draggedSelection.current;
     if (!source) return;
     if (
@@ -349,6 +358,7 @@ export default function BlockEditor({
   };
 
   const moveBlock = (sourceId: string, targetId: string) => {
+    if (busy) return;
     if (sourceId === targetId) return;
     const sourceIndex = blocks.findIndex((block) => block.id === sourceId);
     const targetIndex = blocks.findIndex((block) => block.id === targetId);
@@ -361,7 +371,7 @@ export default function BlockEditor({
 
   return (
     <section className="block-editor" aria-label="正文清洗编辑器">
-      {selection && (
+      {selection && !busy && (
         <div className="selection-tools" style={{ left: selection.left, top: selection.top }}>
           <span>{selection.end - selection.start} 字</span>
           <button

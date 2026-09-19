@@ -5,6 +5,23 @@ export type Project = {
   current_revision: number;
 };
 
+export type LlmCleaningResult = {
+  suggestion_id: string;
+  model: string;
+  decision: "keep" | "drop" | "unsure";
+  quality: number;
+  category: string;
+  assessments: Array<{ chunk: number; summary: string }>;
+  edited_text: string;
+  text_changed: boolean;
+  edits: Array<{ block_id: string; start: number; end: number; original: string; replacement: string }>;
+  reordered_chunks: number;
+  removals: Array<{ block_id: string; start: number; end: number; text: string; reason: string }>;
+  chunks: number;
+  elapsed_seconds: number;
+  warnings: string[];
+};
+
 export type Queue = {
   queue_id: string;
   project_id: string;
@@ -66,6 +83,11 @@ export type QueueDocument = {
   review_text: string;
   block_materialized_text: string;
   materialized_text: string;
+  simplified: {
+    raw_text: string;
+    materialized_text: string;
+    block_texts: string[];
+  };
   token_counts: {
     raw: number;
     review: number;

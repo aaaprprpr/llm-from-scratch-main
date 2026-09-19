@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { requestJson } from "../api";
 import {
   renderEditableBlocks,
+  editableBlocksFromText,
+  serializeEditableBlocks,
   type EditAction,
   type EditableBlock,
 } from "../BlockEditor";
@@ -12,7 +14,7 @@ import {
   makeEditableBlocks,
   queueSize,
 } from "../reviewState";
-import type { Project, ProjectDetail, QueueDocument } from "../types";
+import type { LlmCleaningResult, Project, ProjectDetail, QueueDocument } from "../types";
 
 export function useReviewWorkspace() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -28,6 +30,10 @@ export function useReviewWorkspace() {
   const [category, setCategory] = useState("");
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
+  const [llmCleaning, setLlmCleaning] = useState(false);
+  const [llmResult, setLlmResult] = useState<LlmCleaningResult | null>(null);
+  const llmInFlight = useRef(false);
+  const documentVersion = useRef(0);
   const [status, setStatus] = useState("正在连接后端…");
   const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
   const undoStack = useRef<EditableBlock[][]>([]);
@@ -81,6 +87,8 @@ export function useReviewWorkspace() {
   }, [loadProjects]);
 
   const loadDocument = useCallback(async () => {
+    const version = ++documentVersion.current;
+    setLlmResult(null);
     if (!queueId || totalItems === 0) {
       setDocument(null);
       return;
@@ -90,10 +98,11 @@ export function useReviewWorkspace() {
       const value = await requestJson<QueueDocument>(
         `/api/queues/${queueId}/items/${ordinal}`,
       );
+      if (version !== documentVersion.current) return;
       setDocument(value);
       const nextBlocks = makeEditableBlocks(value);
       setDraftBlocks(nextBlocks);
-      setEditorText(value.materialized_text);
+      setEditorText(value.simplified.materialized_text);
       setTextDirty(false);
       setActiveBlockId(nextBlocks[0]?.id ?? null);
       undoStack.current = [];
@@ -111,10 +120,11 @@ export function useReviewWorkspace() {
       setNotes(review?.notes ?? "");
       setStatus(`已加载第 ${ordinal + 1} 条`);
     } catch (error) {
+      if (version !== documentVersion.current) return;
       setDocument(null);
       setStatus(`读取文档失败：${String(error)}`);
     } finally {
-      setBusy(false);
+      if (version === documentVersion.current) setBusy(false);
     }
   }, [ordinal, queueId, totalItems]);
 
@@ -147,7 +157,7 @@ export function useReviewWorkspace() {
     decision: "keep" | "drop" | "unsure",
     destination: number = ordinal + 1,
   ) => {
-    if (!document) return;
+    if (!document || busy || llmInFlight.current) return;
     if (decision !== "drop" && !editorText.trim()) {
       setStatus("清洗结果为空；如果整篇不要，请选择丢弃");
       return;
@@ -178,11 +188,11 @@ export function useReviewWorkspace() {
       }
     } catch (error) {
       setStatus(`保存失败：${String(error)}`);
-      await loadDocument();
     } finally {
       setBusy(false);
     }
   }, [
+    busy,
     category,
     document,
     editorText,
@@ -199,13 +209,14 @@ export function useReviewWorkspace() {
     setDraftBlocks(nextBlocks);
     const nextText = renderEditableBlocks(nextBlocks);
     setEditorText(nextText);
-    setTextDirty(nextText !== document?.materialized_text);
-  }, [document?.materialized_text]);
+    setTextDirty(nextText !== document?.simplified.materialized_text);
+  }, [document?.simplified.materialized_text]);
 
   const updateDraftBlocks = useCallback((
     nextBlocks: EditableBlock[],
     action: EditAction = { kind: "command" },
   ) => {
+    setLlmResult(null);
     const now = window.performance.now();
     const groupedTyping = action.kind === "typing"
       && typingGroup.current?.blockId === action.blockId
@@ -222,6 +233,7 @@ export function useReviewWorkspace() {
   }, [applyDraftBlocks, draftBlocks]);
 
   const simplifyCurrentDocument = useCallback(async () => {
+    if (busy || llmInFlight.current) return;
     const keptBlocks = draftBlocks.filter((block) => !block.deleted);
     if (!keptBlocks.length) {
       setStatus("当前清洗结果为空，没有可转换的正文");
@@ -253,25 +265,71 @@ export function useReviewWorkspace() {
     } finally {
       setBusy(false);
     }
-  }, [draftBlocks, updateDraftBlocks]);
+  }, [busy, draftBlocks, updateDraftBlocks]);
+
+  const cleanCurrentDocument = useCallback(async () => {
+    if (!document || busy || llmInFlight.current) return;
+    const blocks = serializeEditableBlocks(draftBlocks);
+    if (!blocks.some((block) => block.text.trim())) {
+      setStatus("当前正文为空，没有可清洗的内容");
+      return;
+    }
+    const version = documentVersion.current;
+    llmInFlight.current = true;
+    setBusy(true);
+    setLlmCleaning(true);
+    setStatus("本地模型正在检查本条全文，长文会分块处理，请稍候…");
+    try {
+      const result = await requestJson<LlmCleaningResult>(
+        `/api/reviews/documents/${document.document.doc_id}/llm-clean`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            queue_id: queueId, ordinal,
+            expected_revision: document.document_review?.revision ?? 0,
+            content_sha256: document.document.content_sha256,
+            blocks,
+          }),
+        },
+      );
+      if (version !== documentVersion.current) return;
+      if (result.text_changed) {
+        updateDraftBlocks(editableBlocksFromText(result.edited_text, document.document.doc_id));
+      }
+      setLlmResult(result);
+      setStatus(result.text_changed
+        ? "本地清洗完成：重组草稿已载入，可继续编辑、拖动拼接；右侧查看全部删改"
+        : "本地清洗完成：未修改正文，请查看模型判断");
+    } catch (error) {
+      if (version === documentVersion.current) setStatus(`本地清洗失败：${String(error)}；草稿已保留`);
+    } finally {
+      llmInFlight.current = false;
+      setLlmCleaning(false);
+      if (version === documentVersion.current) setBusy(false);
+    }
+  }, [busy, document, draftBlocks, ordinal, queueId, updateDraftBlocks]);
 
   const undoDraft = useCallback(() => {
+    if (busy || llmInFlight.current) return;
     const previous = undoStack.current.pop();
     if (!previous) return;
     redoStack.current.push(cloneBlocks(draftBlocks));
     typingGroup.current = null;
     applyDraftBlocks(previous);
+    setLlmResult(null);
     setStatus("已撤销本次文档修改");
-  }, [applyDraftBlocks, draftBlocks]);
+  }, [applyDraftBlocks, busy, draftBlocks]);
 
   const redoDraft = useCallback(() => {
+    if (busy || llmInFlight.current) return;
     const next = redoStack.current.pop();
     if (!next) return;
     undoStack.current.push(cloneBlocks(draftBlocks));
     typingGroup.current = null;
     applyDraftBlocks(next);
+    setLlmResult(null);
     setStatus("已重做本次文档修改");
-  }, [applyDraftBlocks, draftBlocks]);
+  }, [applyDraftBlocks, busy, draftBlocks]);
 
   const saveAndGo = useCallback((destination: number) => {
     const decision = activeDecision === "unreviewed" ? "unsure" : activeDecision;
@@ -279,6 +337,7 @@ export function useReviewWorkspace() {
   }, [activeDecision, saveDocument]);
 
   const commitPageInput = useCallback(() => {
+    if (busy || llmInFlight.current) return;
     const page = Number(pageInput);
     if (!Number.isInteger(page) || page < 1 || page > totalItems) {
       setPageInput(String(ordinal + 1));
@@ -288,10 +347,11 @@ export function useReviewWorkspace() {
     const destination = page - 1;
     if (destination === ordinal) return;
     saveAndGo(destination);
-  }, [ordinal, pageInput, saveAndGo, totalItems]);
+  }, [busy, ordinal, pageInput, saveAndGo, totalItems]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (busy || llmInFlight.current) return;
       const target = event.target as HTMLElement;
       const typing = target.isContentEditable
         || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
@@ -311,7 +371,7 @@ export function useReviewWorkspace() {
         void saveDocument("drop");
         return;
       }
-      if (typing || busy) return;
+      if (typing) return;
       if (/^[0-3]$/.test(event.key)) setQuality(Number(event.key));
       if (event.key.toLowerCase() === "x" && activeBlockId) {
         updateDraftBlocks(draftBlocks.map((block) =>
@@ -346,9 +406,10 @@ export function useReviewWorkspace() {
   ]);
 
   const changeProject = useCallback((nextProjectId: string) => {
+    if (busy || llmInFlight.current) return;
     setProjectId(nextProjectId);
     setOrdinal(0);
-  }, []);
+  }, [busy]);
 
   return {
     projects,
@@ -363,6 +424,8 @@ export function useReviewWorkspace() {
     category,
     notes,
     busy,
+    llmCleaning,
+    llmResult,
     status,
     activeBlockId,
     showSetup,
@@ -378,6 +441,8 @@ export function useReviewWorkspace() {
     finishSetup,
     updateDraftBlocks,
     simplifyCurrentDocument,
+    cleanCurrentDocument,
+    undoDraft,
     saveAndGo,
     commitPageInput,
     changeProject,

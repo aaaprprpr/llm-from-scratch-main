@@ -1,0 +1,11 @@
+{
+  "llm_cleaning": {
+    "base_url": "http://127.0.0.1:8080",
+    "model": "qwen-local",
+    "context_tokens": 4096,
+    "max_output_tokens": 1536,
+    "timeout_seconds": 60,
+    "max_document_characters": 100000,
+    "max_chunks": 64
+  }
+}

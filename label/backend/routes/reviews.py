@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from ..api_context import ApiContext
-from ..api_models import BlockReviewRequest, DocumentReviewRequest, UndoRequest
+from ..api_models import BlockReviewRequest, DocumentReviewRequest, LlmCleanRequest, UndoRequest
 from ..database import BlockReviewInput, DocumentReviewInput
 from ..documents import DocumentService
 
@@ -16,9 +16,9 @@ def build_router(context: ApiContext) -> APIRouter:
         try:
             with context.open_database() as database:
                 return context.add_token_counts(
-                    DocumentService(database, context.repository).queue_document(
+                    context.add_simplified_view(DocumentService(database, context.repository).queue_document(
                         queue_id, ordinal
-                    )
+                    ))
                 )
         except Exception as exc:
             context.raise_http(exc)
@@ -59,6 +59,31 @@ def build_router(context: ApiContext) -> APIRouter:
                     actor=request.actor,
                 )
                 return {"review": state, "event_seq": event_seq}
+        except Exception as exc:
+            context.raise_http(exc)
+
+    @router.post("/api/reviews/documents/{doc_id}/llm-clean")
+    def clean_document_with_llm(doc_id: str, request: LlmCleanRequest):
+        try:
+            with context.open_database() as database:
+                value = DocumentService(database, context.repository).queue_document(
+                    request.queue_id, request.ordinal,
+                )
+                if value["document"]["doc_id"] != doc_id:
+                    raise ValueError("当前条目与请求文档不一致，请重新加载")
+                if value["document"]["content_sha256"] != request.content_sha256:
+                    raise ValueError("文档来源已改变，请重新加载")
+                revision = (value["document_review"] or {}).get("revision", 0)
+                if revision != request.expected_revision:
+                    raise ValueError("文档审核状态已改变，请重新加载后清洗")
+            # No database transaction or human review is held/written during inference.
+            return context.llm_cleaner.clean(
+                [block.model_dump() for block in request.blocks],
+                title=value["provenance"]["title"],
+                provenance={**value["provenance"], "doc_id": doc_id,
+                            "queue_id": request.queue_id, "ordinal": request.ordinal,
+                            "expected_revision": request.expected_revision},
+            )
         except Exception as exc:
             context.raise_http(exc)
 

@@ -1,20 +1,10 @@
 import type { QueueDocument } from "../types";
-
-const categories = [
-  { value: "encyclopedia", label: "百科" },
-  { value: "news", label: "新闻" },
-  { value: "marketing", label: "营销" },
-  { value: "fiction", label: "文学作品" },
-  { value: "forum_or_social", label: "论坛或社交内容" },
-  { value: "qa_or_instruction", label: "问答或指令" },
-  { value: "academic_or_technical", label: "学术或技术" },
-  { value: "code", label: "代码" },
-  { value: "reference_or_table", label: "资料或表格" },
-  { value: "other", label: "其他" },
-];
+import { categories } from "../reviewState";
+import DraftDiff from "./DraftDiff";
 
 type Props = {
   document: QueueDocument | null;
+  editorText: string;
   quality: number | null;
   category: string;
   notes: string;
@@ -25,6 +15,7 @@ type Props = {
 
 export default function ReviewInspector({
   document,
+  editorText,
   quality,
   category,
   notes,
@@ -71,10 +62,7 @@ export default function ReviewInspector({
             </dl>
           </details>
 
-          <section className="raw-preview">
-            <h3>原始数据</h3>
-            <pre>{document.raw_text}</pre>
-          </section>
+          <DraftDiff key={document.document.doc_id} original={document.simplified.raw_text} draft={editorText} />
         </>
       ) : <p className="muted">选择文档后显示清洗标签和来源信息。</p>}
     </aside>

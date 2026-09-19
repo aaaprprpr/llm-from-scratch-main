@@ -13,6 +13,7 @@ from fastapi import HTTPException
 
 from .database import CurationDatabase, RevisionConflictError, UndoConflictError
 from .documents import DatasetRepository
+from .llm_cleaning import CleaningConfig, LlmCleaner, LlmCleaningError
 
 
 def jsonable(value: Any) -> Any:
@@ -43,6 +44,7 @@ class ApiContext:
         with CurationDatabase(self.database_path):
             pass
         self.repository = DatasetRepository()
+        self.llm_cleaner = LlmCleaner(CleaningConfig.from_file(), self.root / "llm_suggestions")
         self.tokenizer_path = tokenizer_path.resolve()
         self._tokenizer: Any | None = None
         self._tokenizer_lock = threading.Lock()
@@ -56,6 +58,8 @@ class ApiContext:
 
     @staticmethod
     def raise_http(exc: Exception) -> NoReturn:
+        if isinstance(exc, LlmCleaningError):
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
         if isinstance(exc, KeyError):
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         if isinstance(
@@ -98,3 +102,17 @@ class ApiContext:
             for source, target in zip(texts, converted)
         )
         return {"texts": converted, "changed_characters": changed}
+
+    def add_simplified_view(self, value: dict[str, Any]) -> dict[str, Any]:
+        """Normalize the initial editor and diff baseline without changing source identities."""
+        texts = list(dict.fromkeys([
+            value["raw_text"], value["materialized_text"],
+            *(block["text"] for block in value["blocks"]),
+        ]))
+        converted = dict(zip(texts, self.simplify_texts(texts)["texts"]))
+        value["simplified"] = {
+            "raw_text": converted[value["raw_text"]],
+            "materialized_text": converted[value["materialized_text"]],
+            "block_texts": [converted[block["text"]] for block in value["blocks"]],
+        }
+        return value

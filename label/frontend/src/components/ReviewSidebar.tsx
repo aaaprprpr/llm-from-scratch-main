@@ -48,8 +48,8 @@ export default function ReviewSidebar({
   return (
     <aside className="sidebar panel">
       <nav className="sidebar-nav">
-        <button className={!showSetup ? "active" : ""} onClick={() => onShowSetupChange(false)}>清洗</button>
-        <button className={showSetup ? "active" : ""} onClick={() => onShowSetupChange(true)} disabled={textDirty}>导入数据</button>
+        <button className={!showSetup ? "active" : ""} onClick={() => onShowSetupChange(false)} disabled={busy}>清洗</button>
+        <button className={showSetup ? "active" : ""} onClick={() => onShowSetupChange(true)} disabled={textDirty || busy} title={textDirty ? "请先保存或撤销当前正文修改，再进入导入页" : undefined}>导入数据</button>
       </nav>
       <div className={`status sidebar-status ${status.includes("失败") ? "error" : ""}`}>
         <span className="status-dot" />
@@ -65,10 +65,11 @@ export default function ReviewSidebar({
           className="simplify-button"
           onClick={onSimplify}
           disabled={busy}
+          title="加载时已自动转简体；粘贴繁体文本后可再次转换"
         >繁体转简体</button>}
         <label>
           项目
-          <select value={projectId} onChange={(event) => onProjectChange(event.target.value)} disabled={textDirty}>
+          <select value={projectId} onChange={(event) => onProjectChange(event.target.value)} disabled={textDirty || busy}>
             <option value="">选择项目</option>
             {projects.map((value) => (
               <option key={value.project_id} value={value.project_id}>
@@ -96,6 +97,7 @@ export default function ReviewSidebar({
             min={1}
             max={Math.max(1, totalItems)}
             value={pageInput}
+            disabled={busy}
             onChange={(event) => onPageInputChange(event.target.value)}
             onBlur={onCommitPage}
             onKeyDown={(event) => {

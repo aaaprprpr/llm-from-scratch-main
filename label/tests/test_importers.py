@@ -8,7 +8,7 @@ from pathlib import Path
 from label.backend.dataset_store import load_dataset
 from label.backend.import_service import ImportService
 from label.backend.importers.base import SourceAdapter, SourceSpec
-from label.backend.importers.base import json_compatible
+from label.backend.importers.base import json_compatible, mapped_document
 from label.backend.importers.huggingface import HuggingFaceLocalAdapter
 from label.backend.importers.jsonl import JsonlAdapter
 from label.backend.importers.text import TextAdapter
@@ -189,6 +189,44 @@ class ImporterTests(unittest.TestCase):
             )
         source_directory = storage / "sources" / "failed-source"
         self.assertEqual(list(source_directory.iterdir()), [])
+
+    def test_structured_formats_share_pretraining_adapters(self):
+        cases = [
+            ("plain_text", {"title": "标题", "content": "正文"}, "标题\n\n正文"),
+            ("classification_text", {"text": "正文", "label": "标签"}, "正文"),
+            ("instruction_input_output", {"instruction": "任务", "input": "材料", "output": "结果"}, "任务\n\n材料\n\n结果"),
+            ("question_answer", {"query": "问题", "response": "回答"}, "问题\n\n回答"),
+            ("question_answer_optional_think", {"question": "问题", "reasoning": "思考", "answer": "回答"}, "问题\n\n思考\n\n回答"),
+            ("sharegpt_conversations", {"conversations": [{"from": "human", "value": "你好"}, {"from": "gpt", "value": "您好"}, {"from": "human", "value": "再问"}]}, "你好\n\n您好\n\n再问"),
+            ("openai_role_content_conversation", {"messages": [{"role": "user", "content": "问题"}, {"role": "assistant", "content": "回答"}]}, "问题\n\n回答"),
+            ("tieba_thread", {"标题": "帖子", "楼主内容": "主楼", "回复列表": ["回复一", {"content": "回复二"}]}, "帖子\n\n主楼\n\n回复一\n\n回复二"),
+        ]
+        for adapter, record, expected in cases:
+            with self.subTest(adapter=adapter):
+                mapping = FieldMapping(text_fields=(), record_adapter=adapter)
+                actual = mapped_document(record, mapping, stable_locator="test:0")
+                self.assertEqual(actual.text, expected)
+                self.assertEqual(actual.stable_locator, "test:0")
+        with self.assertRaises(ValueError):
+            mapped_document({"title": "标题", "messages": [{"content": "不能丢失"}]},
+                            FieldMapping(text_fields=("title", "messages")), stable_locator="test:0")
+
+    def test_structured_preview_and_import_preserve_all_turns_and_version_mapping(self):
+        path = self.root / "conversation.jsonl"
+        path.write_text(json.dumps({"id": "x", "conversations": [
+            {"value": "第一轮问"}, {"value": "第一轮答"}, {"value": "第二轮问"}, {"value": "第二轮答"},
+        ]}), encoding="utf-8")
+        mapping = FieldMapping(text_fields=(), record_adapter="sharegpt_conversations", local_id_field="id")
+        preview = JsonlAdapter().preview(SourceSpec(path), mapping, limit=1)[0]
+        result = ImportService(self.root / "managed").import_source(
+            source_id="conversation", source_license="unknown", adapter=JsonlAdapter(), spec=SourceSpec(path), mapping=mapping,
+        )
+        row = load_dataset(result.revision_directory / "raw")[0]
+        self.assertEqual(row["text"], "第一轮问\n\n第一轮答\n\n第二轮问\n\n第二轮答")
+        self.assertEqual(row["text"], preview.text)
+        self.assertEqual(row["source_local_id"], "x")
+        self.assertEqual(result.source_manifest.mapping["record_adapter"], "sharegpt_conversations")
+        self.assertNotIn("record_adapter", FieldMapping(text_fields=("text",)).to_dict())
 
 
 if __name__ == "__main__":

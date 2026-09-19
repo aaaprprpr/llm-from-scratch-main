@@ -74,10 +74,15 @@ class FieldMapping:
     url_field: str | None = None
     local_id_field: str | None = None
     metadata_fields: tuple[str, ...] = ()
+    record_adapter: str | None = None
 
     def __post_init__(self) -> None:
-        if not self.text_fields:
+        if not self.text_fields and not self.record_adapter:
             raise ValueError("FieldMapping.text_fields cannot be empty")
+        if self.record_adapter is not None:
+            from data_pipeline.record_adapters import ADAPTERS
+            if self.record_adapter not in ADAPTERS:
+                raise ValueError(f"Unknown record adapter: {self.record_adapter}")
         if not all(isinstance(value, str) and value for value in self.text_fields):
             raise ValueError("text_fields must contain nonempty strings")
 
@@ -85,6 +90,9 @@ class FieldMapping:
         value = asdict(self)
         value["text_fields"] = list(self.text_fields)
         value["metadata_fields"] = list(self.metadata_fields)
+        # Preserve hashes and reuse of snapshots created before structured import.
+        if self.record_adapter is None:
+            value.pop("record_adapter")
         return value
 
 

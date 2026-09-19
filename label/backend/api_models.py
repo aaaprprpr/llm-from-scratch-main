@@ -20,7 +20,8 @@ class SourceRequest(BaseModel):
 
 
 class MappingRequest(BaseModel):
-    text_fields: list[str]
+    text_fields: list[str] = Field(default_factory=list)
+    record_adapter: str | None = None
     text_separator: str = "\n\n"
     title_field: str | None = None
     url_field: str | None = None
@@ -35,6 +36,7 @@ class MappingRequest(BaseModel):
             url_field=self.url_field,
             local_id_field=self.local_id_field,
             metadata_fields=tuple(self.metadata_fields),
+            record_adapter=self.record_adapter,
         )
 
 
@@ -86,6 +88,20 @@ class DocumentReviewRequest(BaseModel):
     notes: str = ""
     edited_text: str | None = None
     actor: str = "local-web"
+
+
+class CleaningBlock(BaseModel):
+    id: str = Field(min_length=1, max_length=256)
+    text: str = Field(max_length=100000)
+    separator_after: str = Field(default="\n\n", max_length=100000)
+
+
+class LlmCleanRequest(BaseModel):
+    queue_id: str
+    ordinal: int = Field(ge=0)
+    expected_revision: int = Field(ge=0)
+    content_sha256: str
+    blocks: list[CleaningBlock] = Field(min_length=1, max_length=10000)
 
 
 class BlockReviewRequest(BaseModel):

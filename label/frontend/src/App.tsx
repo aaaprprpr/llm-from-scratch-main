@@ -2,14 +2,16 @@ import DocumentWorkspace from "./components/DocumentWorkspace";
 import ReviewInspector from "./components/ReviewInspector";
 import ReviewSidebar from "./components/ReviewSidebar";
 import { useReviewWorkspace } from "./hooks/useReviewWorkspace";
+import { useInspectorResize } from "./hooks/useInspectorResize";
 import { decisionLabels } from "./reviewState";
 
 function App() {
   const review = useReviewWorkspace();
+  const inspector = useInspectorResize();
 
   return (
     <div className="app-shell">
-      <div className={`workspace ${review.showSetup ? "setup-mode" : ""}`}>
+      <div className={`workspace ${review.showSetup ? "setup-mode" : ""} ${inspector.resizing ? "is-resizing" : ""}`} style={inspector.style}>
         <ReviewSidebar
           showSetup={review.showSetup}
           textDirty={review.textDirty}
@@ -39,6 +41,10 @@ function App() {
           document={review.document}
           draftBlocks={review.draftBlocks}
           editorText={review.editorText}
+          llmCleaning={review.llmCleaning}
+          llmResult={review.llmResult}
+          onLlmClean={() => void review.cleanCurrentDocument()}
+          onUndoLlmClean={review.undoDraft}
           textDirty={review.textDirty}
           busy={review.busy}
           activeBlockId={review.activeBlockId}
@@ -48,8 +54,10 @@ function App() {
           onBlocksChange={review.updateDraftBlocks}
         />
 
+        {!review.showSetup && <div className="inspector-resizer" {...inspector.separatorProps} />}
         {!review.showSetup && <ReviewInspector
           document={review.document}
+          editorText={review.editorText}
           quality={review.quality}
           category={review.category}
           notes={review.notes}

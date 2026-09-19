@@ -433,6 +433,35 @@ class TokenBatchLoader:
         return x, y, next_position
 
 
+def sample_eval_window_starts(
+    data_length: int,
+    context_length: int,
+    num_windows: int,
+    seed: int = 42,
+) -> list[int]:
+    """在整个 token 文件上分层抽取固定、不重复的序列窗口。
+
+    每个等大小区间抽一个完整窗口，避免只评估文件前缀或单篇长文。
+    使用独立 RNG，不影响训练/生成的随机状态；小文件最多评估一遍。
+    """
+    if context_length <= 0 or num_windows <= 0:
+        raise ValueError("context_length and num_windows must be positive")
+    if not isinstance(seed, int) or seed < 0:
+        raise ValueError("eval seed must be a non-negative integer")
+    available_windows = (data_length - 1) // context_length
+    if available_windows < 1:
+        raise ValueError("Evaluation data needs at least context_length + 1 tokens")
+    count = min(num_windows, available_windows)
+    rng = np.random.default_rng(seed)
+    return [
+        int(rng.integers(
+            index * available_windows // count,
+            (index + 1) * available_windows // count,
+        )) * context_length
+        for index in range(count)
+    ]
+
+
 @torch.inference_mode()
 def estimate_loss(
     model,
@@ -443,34 +472,49 @@ def estimate_loss(
     eval_iters,
     amp_dtype=None,
     require_flash_attention=False,
-    start_position=0,
+    window_starts: list[int] | None = None,
+    eval_seed: int = 42,
 ):
-    """在固定数据窗口上计算平均 loss，不修改训练游标。"""
+    """跨文件固定采样，按有效 token 数平均；不修改训练游标或 RNG。"""
     if eval_iters <= 0:
         raise ValueError(f"eval_iters must be positive, got {eval_iters}")
+    if batch_size <= 0 or context_length <= 0:
+        raise ValueError("batch_size and context_length must be positive")
+    if window_starts is None:
+        window_starts = sample_eval_window_starts(
+            len(data), context_length, eval_iters * batch_size, eval_seed,
+        )
+    if not window_starts or any(
+        not isinstance(start, int) or start < 0 or start + context_length >= len(data)
+        for start in window_starts
+    ):
+        raise ValueError("Evaluation window starts must identify complete x/y windows")
+    device = torch.device(device)
     was_training = model.training
     total_loss = torch.zeros((), device=device)
-    batches = TokenBatchLoader(
-        data,
-        batch_size,
-        context_length,
-        device,
-        position=start_position,
-    )
+    total_tokens = 0
 
     model.eval()
     try:
-        for _ in range(eval_iters):
-            x, y, _ = batches.next()
+        for offset in range(0, len(window_starts), batch_size):
+            starts = window_starts[offset : offset + batch_size]
+            windows = np.stack([
+                np.asarray(data[start : start + context_length + 1], dtype=np.int64)
+                for start in starts
+            ])
+            tokens = torch.from_numpy(windows).to(device)
+            x, y = tokens[:, :-1], tokens[:, 1:]
             with attention_kernel_context(device, require_flash_attention):
                 with autocast_context(device, amp_dtype):
                     logits, _ = model(x, use_cache=False)
                     loss = F.cross_entropy(
                         logits.reshape(-1, logits.size(-1)),
                         y.reshape(-1),
+                        reduction="sum",
                     )
             total_loss += loss
-        return (total_loss / eval_iters).item()
+            total_tokens += y.numel()
+        return (total_loss / total_tokens).item()
     finally:
         model.train(was_training)
 

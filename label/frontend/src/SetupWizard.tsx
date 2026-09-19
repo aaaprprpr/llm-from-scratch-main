@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { requestJson } from "./api";
 import type { Project } from "./types";
+import { inferMapping, recordFormats, type Mapping } from "./importMapping";
 
 type Inspection = {
   source_type: string;
@@ -49,48 +50,10 @@ type Props = {
   onComplete: (projectId: string, queueId: string) => Promise<void> | void;
 };
 
-type Mapping = {
-  text_fields: string[];
-  text_separator: string;
-  title_field: string | null;
-  url_field: string | null;
-  local_id_field: string | null;
-  metadata_fields: string[];
-};
+type PreviewDocument = { stable_locator: string; text: string };
 
 function commaValues(value: string): string[] {
   return value.split(",").map((item) => item.trim()).filter(Boolean);
-}
-
-function findField(fields: string[], candidates: string[]): string | null {
-  const byLowercase = new Map(fields.map((field) => [field.toLowerCase(), field]));
-  for (const candidate of candidates) {
-    const field = byLowercase.get(candidate.toLowerCase());
-    if (field) return field;
-  }
-  return null;
-}
-
-function inferMapping(fields: string[]): Mapping {
-  const title = findField(fields, ["title", "name"]);
-  const directText = findField(fields, ["text"]);
-  const content = findField(fields, ["content", "body", "article", "document"]);
-  const textFields = directText
-    ? [directText]
-    : content
-      ? title && title !== content ? [title, content] : [content]
-      : fields.length === 1 ? [fields[0]] : [];
-  const localId = findField(fields, ["uniqueKey", "doc_id", "document_id", "id"]);
-  const url = findField(fields, ["url", "link", "source_url"]);
-  const dataType = findField(fields, ["dataType", "category", "source"]);
-  return {
-    text_fields: textFields,
-    text_separator: "\n\n",
-    title_field: title,
-    url_field: url,
-    local_id_field: localId,
-    metadata_fields: dataType ? [dataType] : [],
-  };
 }
 
 function pathName(path: string): string {
@@ -108,6 +71,8 @@ export default function SetupWizard({ projects, initialProjectId, onComplete }: 
   const [urlField, setUrlField] = useState("");
   const [localIdField, setLocalIdField] = useState("");
   const [metadataFields, setMetadataFields] = useState("");
+  const [recordAdapter, setRecordAdapter] = useState("");
+  const [preview, setPreview] = useState<{ key: string; documents: PreviewDocument[] } | null>(null);
   const [imported, setImported] = useState<ImportResult | null>(null);
   const [prepared, setPrepared] = useState<PrepareResult | null>(null);
   const [prepareDirectory, setPrepareDirectory] = useState("");
@@ -126,7 +91,11 @@ export default function SetupWizard({ projects, initialProjectId, onComplete }: 
     url_field: urlField || null,
     local_id_field: localIdField || null,
     metadata_fields: commaValues(metadataFields),
-  }), [localIdField, metadataFields, textFields, titleField, urlField]);
+    record_adapter: recordAdapter || null,
+  }), [localIdField, metadataFields, textFields, titleField, urlField, recordAdapter]);
+  const previewKey = JSON.stringify({ adapter, path, optionsJson, mapping });
+  const previewDocuments = preview?.key === previewKey ? preview.documents : [];
+  const canMap = Boolean(mapping.text_fields.length || mapping.record_adapter);
 
   const loadCatalog = async () => {
     setCatalog(await requestJson<CatalogSource[]>("/api/catalog"));
@@ -155,6 +124,7 @@ export default function SetupWizard({ projects, initialProjectId, onComplete }: 
     setUrlField(inferred.url_field ?? "");
     setLocalIdField(inferred.local_id_field ?? "");
     setMetadataFields(inferred.metadata_fields.join(", "));
+    setRecordAdapter(inferred.record_adapter ?? "");
     return inferred;
   };
 
@@ -164,6 +134,8 @@ export default function SetupWizard({ projects, initialProjectId, onComplete }: 
       return;
     }
     setBusy(true);
+    setPreview(null);
+    setInspection(null);
     setMessage("正在识别数据集…");
     try {
       const result = await requestJson<Inspection>("/api/imports/inspect", {
@@ -176,14 +148,37 @@ export default function SetupWizard({ projects, initialProjectId, onComplete }: 
       setImported(null);
       setPrepared(null);
       const inferred = applyAutomaticMapping(result.fields);
-      setMessage(
-        inferred.text_fields.length
-          ? `已识别 ${result.record_count?.toLocaleString() ?? "未知"} 条记录，可以直接导入。`
-          : "没有自动找到正文列，请展开“识别有误时修改”。",
-      );
+      if (inferred.text_fields.length || inferred.record_adapter) {
+        const inspectedPath = result.input_location || selectedPath;
+        const documents = await requestJson<PreviewDocument[]>("/api/imports/preview", {
+          method: "POST",
+          body: JSON.stringify({ adapter, path: inspectedPath, options: sourceOptions(), mapping: inferred, limit: 3 }),
+        });
+        setPreview({ key: JSON.stringify({ adapter, path: inspectedPath, optionsJson, mapping: inferred }), documents });
+        setMessage(`已识别 ${result.record_count?.toLocaleString() ?? "未知"} 条记录，请核对下方正文预览。`);
+      } else {
+        setMessage("没有自动找到正文，请选择内容格式或填写正文列，再生成预览。");
+      }
     } catch (error) {
-      setInspection(null);
       setMessage(`识别失败：${String(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const previewSource = async () => {
+    setBusy(true);
+    setPreview(null);
+    setMessage("正在按当前映射生成预览…");
+    try {
+      const documents = await requestJson<PreviewDocument[]>("/api/imports/preview", {
+        method: "POST",
+        body: JSON.stringify({ adapter, path, options: sourceOptions(), mapping, limit: 3 }),
+      });
+      setPreview({ key: previewKey, documents });
+      setMessage("预览已更新，请核对正文的内容和顺序。");
+    } catch (error) {
+      setMessage(`预览失败：${String(error)}`);
     } finally {
       setBusy(false);
     }
@@ -215,7 +210,7 @@ export default function SetupWizard({ projects, initialProjectId, onComplete }: 
   };
 
   const importAndPrepare = async () => {
-    if (!inspection || !mapping.text_fields.length) {
+    if (!inspection || !previewDocuments.length) {
       setMessage("数据集还没有正确识别。");
       return;
     }
@@ -326,6 +321,10 @@ export default function SetupWizard({ projects, initialProjectId, onComplete }: 
     setAdapter(value);
     setPath("");
     setInspection(null);
+    setPreview(null);
+    setRecordAdapter("");
+    setTextFields("");
+    setOptionsJson("{}");
     setImported(null);
     setPrepared(null);
     setMessage(value === "huggingface_local" ? "选择数据集目录。" : "选择一个数据文件。");
@@ -364,19 +363,25 @@ export default function SetupWizard({ projects, initialProjectId, onComplete }: 
         {inspection && (
           <div className="dataset-summary">
             <div><span>数据量</span><strong>{inspection.record_count?.toLocaleString() ?? "未知"} 条</strong></div>
-            <div><span>识别正文</span><strong>{mapping.text_fields.join(" + ") || "未识别"}</strong></div>
+            <div><span>识别正文</span><strong>{recordAdapter ? recordFormats.find(([id]) => id === recordAdapter)?.[1] : mapping.text_fields.join(" + ") || "未识别"}</strong></div>
             <div><span>稳定标识</span><strong>{mapping.local_id_field || "行号"}</strong></div>
-            <button className="primary import-button" onClick={() => void importAndPrepare()} disabled={busy || !mapping.text_fields.length}>
+            <button className="primary import-button" onClick={() => void importAndPrepare()} disabled={busy || !previewDocuments.length}>
               导入数据集
             </button>
           </div>
         )}
         {inspection && <p className="source-help">导入会在 label/data 中建立清洗用副本，原目录保持不变；大数据集会额外占用磁盘。</p>}
 
-        <details className="recognition-settings" open={Boolean(inspection && !mapping.text_fields.length)}>
-          <summary>识别有误时修改</summary>
+        <section className="recognition-settings">
+          <h3>内容格式与字段映射</h3>
+          <label>内容格式
+            <select value={recordAdapter} onChange={(event) => setRecordAdapter(event.target.value)} disabled={busy || !inspection}>
+              {recordFormats.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+            </select>
+          </label>
+          {recordAdapter && <p>按对应字段展开并拼接原有文字；对话提取每轮正文，分类标签不写入正文。需要指定任意列时选择“自定义正文列”。</p>}
           <div className="recognition-grid">
-            <label>正文列<input value={textFields} onChange={(event) => setTextFields(event.target.value)} placeholder="text 或 title, content" disabled={busy || !inspection} /></label>
+            <label>正文列<input value={textFields} onChange={(event) => setTextFields(event.target.value)} placeholder="text 或 title, content" disabled={busy || !inspection || Boolean(recordAdapter)} /></label>
             <label>标题列
               <select value={titleField} onChange={(event) => setTitleField(event.target.value)} disabled={busy || !inspection}>
                 <option value="">无</option>{inspection?.fields.map((field) => <option key={field}>{field}</option>)}
@@ -395,7 +400,17 @@ export default function SetupWizard({ projects, initialProjectId, onComplete }: 
             <label>附加字段<input value={metadataFields} onChange={(event) => setMetadataFields(event.target.value)} disabled={busy || !inspection} /></label>
           </div>
           <p>可用字段：{inspection?.fields.join("、") || "选择数据后显示"}</p>
-        </details>
+          <button className="secondary" onClick={() => void previewSource()} disabled={busy || !inspection || !canMap}>预览前 3 条</button>
+          {inspection && !previewDocuments.length && <p>导入前请按当前格式和字段映射生成预览。</p>}
+          <div className="import-preview-list">
+            {previewDocuments.map((document, index) => (
+              <article key={document.stable_locator}>
+                <strong>第 {index + 1} 条</strong>
+                <pre>{document.text}</pre>
+              </article>
+            ))}
+          </div>
+        </section>
 
         <details className="manual-fallback">
           <summary>无法打开选择窗口</summary>
@@ -403,9 +418,11 @@ export default function SetupWizard({ projects, initialProjectId, onComplete }: 
             <input value={path} onChange={(event) => setPath(event.target.value)} placeholder="输入运行后端这台机器上的路径" disabled={busy} />
             <button className="secondary" onClick={() => void inspectSource()} disabled={busy || !path}>读取路径</button>
           </div>
-          {adapter !== "huggingface_local" && (
-            <textarea value={optionsJson} onChange={(event) => setOptionsJson(event.target.value)} rows={2} disabled={busy} aria-label="读取选项" />
-          )}
+        </details>
+        <details className="manual-fallback">
+          <summary>读取选项</summary>
+          <textarea value={optionsJson} onChange={(event) => setOptionsJson(event.target.value)} rows={2} disabled={busy} aria-label="读取选项" />
+          <p>TXT 可设置 document_strategy；JSONL 可设置 encoding；无效记录默认报错。</p>
         </details>
 
         {(imported || prepared) && (

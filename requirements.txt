@@ -2,7 +2,7 @@ datasets
 fastapi
 ftfy
 numpy
-opencc-python-reimplemented
+OpenCC==1.3.0
 regex
 tokenizers
 torch

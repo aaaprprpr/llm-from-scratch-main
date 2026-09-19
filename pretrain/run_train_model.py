@@ -28,6 +28,7 @@ from pretrain.train_model import (
     resolve_amp_dtype,
     resolve_training_parameters,
     save_checkpoint,
+    sample_eval_window_starts,
     tokenizer_fingerprint,
     TokenBatchLoader,
     verify_flash_attention,
@@ -264,6 +265,13 @@ def main():
         expected_tokenizer_size=tokenizer_size,
         expected_tokenizer_sha256=tokenizer_sha256,
     )
+    eval_seed = train_config.get("eval_seed", seed)
+    train_eval_starts = sample_eval_window_starts(
+        len(train_data), sequence_length, eval_iters * batch_size, eval_seed,
+    )
+    val_eval_starts = sample_eval_window_starts(
+        len(val_data), sequence_length, eval_iters * batch_size, eval_seed + 1,
+    )
 
     # 固定形状的 micro-batch 无法只处理最后几个零头 token，因此向上取整；
     # 最后一次更新若越过数据末尾，TokenBatchLoader 会从开头接续。
@@ -291,7 +299,8 @@ def main():
     )
     print(
         f"validation data: {len(val_data):,} tokens; "
-        f"sampled per evaluation: {eval_iters * tokens_per_micro_batch:,} tokens"
+        f"sampled per evaluation: {len(val_eval_starts) * sequence_length:,} tokens "
+        f"from {len(val_eval_starts)} fixed windows across the entire file"
     )
 
     # model, optimizer  优化器手写换官方了
@@ -329,7 +338,16 @@ def main():
         "total_train_updates": total_train_updates,
         "lr_decay_end_step": total_train_updates,
         "eval_iters": eval_iters,
-        "actual_eval_tokens": eval_iters * tokens_per_micro_batch,
+        "actual_eval_tokens": len(val_eval_starts) * sequence_length,
+        "evaluation_sampling": {
+            "method": "stratified_fixed_nonoverlapping_windows_v1",
+            "train_seed": eval_seed,
+            "validation_seed": eval_seed + 1,
+            "train_window_starts": train_eval_starts,
+            "validation_window_starts": val_eval_starts,
+            "train_eval_tokens": len(train_eval_starts) * sequence_length,
+            "validation_eval_tokens": len(val_eval_starts) * sequence_length,
+        },
         "train_dataset_tokens": len(train_data),
         "validation_dataset_tokens": len(val_data),
         "planned_train_tokens": planned_train_tokens,
@@ -474,6 +492,7 @@ def main():
                 eval_iters,
                 amp_dtype=amp_dtype,
                 require_flash_attention=require_flash,
+                window_starts=train_eval_starts,
             )
             val_loss = estimate_loss(
                 model,
@@ -484,6 +503,7 @@ def main():
                 eval_iters,
                 amp_dtype=amp_dtype,
                 require_flash_attention=require_flash,
+                window_starts=val_eval_starts,
             )
             tracker.log_evaluation(
                 completed_steps,

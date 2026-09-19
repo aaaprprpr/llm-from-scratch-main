@@ -108,10 +108,18 @@ def mapped_document(
     stable_locator: str,
 ) -> ImportedDocument:
     text_parts = []
-    for field_path in mapping.text_fields:
-        value = get_nested_value(record, field_path)
-        if isinstance(value, str) and value.strip():
-            text_parts.append(value)
+    if mapping.record_adapter:
+        from data_pipeline.record_adapters import ADAPTERS
+        adapted = ADAPTERS[mapping.record_adapter](record)
+        if adapted:
+            text_parts.append(adapted)
+    else:
+        for field_path in mapping.text_fields:
+            value = get_nested_value(record, field_path)
+            if isinstance(value, str) and value.strip():
+                text_parts.append(value)
+            elif value is not None and not isinstance(value, str):
+                raise ValueError(f"field {field_path} is structured data; select a record adapter")
     if not text_parts:
         raise ValueError(
             f"record {stable_locator} has no nonempty mapped text fields "
