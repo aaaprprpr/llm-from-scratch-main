@@ -9,11 +9,11 @@
   "model": {
     "vocab_size": 24576,
     "context_length": 4096,
-    "n_head": 16,
+    "n_head": 9,
     "theta": 10000.0,
-    "num_layers": 16,
-    "d_model": 1024,
-    "d_ff": 2816,
+    "num_layers": 12,
+    "d_model": 576,
+    "d_ff": 1536,
     "tie_word_embeddings": true
   },
   "train": {
@@ -24,8 +24,8 @@
     "tokens_per_update": 131072,
     "precision": "bfloat16",
     "activation_checkpointing": false,
-    "require_flash_attention": true,
-    "eval_interval": 1000,
+    "require_flash_attention": false,
+    "eval_interval": 500,
     "eval_tokens": 65536,
     "eval_seed": 42,
     "log_interval": 10

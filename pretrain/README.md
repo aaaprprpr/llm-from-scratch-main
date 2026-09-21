@@ -1,4 +1,16 @@
-# 预训练验证 loss
+# 预训练
+
+当前默认配置为 **12 层 / 576 隐藏维度 / 1536 FFN / 9 头 / 24,576 词表**，共 **61,945,920** 个参数。相对原 16 层 / 1024 / 2816 配置，在相同 2K 长度和 token 预算下，主要训练矩阵计算约为 **28.8%～30.3%**。优化器保留 Muon + AdamW，按实际数据量训练约一遍。
+
+完整的结构、参数、学习率、训练轮次、环境限制及启动说明见 [预训练审查](../docs/pretraining-sizing.md)。默认允许 SDPA 自动选择注意力内核，兼容本机未编译 FlashAttention 的 PyTorch。
+
+```powershell
+.\.venv\Scripts\python.exe -m pretrain.run_train_model --config configs/pretrain.json
+```
+
+启动前须准备 `data_pipeline/data/train.bin`、`val.bin` 和对应 `.meta.json`，保持 `paths.resume=null`；新结构不能直接续训旧结构的 checkpoint。
+
+## 预训练验证 loss
 
 `configs/pretrain.json` 中的 `train.eval_tokens` 控制每次评估预算，`train.eval_seed` 固定评估抽样（缺省沿用训练 seed）。当前 65,536 tokens、序列长度 2,048，对应 32 个窗口。
 
