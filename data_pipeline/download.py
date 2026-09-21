@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
@@ -190,6 +191,43 @@ def load_local_dataset(output: Path) -> Any:
     return load_from_disk(str(output))
 
 
+def download_cache_size() -> int:
+    """当前下载缓存占用的字节数。
+
+    hub 缓存里 snapshots/ 是指向 blobs/ 的软链接，跟着软链接统计会把同一份
+    文件数两遍，所以软链接一律跳过。
+    """
+    if not DOWNLOAD_CACHE_ROOT.exists():
+        return 0
+    total = 0
+    for path in DOWNLOAD_CACHE_ROOT.rglob("*"):
+        try:
+            if path.is_symlink() or not path.is_file():
+                continue
+            total += path.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def cleanup_download_cache() -> None:
+    """删除下载缓存。
+
+    load_dataset() 必须先把远端文件落到一个中转目录，save_to_disk() 才能写出
+    可直接使用的副本。那个中转目录就是 DOWNLOAD_CACHE_ROOT；所有启用源都
+    save_to_disk 成功之后，它不再被任何东西读取，唯一的用途就是占地方。
+    """
+    if not DOWNLOAD_CACHE_ROOT.exists():
+        print(f"Download cache already empty: {DOWNLOAD_CACHE_ROOT}")
+        return
+    size = download_cache_size()
+    shutil.rmtree(DOWNLOAD_CACHE_ROOT)
+    print(
+        f"Download cache removed: {DOWNLOAD_CACHE_ROOT} "
+        f"(freed {size / 2**30:.2f} GiB)"
+    )
+
+
 def check_manual_source(source: dict[str, Any]) -> dict[str, Any]:
     source_path = _project_path(source.get("source_path"))
     output = _project_path(source.get("output"))
@@ -343,6 +381,7 @@ def main() -> None:
     sample_dir = _project_path(sample_config.get("output_dir")) or DEFAULT_SAMPLE_DIR
     sample_rows = int(sample_config.get("rows", 2))
     sample_max_chars = int(sample_config.get("max_chars", 1000))
+    cleanup_cache = bool(config.get("download_cache_cleanup", default=True))
 
     assert manifest_path is not None
     records: list[dict[str, Any]] = []
@@ -366,6 +405,12 @@ def main() -> None:
 
     if not any(record["enabled"] for record in records):
         print("No enabled download sources in configs/data_pipeline.json")
+    elif cleanup_cache:
+        # 只有整轮跑完（没有抛异常）才清理：中途失败时保留缓存，重跑不必
+        # 重新下载几十 GB。异常路径在下面的 except 里直接 re-raise，走不到这。
+        cleanup_download_cache()
+    else:
+        print(f"Download cache kept at {DOWNLOAD_CACHE_ROOT.resolve()}")
     write_manifest(manifest_path, records)
 
 

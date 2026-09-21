@@ -5,6 +5,7 @@
     "rows": 2,
     "max_chars": 1000
   },
+  "download_cache_cleanup": true,
   "downloads": [
     {
       "source_id": "fineweb_edu_zh_4_5",
@@ -36,7 +37,7 @@
     },
     {
       "source_id": "finewiki_zh",
-      "enabled": true,
+      "enabled": false,
       "source_type": "huggingface",
       "purpose": "pretrain",
       "description": "FineWiki 中文百科知识补充，2025 年 8 月快照，仅下载完整 zh 子集。",
@@ -66,7 +67,7 @@
     },
     {
       "source_id": "wiki_zh_20231101",
-      "enabled": true,
+      "enabled": false,
       "source_type": "huggingface",
       "purpose": "pretrain",
       "description": "中文 Wikipedia。只使用 wikimedia/wikipedia 的 20231101.zh 配置，禁止裸用全量 wikipedia。",
@@ -92,7 +93,7 @@
     },
     {
       "source_id": "tigerresearch_pretrain_zh",
-      "enabled": true,
+      "enabled": false,
       "source_type": "huggingface",
       "purpose": "pretrain",
       "description": "TigerResearch 开源中文预训练语料，包含书籍、互联网文本和百科类连续文本。",
@@ -303,15 +304,15 @@
       },
       {
         "source_id": "finewiki_zh",
-        "enabled": true
+        "enabled": false
       },
       {
         "source_id": "wiki_zh_20231101",
-        "enabled": true
+        "enabled": false
       },
       {
         "source_id": "tigerresearch_pretrain_zh",
-        "enabled": true
+        "enabled": false
       },
       {
         "source_id": "sharegpt_chinese",

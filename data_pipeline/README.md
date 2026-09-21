@@ -17,7 +17,8 @@ build_bin.py   -> 记录级 train/val 划分、分词，生成连续 token bin
 `download.py` 只负责三件事：
 
 - 按 `downloads` 里的启用项下载 Hugging Face dataset；
-- 如果目标目录已经存在且 Dataset 可正常加载，标记为 `already_downloaded`；中断留下的不完整目录会重新下载/保存，并复用 Hugging Face 缓存；
+- 如果目标目录已经存在且 Dataset 可正常加载，标记为 `already_downloaded`；中断留下的不完整目录会重新下载/保存；
+- 整轮下载成功后删除 Hugging Face 缓存，项目里只留下 `downloads/<source_id>`（见下面的缓存说明）；
 - 在 `data_pipeline/dataset_samples/` 下生成 `<source_id>.sample.json`，方便查看字段结构和少量样本。
 
 运行：
@@ -41,6 +42,7 @@ python .\data_pipeline\download.py
 
 - Hugging Face 数据源统一使用 `format: "disk"`，下载为 `data_pipeline/data/downloads/<source_id>`。
 - `download.py` 的 Hub 原文件、Datasets Arrow、下载/解压、Xet 等缓存统一固定在项目内的 `data_pipeline/data/.cache/huggingface/`；路径基于脚本位置解析，从其他工作目录启动也不会改变。脚本在导入 Hugging Face 库前覆盖本进程的缓存路径，并显式传入 `cache_dir`，不会把语料缓存写进用户目录下的默认 `.cache/huggingface/`。这不修改系统环境变量或登录凭证，也不搬移、删除已有的默认缓存。
+- Hugging Face 的加载路径必然是「先落缓存，再 `save_to_disk`」，没有直接写进目标目录的方式。所以缓存只在下载期间存在：`download.py` 在**整轮下载全部成功**后递归删除 `data_pipeline/data/.cache/huggingface/`，跑完项目里只剩 `downloads/<source_id>`。中途抛异常时**不**清理，重跑可直接复用缓存、不必重新下载几十 GB；此时日志会打印缓存路径，可手动删除。把 `download_cache_cleanup` 设为 `false` 可关闭自动清理，缓存保留在项目内。清理只删缓存目录，不动 `downloads/` 下已保存的数据集。
 - `download.py` 不再导出 txt。
 - 下载前会打印 dataset、split、预估总量、保存目录和缓存根目录；下载时 Hugging Face 会显示当前文件名及真实字节数。
 - `wikimedia/wikipedia` 必须显式写 `config: "20231101.zh"` 和 `split: "train"`。不要把 wiki 配成 `config: null`，避免误拉全量 wikipedia。
