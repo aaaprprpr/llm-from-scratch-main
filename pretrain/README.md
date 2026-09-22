@@ -1,8 +1,33 @@
 # 预训练
 
-当前默认配置为 **12 层 / 576 隐藏维度 / 1536 FFN / 9 头 / 24,576 词表**，共 **61,945,920** 个参数。相对原 16 层 / 1024 / 2816 配置，在相同 2K 长度和 token 预算下，主要训练矩阵计算约为 **28.8%～30.3%**。优化器保留 Muon + AdamW，按实际数据量训练约一遍。
+当前默认配置为 **12 层 / 576 隐藏维度 / 1536 FFN / 9 头 / 24,576 词表**，共 **61,945,920** 个参数。相对原 16 层 / 1024 / 2816 配置，在相同 2K 长度和 token 预算下，主要训练矩阵计算约为 **28.8%～30.3%**。当前 MiniMind 训练使用全 AdamW，按实际数据量训练约一遍。
 
-完整的结构、参数、学习率、训练轮次、环境限制及启动说明见 [预训练审查](../docs/pretraining-sizing.md)。默认允许 SDPA 自动选择注意力内核，兼容本机未编译 FlashAttention 的 PyTorch。
+结构与计算量推导见 [历史预训练审查](../docs/pretraining-sizing.md)；当前训练超参以本页和 `configs/pretrain.json` 为准。默认允许 SDPA 自动选择注意力内核。
+
+## 当前 MiniMind 参数（RTX 5070 Ti 16GB 单卡）
+
+| 项目 | 当前值 |
+| --- | --- |
+| 优化器 | AdamW；配置中保留的 `optimizer.muon` 字段不参与本次训练 |
+| 学习率 | 100 次更新线性 warmup 到 3e-4，然后余弦降至 3e-5 |
+| AdamW 参数 | betas=(0.9, 0.95)，eps=1e-8，矩阵 weight decay=0.1，norm 不衰减 |
+| 梯度裁剪 | 1.0 |
+| 序列长度 / micro-batch | 2048 / 8 |
+| 梯度累积 / 每次更新 token 数 | 8 / 131,072 |
+| 精度 | BF16；CUDA 上使用 fused AdamW |
+| 训练长度 | 约 1 遍；当前 260,350,331 个训练 tokens 对应 1,987 次更新 |
+| 验证与保存 | 每 100 次更新及最终一步验证、生成样例并保存 checkpoint |
+| 恢复 | `paths.resume=null`，从头开始 |
+
+原来的 1,000 步 warmup 占这份 mini 数据训练步数的一半，5,000 步 checkpoint 间隔则只能留下最终模型，因此改成上表中的频率。旧 run 的 Muon 配置出现过明显退化，本次先用 AdamW 基线；这些参数是合理起点，并非经过收敛测试或超参搜索的最优值。每份 checkpoint 包含优化器状态，本次约保存 20 份，合计约 15 GB。
+
+算力机已确认是 RTX 5070 Ti 16GB、PyTorch 2.13.0+cu132，支持 BF16。应在代码提交推送、算力机拉取后使用下面的命令；bin 不随 Git 同步，需先等独立 MiniMind 出 bin 脚本完成：
+
+```bash
+.venv/bin/python -m pretrain.run_train_model --config configs/pretrain.json
+```
+
+更小显存可将 `batch_size` 改为 4，累积自动变为 16，总 token batch 和学习率不变。不要用旧 Muon checkpoint 普通 resume 到本次 AdamW 训练。
 
 ```powershell
 .\.venv\Scripts\python.exe -m pretrain.run_train_model --config configs/pretrain.json

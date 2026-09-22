@@ -60,6 +60,8 @@ P = V*d + L*(4*d*d + 3*d*f + 2*d) + d
 
 ## 优化器与学习率
 
+> 本节记录 MiniMind 接入前的历史配置。2026-09-23 的当前默认值已改为全 AdamW、warmup=100、micro-batch=8、每 100 步验证并保存；MiniMind mini 约训练一遍、1,987 次更新。以下旧 Muon、1,000 步 warmup 和 5,000 步保存间隔不再是当前启动参数，详见 [预训练 README](../pretrain/README.md)。
+
 当前实际使用的是 **torch.optim.Muon + torch.optim.AdamW**，并非所有参数都用 Muon，也不是根 README 所描述的手写 AdamW。
 
 | 参数组 | 调整后参数数目 | 优化器 | 峰值 → 最小学习率 | weight decay |
