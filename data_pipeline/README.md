@@ -2,7 +2,33 @@
 
 数据相关代码统一从 `configs/data_pipeline.json` 读取配置，不再传命令行参数。所有命令都从仓库根目录执行。
 
-整体流程：
+## 当前启用：MiniMind 独立预训练入口
+
+已按 `D:\minimind\README.md` 的数据用法接入 [MiniMind 数据集](https://huggingface.co/datasets/jingyaogong/minimind_dataset/tree/main)。当前只使用单卡快速复现推荐的 `pretrain_t2t_mini.jsonl`（1,241,043,656 字节），读取每行的 `{"text": "..."}`。SFT、DPO、RL 文件不属于本次预训练输入。
+
+从仓库根目录只运行这一条命令（无需运行下面的旧三步流程）：
+
+```powershell
+python .\data_pipeline\build_minimind_bin.py
+```
+
+配置在 `configs/data_pipeline.json` 的 **`minimind_bin`**。旧 `downloads` 和 `preprocess.dataset_sources` 中的所有数据源均已关闭；MiniMind 的下载由这个新入口负责，不走旧下载/清洗入口。
+
+- 首次只下载指定的一个 JSONL；已有本地文件时直接复用，并验证配置中的 SHA256。文件和下载缓存都留在项目数据目录内。
+- 数据集版本固定为 `312afb4f76391145c6902f765bb51691c09a12f5`，防止上游更新导致训练输入悄悄变化。
+- 原样使用 `text`：不清洗、不去重、不修正文、不拼聊天模板，也不截断或补齐。格式损坏、缺失 `text` 或空字符串会报出行号并停止，不会静默丢弃记录。
+- 保留现有 `bpe/tokenizer_24576`，不采用 MiniMind 自己的 tokenizer。用 seed=42 在记录层划分 95% 训练、5% 验证，再打乱并编码，每条记录末尾追加一个当前 tokenizer 的 EOS。
+- 只在内存中保存行偏移，不生成清洗后的数据副本或 Arrow 副本。复用原 `build_bin.py` 的二进制写入函数；原下载、清洗、整理及通用出 bin 代码均未改动。
+- 产物为 `data_pipeline/data/minimind/train.bin`、`val.bin` 及各自的 `.meta.json`。元数据包含记录/token 数、原文件 SHA256（`dataset_fingerprint`）、词表大小及 tokenizer SHA256。预训练配置已指向这两个新文件。
+- 默认 `overwrite=false`，已有产物时提前报错。确需重做时只修改 `minimind_bin.overwrite`。如已手动下载，把文件放到 `data_pipeline/data/downloads/minimind/`；可设 `download=false`，完全离线转换。
+
+上游的 `max_seq_len≈768` 建议对应 MiniMind tokenizer 及逐条截断/补齐的训练方式。本项目仍采用连续 token bin，由现有训练代码取窗口，因此转换阶段不照搬该截断值。只做预训练并不等于完成聊天指令训练；这里没有混入 SFT 数据。
+
+需要同仓库的完整预训练版时，同时将 `filename` 改为 `pretrain_t2t.jsonl`、`sha256` 改为 `31efc9a6fa7430769c0e78cde1c8ec0273ac7bbad20614c0ee58bccef327cc9d`（同一固定版本，8,275,074,893 字节），并选新输出路径或明确开启覆盖。一次只读取选中的一个文件。
+
+## 原有三步流程（当前未启用）
+
+下面保留原流程说明。旧目录中的数据不会混入上述 MiniMind 入口。
 
 ```text
 download.py    -> 下载/管理原始 dataset，并生成结构样本
@@ -27,7 +53,7 @@ build_bin.py   -> 记录级 train/val 划分、分词，生成连续 token bin
 python .\data_pipeline\download.py
 ```
 
-已启用 FineWeb 高分档和 FineWiki 中文版，默认下载下表中目标目录的**全部分片**，无需修改分片数量。原有 Wikipedia、TigerResearch 启用项仍保留，因此运行命令也会处理它们。
+下面是保留的旧数据源配置说明。FineWeb、FineWiki、Wikipedia、TigerResearch 等旧数据源当前全部禁用；只有手动重新启用后，旧下载入口才会处理它们。
 
 | 配置中的 source_id | 下载范围 | 全部分片数 | Parquet 下载大小 |
 | --- | --- | ---: | ---: |
@@ -36,7 +62,7 @@ python .\data_pipeline\download.py
 
 大小是 2026-09-19 对官方文件列表分页求和的结果，分别为 74,294,352,764 和 5,526,531,060 字节，总计约 79.82 GB。官方说明中的约 70 GB / 5.1 GB 与此处文件字节统计不同；本流程还会生成 Arrow 缓存和 `save_to_disk` 副本，最终磁盘占用高于下载大小。文件列表：[FineWeb 4_5](https://huggingface.co/datasets/opencsg/Fineweb-Edu-Chinese-V2.1/tree/main/4_5)、[FineWiki 中文](https://huggingface.co/datasets/HuggingFaceFW/finewiki/tree/main/data/zhwiki)。
 
-这两个数据源通过 `data_files` 限定完整目标子集；代码会拒绝缺失或扩大范围的配置。FineWiki 的加载配置名是 `zh`，文件目录是 `data/zhwiki`。它们都保存为现有的 `format: "disk"`，后续 `preprocess` 已启用并使用 `text_only` adapter：只读取清洗后的 `text`，不拼接标题或读取 `wikitext`。
+这两个数据源通过 `data_files` 限定完整目标子集；代码会拒绝缺失或扩大范围的配置。FineWiki 的加载配置名是 `zh`，文件目录是 `data/zhwiki`。它们都保存为现有的 `format: "disk"`，预处理配置保留 `text_only` adapter：只读取清洗后的 `text`，不拼接标题或读取 `wikitext`；当前下载和预处理开关均已关闭。
 
 注意：
 

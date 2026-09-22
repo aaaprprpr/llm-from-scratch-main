@@ -9,7 +9,7 @@
   "downloads": [
     {
       "source_id": "fineweb_edu_zh_4_5",
-      "enabled": true,
+      "enabled": false,
       "source_type": "huggingface",
       "purpose": "pretrain",
       "description": "Fineweb-Edu-Chinese V2.1 中文教育语料，仅下载完整 4_5 高分档。",
@@ -300,7 +300,7 @@
     "dataset_sources": [
       {
         "source_id": "fineweb_edu_zh_4_5",
-        "enabled": true
+        "enabled": false
       },
       {
         "source_id": "finewiki_zh",
@@ -350,6 +350,27 @@
     "workers": "auto",
     "map_batch_size": 1000,
     "overwrite": true
+  },
+  "minimind_bin": {
+    "enabled": true,
+    "repo_id": "jingyaogong/minimind_dataset",
+    "revision": "312afb4f76391145c6902f765bb51691c09a12f5",
+    "filename": "pretrain_t2t_mini.jsonl",
+    "sha256": "6dd6716c84ab36897bdbfc7f88e04f4441c48c1ab7ecee88ce0b0e7d4685560c",
+    "raw_dir": "data_pipeline/data/downloads/minimind",
+    "download": true,
+    "tokenizer": "bpe/tokenizer_24576",
+    "train_bin": "data_pipeline/data/minimind/train.bin",
+    "val_bin": "data_pipeline/data/minimind/val.bin",
+    "train_ratio": 0.95,
+    "seed": 42,
+    "eos_token": "<|endoftext|>",
+    "shuffle_block_records": 1000,
+    "batch_records": 512,
+    "workers": "auto",
+    "tokenizer_threads": 1,
+    "dtype": "uint16",
+    "overwrite": false
   },
   "build_bin": {
     "input": "data_pipeline/data/preprocessed",

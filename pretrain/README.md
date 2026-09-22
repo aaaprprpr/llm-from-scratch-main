@@ -8,7 +8,7 @@
 .\.venv\Scripts\python.exe -m pretrain.run_train_model --config configs/pretrain.json
 ```
 
-启动前须准备 `data_pipeline/data/train.bin`、`val.bin` 和对应 `.meta.json`，保持 `paths.resume=null`；新结构不能直接续训旧结构的 checkpoint。
+当前只启用 MiniMind 的 `pretrain_t2t_mini.jsonl`。先运行独立入口 `python data_pipeline/build_minimind_bin.py`，生成 `data_pipeline/data/minimind/train.bin`、`val.bin` 和对应 `.meta.json`；具体用法见 [MiniMind 数据入口](../data_pipeline/README.md#当前启用minimind-独立预训练入口)。词表仍为 24,576，原清洗流程不参与。保持 `paths.resume=null`；新结构不能直接续训旧结构的 checkpoint。
 
 ## 预训练验证 loss
 
