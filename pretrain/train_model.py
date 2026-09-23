@@ -11,6 +11,8 @@ import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
+from checkpoint_io import load_checkpoint
+
 
 class OptimizerBundle:
     """把互斥参数上的多个优化器作为一个可保存、可恢复的整体。"""
@@ -555,11 +557,7 @@ def load_checkpoint(
     optimizer: torch.optim.Optimizer | OptimizerBundle,
     map_location="cpu",
 ):
-    obj = torch.load(
-        src,
-        map_location=map_location,
-        weights_only=True,
-    )
+    obj = load_checkpoint(src, map_location=map_location)
 
     # 旧检查点没有该字段，等价于未共享权重。不能把两份不同的旧权重
     # 依次加载到一个共享 Parameter 中，否则后加载的 lm_head 会静默覆盖 embedding。

@@ -25,6 +25,7 @@ sys.path = [
 ]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from checkpoint_io import load_checkpoint
 from models.model import Transformer
 
 
@@ -159,12 +160,7 @@ def load_model(
     device: torch.device,
     tokenizer_size: int,
 ) -> tuple[Transformer, dict, dict]:
-    checkpoint = torch.load(
-        checkpoint_path,
-        map_location="cpu",
-        weights_only=True,
-        mmap=True,
-    )
+    checkpoint = load_checkpoint(checkpoint_path, map_location="cpu", mmap=True)
     model_args = dict(checkpoint["model_args"])
     if model_args["vocab_size"] != tokenizer_size:
         raise ValueError(
