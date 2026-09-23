@@ -1,31 +1,35 @@
-# macOS metadata
+# OS metadata
 .DS_Store
 .AppleDouble
 .LSOverride
 
-# Python cache
+# Python cache and local environments
 __pycache__/
 *.py[cod]
 *$py.class
-
 venv/
+.venv/
+env/
 .env/
 .env
 .env.*
 !.env.example
-.venv/
-env/
 
 # IDE
 .vscode/
 .idea/
+
+# Generated data and model weights
+/bpe/data/*.txt
+/data_pipeline/dataset_samples/*.sample.json
+/data_pipeline/data/*
+!/data_pipeline/data/README.md
 *.bin
-*.txt
-!requirements.txt
-!docs/post-training-plan.txt
-data_pipeline/dataset_samples/*.sample.json
-data_pipeline/*.json
-.pt
+*.arrow
+*.pt
+
+# Runtime outputs and caches
+output/
 train_logs/
 sft_logs/
 sft_cache/
@@ -34,20 +38,14 @@ dpo_cache/
 sft_weights/
 dpo_weights/
 .hf_modules_cache/
+
+# Historical model artifacts
 main/my_sft_complete_model
 main/my_hf_model
 main/my_sft_model
-ceval_all_local
-model
 main/alpaca_zh_local
-
-main/my_hf_model
+ceval_all_local
 pretrained_weights
-
 sft/alpaca_zh_local
 sft/data/
 hf/dpo_model
-data_pipeline/data/*
-!data_pipeline/data/README.md
-output
-*.arrow

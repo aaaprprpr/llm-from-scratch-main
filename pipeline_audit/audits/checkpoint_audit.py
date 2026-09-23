@@ -86,7 +86,15 @@ def run(config: dict, report_dir: Path) -> AuditSection:
         section.add("checkpoint_audit_enabled", "skip", "配置中已关闭。")
         return section
 
-    checkpoint_path = resolve_project_path(config["paths"]["checkpoint"])
+    checkpoint_value = config["paths"].get("checkpoint")
+    if not checkpoint_value:
+        section.add(
+            "checkpoint_available",
+            "skip",
+            "尚未配置本机 checkpoint；设置 paths.checkpoint 后运行真实 checkpoint 审计。",
+        )
+        return section
+    checkpoint_path = resolve_project_path(checkpoint_value)
     train_bin_path = resolve_project_path(config["paths"]["train_bin"])
     metadata_path = train_bin_path.with_suffix(train_bin_path.suffix + ".meta.json")
     if not checkpoint_path.is_file():

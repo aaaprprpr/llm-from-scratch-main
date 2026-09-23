@@ -18,7 +18,7 @@ pieces = re.split(r"(\n[ \t]*\n(?:[ \t]*\n)*)", text)
 blocks = [{"id": f"{document['document']['doc_id']}:edited:{i//2}", "text": pieces[i],
            "separator_after": pieces[i + 1] if i + 1 < len(pieces) else ""}
           for i in range(0, len(pieces), 2) if pieces[i]]
-folder = ROOT / "pipeline_audit/reports/history-cleaning-debug"
+folder = ROOT / "label/experiments/history-cleaning-debug"
 folder.mkdir(exist_ok=True)
 cleaner = LlmCleaner(CleaningConfig.from_file(), folder)
 original_request = cleaner._request

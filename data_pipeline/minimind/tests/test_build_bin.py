@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from config_loader import Config
-from data_pipeline.build_minimind_bin import CONFIG_PATH, JsonlTextDataset, obtain_jsonl, run
+from data_pipeline.minimind.build_bin import CONFIG_PATH, JsonlTextDataset, obtain_jsonl, run
 from pretrain.train_model import load_token_bin
 from tokenizer import Tokenizer
 
@@ -43,7 +43,7 @@ class MiniMindBinTests(unittest.TestCase):
             "English and 中文🙂", "最后一条记录", "\t \n  ",
         ]
         config = dict(Config(CONFIG_PATH).require("minimind_bin"))
-        tokenizer = Tokenizer(str(Path(__file__).resolve().parents[2] / config["tokenizer"]))
+        tokenizer = Tokenizer(str(Path(__file__).resolve().parents[3] / config["tokenizer"]))
         eos = tokenizer.special_token_to_id[config["eos_token"]]
         expected = Counter(tuple(tokenizer.encode(text)) for text in texts)
         self.assertGreater(max(map(len, expected)), 2048)

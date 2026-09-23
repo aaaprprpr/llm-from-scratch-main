@@ -13,7 +13,7 @@ from opencc import OpenCC
 from label.backend.dataset_store import load_dataset
 from label.backend.llm_cleaning import CleaningConfig, LlmCleaner, PROMPT_VERSION
 
-out = ROOT / "pipeline_audit/reports" / PROMPT_VERSION
+out = ROOT / "label/experiments" / PROMPT_VERSION
 out.mkdir(exist_ok=True)
 db = sqlite3.connect((ROOT / "label/data/curation.sqlite3").as_uri() + "?mode=ro", uri=True)
 db.row_factory = sqlite3.Row

@@ -2,9 +2,9 @@
   "paths": {
     "pretrain_config": "configs/pretrain.json",
     "tokenizer": "bpe/tokenizer_24576",
-    "train_bin": "data_pipeline/train.bin",
-    "val_bin": "data_pipeline/val.bin",
-    "checkpoint": "output/train_logs/run_20260823_173959/ckpt_step_80000.pt",
+    "train_bin": "data_pipeline/data/minimind_full/train.bin",
+    "val_bin": "data_pipeline/data/minimind_full/val.bin",
+    "checkpoint": null,
     "report_root": "pipeline_audit/reports"
   },
   "seed": 20260825,

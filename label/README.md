@@ -1,5 +1,7 @@
 # 本地语料清洗台
 
+历史 LLM 清洗探针与人工对照记录见 [experiments](experiments/README.md)。
+
 当前 V0.1 已跑通：
 
 ```text

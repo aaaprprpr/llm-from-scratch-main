@@ -39,7 +39,7 @@
 .\.venv\Scripts\python.exe -m pretrain.run_train_model --config configs/pretrain.json
 ```
 
-当前只启用 MiniMind 的主线完整预训练文件 `pretrain_t2t.jsonl`。先运行独立入口 `python data_pipeline/build_minimind_bin.py`，生成 `data_pipeline/data/minimind_full/train.bin`、`val.bin` 和对应 `.meta.json`；具体用法见 [MiniMind 数据入口](../data_pipeline/README.md#当前启用minimind-独立预训练入口)。词表仍为 24,576，原清洗流程不参与。保持 `paths.resume=null`；不要把 mini 版末尾 checkpoint 直接作为新一遍 full 版训练的普通 resume。
+当前只启用 MiniMind 的主线完整预训练文件 `pretrain_t2t.jsonl`。先运行 `python -m data_pipeline.minimind.build_bin`，生成 `data_pipeline/data/minimind_full/train.bin`、`val.bin` 和对应 `.meta.json`；旧命令 `python data_pipeline/build_minimind_bin.py` 仍可用。具体用法见 [MiniMind 数据入口](../data_pipeline/minimind/README.md)。词表仍为 24,576，原清洗流程不参与。保持 `paths.resume=null`；不要把 mini 版末尾 checkpoint 直接作为新一遍 full 版训练的普通 resume。
 
 ## 预训练验证 loss
 
