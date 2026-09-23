@@ -9,19 +9,25 @@
 | 项目 | 当前值 |
 | --- | --- |
 | 优化器 | AdamW；配置中保留的 `optimizer.muon` 字段不参与本次训练 |
-| 学习率 | 100 次更新线性 warmup 到 3e-4，然后余弦降至 3e-5 |
+| 学习率 | 500 次更新线性 warmup 到 3e-4，然后余弦降至 3e-5 |
 | AdamW 参数 | betas=(0.9, 0.95)，eps=1e-8，矩阵 weight decay=0.1，norm 不衰减 |
 | 梯度裁剪 | 1.0 |
 | 序列长度 / micro-batch | 2048 / 8 |
 | 梯度累积 / 每次更新 token 数 | 8 / 131,072 |
 | 精度 | BF16；CUDA 上使用 fused AdamW |
-| 训练长度 | 约 1 遍；当前 260,350,331 个训练 tokens 对应 1,987 次更新 |
-| 验证与保存 | 每 100 次更新及最终一步验证、生成样例并保存 checkpoint |
+| 训练长度 | 约 1 遍完整 `pretrain_t2t.jsonl`；1,736,350,851 个训练 tokens 对应 13,248 次更新 |
+| 验证与保存 | 每 500 次更新及最终一步验证、生成样例并保存 checkpoint |
 | 恢复 | `paths.resume=null`，从头开始 |
 
-原来的 1,000 步 warmup 占这份 mini 数据训练步数的一半，5,000 步 checkpoint 间隔则只能留下最终模型，因此改成上表中的频率。旧 run 的 Muon 配置出现过明显退化，本次先用 AdamW 基线；这些参数是合理起点，并非经过收敛测试或超参搜索的最优值。每份 checkpoint 包含优化器状态，本次约保存 20 份，合计约 15 GB。
+上一轮只训练了轻量版 mini（260,350,331 个训练 tokens、1,987 步），不是完整预训练文件。当前已将数据入口切到主线 full，保留旧 bin 和 checkpoint；full 和 mini 在上游 README 中是替代选择，不混合训练。旧 run 的 Muon 配置出现过明显退化，本次仍以 AdamW 为起点；这些参数未经 full 版收敛实验确定最优。每份 checkpoint 约 0.74 GB，预留足够磁盘空间。
 
-算力机已确认是 RTX 5070 Ti 16GB、PyTorch 2.13.0+cu132，支持 BF16。应在代码提交推送、算力机拉取后使用下面的命令；bin 不随 Git 同步，需先等独立 MiniMind 出 bin 脚本完成：
+算力机已确认是 RTX 5070 Ti 16GB、PyTorch 2.13.0+cu132，支持 BF16。完整版原文件及独立 full bin 已在算力机生成并校验。算力机跟踪配置 `configs/pretrain.json` 目前仍指向 mini；在新的本地配置提交推送并拉取前，算力机应显式指定已保存的 full 配置：
+
+```bash
+.venv/bin/python -m pretrain.run_train_model --config output/minimind_full_pretrain.json
+```
+
+拉取本地更新后的配置后，才可以使用默认配置路径：
 
 ```bash
 .venv/bin/python -m pretrain.run_train_model --config configs/pretrain.json
@@ -33,7 +39,7 @@
 .\.venv\Scripts\python.exe -m pretrain.run_train_model --config configs/pretrain.json
 ```
 
-当前只启用 MiniMind 的 `pretrain_t2t_mini.jsonl`。先运行独立入口 `python data_pipeline/build_minimind_bin.py`，生成 `data_pipeline/data/minimind/train.bin`、`val.bin` 和对应 `.meta.json`；具体用法见 [MiniMind 数据入口](../data_pipeline/README.md#当前启用minimind-独立预训练入口)。词表仍为 24,576，原清洗流程不参与。保持 `paths.resume=null`；新结构不能直接续训旧结构的 checkpoint。
+当前只启用 MiniMind 的主线完整预训练文件 `pretrain_t2t.jsonl`。先运行独立入口 `python data_pipeline/build_minimind_bin.py`，生成 `data_pipeline/data/minimind_full/train.bin`、`val.bin` 和对应 `.meta.json`；具体用法见 [MiniMind 数据入口](../data_pipeline/README.md#当前启用minimind-独立预训练入口)。词表仍为 24,576，原清洗流程不参与。保持 `paths.resume=null`；不要把 mini 版末尾 checkpoint 直接作为新一遍 full 版训练的普通 resume。
 
 ## 预训练验证 loss
 
