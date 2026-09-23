@@ -1,14 +1,14 @@
 {
   "paths": {
-    "train_data": "data_pipeline/data/minimind_full/train.bin",
-    "val_data": "data_pipeline/data/minimind_full/val.bin",
-    "tokenizer_vocab": "bpe/tokenizer_24576",
+    "train_data": "data_pipeline/data/minimind_full_8192/train.bin",
+    "val_data": "data_pipeline/data/minimind_full_8192/val.bin",
+    "tokenizer_vocab": "bpe/tokenizer",
     "out_root": "output/train_logs",
     "resume": null
   },
   "model": {
-    "vocab_size": 24576,
-    "context_length": 4096,
+    "vocab_size": 8192,
+    "context_length": 32768,
     "n_head": 9,
     "theta": 10000.0,
     "num_layers": 12,
@@ -19,12 +19,12 @@
   "train": {
     "device": "auto",
     "seed": 42,
-    "sequence_length": 2048,
-    "batch_size": 8,
+    "sequence_length": 32768,
+    "batch_size": 1,
     "tokens_per_update": 131072,
     "precision": "bfloat16",
-    "activation_checkpointing": false,
-    "require_flash_attention": false,
+    "activation_checkpointing": true,
+    "require_flash_attention": true,
     "eval_interval": 500,
     "eval_tokens": 65536,
     "eval_seed": 42,

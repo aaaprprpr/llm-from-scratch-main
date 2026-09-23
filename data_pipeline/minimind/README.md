@@ -6,12 +6,13 @@
 ```text
 data_pipeline/data/
   downloads/minimind/           # full/mini 原始 JSONL
-  minimind_full/               # 当前 full 版 train.bin、val.bin 和元数据
+  minimind_full_8192/          # 新版 8K full bin，生成后供 32K 预训练使用
+  minimind_full/               # 历史 24K full bin，保留供旧 checkpoint 使用
   minimind/                    # 历史 mini 版 bin，不覆盖
 ```
 
 路径由 `configs/data_pipeline.json` 的 `minimind_bin` 配置决定；当前预训练读
-`minimind_full/`。整理代码时不迁移已有 bin，避免改变 checkpoint 所用数据路径。
+`minimind_full_8192/`。旧 bin 不迁移，避免改变历史 checkpoint 所用数据路径。
 
 ## 当前启用：MiniMind 独立预训练入口
 
@@ -32,10 +33,10 @@ python -m data_pipeline.minimind.build_bin
 - 首次只下载配置选中的一个 JSONL；已有本地文件时直接复用，并验证配置中的 SHA256。full 和 mini 都可同时保存在原始数据目录中，但一次只选一个出 bin。文件和下载缓存都留在项目数据目录内。
 - 数据集版本固定为 `312afb4f76391145c6902f765bb51691c09a12f5`，防止上游更新导致训练输入悄悄变化。
 - 原样使用 `text`：不清洗、不去重、不修正文、不拼聊天模板，也不截断或补齐。格式损坏、缺失 `text` 或空字符串会报出行号并停止，不会静默丢弃记录。
-- 保留现有 `bpe/tokenizer_24576`，不采用 MiniMind 自己的 tokenizer。用 seed=42 在记录层划分 95% 训练、5% 验证，再打乱并编码，每条记录末尾追加一个当前 tokenizer 的 EOS。
+- 当前使用现有 8,192 词表 `bpe/tokenizer`，不采用 MiniMind 自己的 tokenizer。用 seed=42 在记录层划分 95% 训练、5% 验证，再打乱并编码，每条记录末尾追加一个当前 tokenizer 的 EOS。
 - 只在内存中保存行偏移，不生成清洗后的数据副本或 Arrow 副本。复用原 `build_bin.py` 的二进制写入函数；原下载、清洗、整理及通用出 bin 代码均未改动。
-- 完整版产物为 `data_pipeline/data/minimind_full/train.bin`、`val.bin` 及各自的 `.meta.json`。旧 mini bin 仍保留在 `data_pipeline/data/minimind/`，不会覆盖。元数据包含记录/token 数、原文件 SHA256（`dataset_fingerprint`）、词表大小及 tokenizer SHA256。预训练配置已指向完整版 bin。
-- 算力机实测：full 文件有 8,468,827 条记录；train 为 8,045,386 条、1,736,350,851 tokens（3,472,701,702 字节），val 为 423,441 条、91,375,436 tokens（182,750,872 字节）。两份原文件 SHA256 和 full bin 元数据均已核对。当前本机 C 盘没有额外保存 8.28 GB 原文件；完整原文件和 bin 在算力机的 `新加卷` 项目目录下。
+- 新版产物为 `data_pipeline/data/minimind_full_8192/train.bin`、`val.bin` 及各自的 `.meta.json`；尚未生成。旧 24K full bin 和 mini bin 留在各自原目录，不覆盖。元数据包含记录/token 数、原文件 SHA256（`dataset_fingerprint`）、词表大小及 tokenizer SHA256。
+- 历史 24K 版算力机实测：full 文件有 8,468,827 条记录；train 为 8,045,386 条、1,736,350,851 tokens（3,472,701,702 字节），val 为 423,441 条、91,375,436 tokens（182,750,872 字节）。这些 token 数不代表新 8K bin。两份原文件 SHA256 和旧 full bin 元数据均已核对。当前本机 C 盘没有额外保存 8.28 GB 原文件；完整原文件和旧 bin 在算力机的 `新加卷` 项目目录下。
 - 默认 `overwrite=false`，已有产物时提前报错。确需重做时只修改 `minimind_bin.overwrite`。如已手动下载，把文件放到 `data_pipeline/data/downloads/minimind/`；可设 `download=false`，完全离线转换。
 
 上游建议 mini 的 `max_seq_len≈768`、full 的 `max_seq_len≈380`，对应 MiniMind 自己的 tokenizer 及逐条截断/补齐的训练方式。本项目仍采用连续 token bin，由现有训练代码取窗口，因此转换阶段不照搬这些截断值。这里没有混入 SFT 数据。
