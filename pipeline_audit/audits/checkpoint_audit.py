@@ -18,6 +18,7 @@ from pipeline_audit.common import (
     tokenizer_file,
 )
 from models.model import Transformer
+from checkpoint_io import load_checkpoint
 
 
 def _autocast(device: torch.device):
@@ -132,12 +133,7 @@ def run(config: dict, report_dir: Path) -> AuditSection:
     tokenizer_size = tokenizer.get_vocab_size(with_added_tokens=True)
     eos_id = tokenizer.token_to_id("<|endoftext|>")
 
-    checkpoint = torch.load(
-        checkpoint_path,
-        map_location="cpu",
-        weights_only=True,
-        mmap=True,
-    )
+    checkpoint = load_checkpoint(checkpoint_path, map_location="cpu", mmap=True)
     model_args = dict(checkpoint["model_args"])
     configured_model_args = dict(pretrain_config["model"])
     args_match = model_args == configured_model_args

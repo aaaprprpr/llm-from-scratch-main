@@ -1,8 +1,17 @@
+import sys
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path = [
+    path for path in sys.path if Path(path or Path.cwd()).resolve() != SCRIPT_DIR
+]
+sys.path.insert(0, str(PROJECT_ROOT))
 
 import torch
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+from checkpoint_io import load_checkpoint
+
 CHECKPOINT_PATH = (
     PROJECT_ROOT
     / "output"
@@ -14,12 +23,7 @@ OUTPUT_PATH = PROJECT_ROOT / "output" / "pretrained_weights" / "model.pt"
 
 
 def main():
-    checkpoint = torch.load(
-        CHECKPOINT_PATH,
-        map_location="cpu",
-        weights_only=True,
-        mmap=True,
-    )
+    checkpoint = load_checkpoint(CHECKPOINT_PATH, map_location="cpu", mmap=True)
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     torch.save(checkpoint["model"], OUTPUT_PATH)

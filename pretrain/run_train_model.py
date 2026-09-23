@@ -359,7 +359,9 @@ def main():
         "word_embeddings_tied": embeddings_tied,
         "optimizer_type": optimizer_type,
         "optimizer_parameter_counts": optimizer_parameter_counts,
-        "torch_version": torch.__version__,
+        # 必须转成 str：torch.__version__ 是 TorchVersion 实例，直接进
+        # checkpoint 会让 torch.load(weights_only=True) 拒绝加载该文件。
+        "torch_version": str(torch.__version__),
         "device": str(device),
         "effective_precision": (
             "bfloat16" if amp_dtype == torch.bfloat16 else "float32"

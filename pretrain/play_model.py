@@ -10,6 +10,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import torch
 
+from checkpoint_io import load_checkpoint
 from config_loader import Config
 from models.model import Transformer
 from tokenizer import Tokenizer
@@ -57,12 +58,7 @@ def load_model(
     device: torch.device,
     tokenizer_size: int,
 ):
-    checkpoint = torch.load(
-        checkpoint_path,
-        map_location="cpu",
-        weights_only=True,
-        mmap=True,
-    )
+    checkpoint = load_checkpoint(checkpoint_path, map_location="cpu", mmap=True)
 
     if "model" in checkpoint:
         state_dict = checkpoint["model"]
