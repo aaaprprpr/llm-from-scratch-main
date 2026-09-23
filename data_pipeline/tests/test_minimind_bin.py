@@ -49,7 +49,7 @@ class MiniMindBinTests(unittest.TestCase):
         self.assertGreater(max(map(len, expected)), 2048)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            path = root / "pretrain_t2t_mini.jsonl"
+            path = root / config["filename"]
             path.write_text("\n".join(json.dumps({"text": t}, ensure_ascii=False) for t in texts) + "\n", encoding="utf-8")
             dataset = JsonlTextDataset(path)
             self.assertEqual(dataset[:]["text"], texts)

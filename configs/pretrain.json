@@ -1,7 +1,7 @@
 {
   "paths": {
-    "train_data": "data_pipeline/data/minimind/train.bin",
-    "val_data": "data_pipeline/data/minimind/val.bin",
+    "train_data": "data_pipeline/data/minimind_full/train.bin",
+    "val_data": "data_pipeline/data/minimind_full/val.bin",
     "tokenizer_vocab": "bpe/tokenizer_24576",
     "out_root": "output/train_logs",
     "resume": null
@@ -25,7 +25,7 @@
     "precision": "bfloat16",
     "activation_checkpointing": false,
     "require_flash_attention": false,
-    "eval_interval": 100,
+    "eval_interval": 500,
     "eval_tokens": 65536,
     "eval_seed": 42,
     "log_interval": 10
@@ -51,7 +51,7 @@
   "lr_schedule": {
     "max_lr": 0.0003,
     "min_lr": 0.00003,
-    "warmup_iters": 100
+    "warmup_iters": 500
   },
   "logging": {
     "use_wandb": false,
