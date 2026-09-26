@@ -53,7 +53,9 @@ def resolve_recorded_path(value: str | Path) -> Path:
     if path.is_absolute():
         return path
     if path.parts and path.parts[0] == "bpe":
-        path = Path("tokenize") / path
+        path = Path("tokenize") / Path(*path.parts[1:])
+    elif path.parts[:2] == ("tokenize", "bpe"):
+        path = Path("tokenize") / Path(*path.parts[2:])
     elif path.parts and path.parts[0] == "data_pipeline":
         path = Path("dataset") / path
     return PROJECT_ROOT / path

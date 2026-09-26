@@ -328,6 +328,7 @@ def estimate_loss(
     total_loss = torch.zeros((), device=device)
     total_reward_accuracy = torch.zeros((), device=device)
     evaluated_batches = 0
+    evaluated_samples = 0
 
     policy_model.eval()
     try:
@@ -344,16 +345,18 @@ def estimate_loss(
                         batch,
                         device,
                     )
-            total_loss += loss
-            total_reward_accuracy += metrics["reward_accuracy"]
+            batch_size = batch["chosen_input_ids"].size(0)
+            total_loss += loss * batch_size
+            total_reward_accuracy += metrics["reward_accuracy"] * batch_size
             evaluated_batches += 1
+            evaluated_samples += batch_size
 
         if evaluated_batches == 0:
             raise ValueError("验证集没有可用 batch")
         return {
-            "loss": (total_loss / evaluated_batches).item(),
+            "loss": (total_loss / evaluated_samples).item(),
             "reward_accuracy": (
-                total_reward_accuracy / evaluated_batches
+                total_reward_accuracy / evaluated_samples
             ).item(),
         }
     finally:
@@ -547,7 +550,9 @@ def train(config: Config):
             pin_memory=pin_memory,
         )
         accum_steps = 0
+        accum_samples = 0
         accum_loss = torch.zeros((), device=device)
+        accum_reward_accuracy = torch.zeros((), device=device)
         optimizer.zero_grad(set_to_none=True)
 
         for batch_index, batch in enumerate(train_loader):
@@ -564,9 +569,12 @@ def train(config: Config):
                         device,
                     )
 
-                (loss / train_config["gradient_accumulation_steps"]).backward()
+                batch_size = batch["chosen_input_ids"].size(0)
+                (loss * batch_size).backward()
             accum_steps += 1
-            accum_loss += loss.detach().float()
+            accum_samples += batch_size
+            accum_loss += loss.detach().float() * batch_size
+            accum_reward_accuracy += metrics["reward_accuracy"] * batch_size
 
             last_micro_batch = batch_index + 1 == len(train_loader)
             should_step = (
@@ -586,6 +594,9 @@ def train(config: Config):
             for param_group in optimizer.param_groups:
                 param_group["lr"] = lr
 
+            for parameter in policy_model.parameters():
+                if parameter.grad is not None:
+                    parameter.grad.div_(accum_samples)
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 policy_model.parameters(), train_config["grad_clip"]
             )
@@ -593,7 +604,8 @@ def train(config: Config):
             optimizer.zero_grad(set_to_none=True)
 
             global_step += 1
-            train_loss = (accum_loss / accum_steps).item()
+            train_loss = (accum_loss / accum_samples).item()
+            train_reward_accuracy = (accum_reward_accuracy / accum_samples).item()
             next_batch_index = batch_index + 1
             last_step = epoch + 1 == train_config[
                 "num_epochs"
@@ -603,7 +615,7 @@ def train(config: Config):
                 print(
                     f"epoch {epoch + 1} step {global_step}: "
                     f"loss={train_loss:.4f}, "
-                    f"reward_acc={metrics['reward_accuracy'].item():.4f}, "
+                    f"reward_acc={train_reward_accuracy:.4f}, "
                     f"lr={lr:.2e}, "
                     f"grad_norm={grad_norm.item():.4f}"
                 )
@@ -655,7 +667,9 @@ def train(config: Config):
                 )
 
             accum_steps = 0
+            accum_samples = 0
             accum_loss.zero_()
+            accum_reward_accuracy.zero_()
 
         start_batch_index = 0
 

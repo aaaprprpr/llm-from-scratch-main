@@ -1,6 +1,6 @@
 # 预训练
 
-当前 `configs/pretrain.json` 的结构为 **12 层 / 576 隐藏维度 / 1536 FFN / 9 头 / 8,192 词表 / 32,768 上下文**，共 **52,508,736** 个参数。使用已有的 `tokenize/bpe/tokenizer`，不是重新运行 `tokenize/bpe/config.json` 中的 24K 分词器训练配方。当前 MiniMind 训练使用全 AdamW，已按 8K bin 训练约一遍，最终 checkpoint 为 `output/train_logs/run_20260924_005318/ckpt_step_14137.pt`。
+当前 `configs/pretrain.json` 的结构为 **12 层 / 576 隐藏维度 / 1536 FFN / 9 头 / 8,192 词表 / 32,768 上下文**，共 **52,508,736** 个参数。使用已有的 `tokenize/tokenizer`，不是重新运行 `tokenize/config.json` 中的 24K 分词器训练配方。当前 MiniMind 训练使用全 AdamW，已按 8K bin 训练约一遍，最终 checkpoint 为 `output/train_logs/run_20260924_005318/ckpt_step_14137.pt`。
 
 旧版 24K 词表、2K 训练窗口的结构与计算量见 [历史预训练审查](../../docs/pretraining-sizing.md)；那份计算量比例不适用于当前 32K 训练。当前训练超参以本页和 `configs/pretrain.json` 为准；32K 训练要求 FlashAttention SDPA，启动时会校验支持情况。
 

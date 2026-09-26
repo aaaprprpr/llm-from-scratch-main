@@ -118,10 +118,7 @@ def _download_dataset(source: dict[str, Any], path: Path) -> str:
 
     _guard_dataset(source)
     if path.exists():
-        try:
-            dataset = load_from_disk(str(path))
-        except Exception as exc:
-            raise RuntimeError(f"Existing dataset cannot be loaded: {path}") from exc
+        dataset = load_from_disk(str(path))
         status = "already_downloaded"
     else:
         kwargs = {"path": source["repo"], "split": source["split"],

@@ -279,14 +279,7 @@ def write_report(
             for line in stream:
                 if line.strip():
                     batch_counts = json.loads(line)
-                    for reason, count in batch_counts.items():
-                        if reason not in FILTER_REASONS.values():
-                            raise ValueError(f"Unknown filter reason in report: {reason}")
-                        if not isinstance(count, int) or count < 0:
-                            raise ValueError(
-                                f"Invalid filter count for {reason}: {count!r}"
-                            )
-                        filtered_by_reason[reason] += count
+                    filtered_by_reason.update(batch_counts)
 
     filtered_by_reason = {
         reason: filtered_by_reason.get(reason, 0)
@@ -319,9 +312,6 @@ def main() -> None:
     sources = selected_sources(root_config, "preprocess")
     if not sources:
         raise ValueError("preprocess.sources is empty; select at least one dataset")
-    if any(source["kind"] != "hf_dataset" for source in sources):
-        raise ValueError("preprocess.sources accepts only hf_dataset sources; JSONL enters build_bin directly")
-
     output_path = project_path(config["output"])
     overwrite = config.get("overwrite", False)
     max_repetition_ratio = config.get("max_repetition_ratio", 0.8)

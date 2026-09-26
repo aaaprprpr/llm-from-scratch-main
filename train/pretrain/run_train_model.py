@@ -98,28 +98,8 @@ def build_pretraining_optimizers(
         else:
             adamw_no_decay_parameters.append(parameter)
 
-    assigned_ids = {
-        id(parameter)
-        for parameter in (
-            muon_parameters
-            + adamw_decay_parameters
-            + adamw_no_decay_parameters
-        )
-    }
-    expected_ids = {id(parameter) for _, parameter in trainable_parameters}
-    if assigned_ids != expected_ids:
-        raise RuntimeError("Optimizer parameter partition is incomplete")
-
-    if optimizer_type == "muon":
-        if not muon_parameters:
-            raise RuntimeError("No hidden 2D matrices were assigned to Muon")
-        if any(parameter.ndim != 2 for parameter in muon_parameters):
-            raise RuntimeError("Muon received a non-2D parameter")
-        if any(
-            parameter is model.embedding.weight
-            for parameter in muon_parameters
-        ):
-            raise RuntimeError("The shared embedding/lm_head cannot use Muon")
+    if optimizer_type == "muon" and not muon_parameters:
+        raise RuntimeError("No hidden 2D matrices were assigned to Muon")
 
     adamw = torch.optim.AdamW(
         [
@@ -188,11 +168,6 @@ def main():
     logging_config = config.require("logging")
     sample_config = config.require("sample")
     optimizer_type = optimizer_config.get("type", "adamw").lower()
-    if optimizer_type not in {"adamw", "muon"}:
-        raise ValueError(
-            "optimizer.type must be 'adamw' or 'muon', "
-            f"got {optimizer_type!r}"
-        )
 
     device = get_device(config)
     seed = train_config.get("seed", 42)

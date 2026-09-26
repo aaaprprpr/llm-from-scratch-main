@@ -2,7 +2,7 @@
   "paths": {
     "train_data": "dataset/data_pipeline/data/minimind_full_8192/train.bin",
     "val_data": "dataset/data_pipeline/data/minimind_full_8192/val.bin",
-    "tokenizer_vocab": "tokenize/bpe/tokenizer",
+    "tokenizer_vocab": "tokenize/tokenizer",
     "out_root": "output/train_logs",
     "resume": null
   },

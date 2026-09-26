@@ -192,7 +192,7 @@ class PipelineTests(unittest.TestCase):
                 keep_only.manifest.content_sequence_sha256,
             )
 
-            tokenizer_path = PROJECT_ROOT / "tokenize" / "bpe" / "tokenizer_24576"
+            tokenizer_path = PROJECT_ROOT / "tokenize" / "tokenizer_24576"
             tokenizer = Tokenizer(str(tokenizer_path))
             eos_id = tokenizer.special_token_to_id["<|endoftext|>"]
             train_bin = self.root / "train.bin"

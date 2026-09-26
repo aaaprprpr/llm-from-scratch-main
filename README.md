@@ -2,20 +2,22 @@
 
 手写 Transformer 语言模型项目，包含预训练、SFT、DPO，以及 Hugging Face / vLLM 导出适配。模型实现见 `models/`；训练配置集中在 `configs/`，相对路径均以仓库根目录为基准。
 
+这是学习项目。代码优先清楚地展示模型、数据和训练算法；只保留避免错误数据、错误训练结果或意外覆盖产物所需的检查。
+
 ## 目录
 
 ```text
-models/              Transformer、注意力、RoPE、KV cache
-tokenize/bpe/        分词器与词表训练
+models/                Transformer、注意力、RoPE、KV cache
+tokenize/              分词器与词表训练
 dataset/data_pipeline/ 数据下载、清洗与 token bin 构建
-dataset/label/       语料标注与清洗台
-train/pretrain/      预训练、推理、评估与纯权重导出
-train/sft/           监督微调与数据适配
-train/dpo/           DPO 训练与数据适配
-export/hf/           Hugging Face 格式导出与加载
-export/vllm/         vLLM 推理示例
-configs/             各阶段配置
-output/              本地日志、checkpoint 与评测产物（不纳入 Git）
+dataset/label/         语料标注与清洗台
+train/pretrain/        预训练、推理、评估与纯权重导出
+train/sft/             监督微调与数据适配
+train/dpo/             DPO 训练与数据适配
+export/hf/            Hugging Face 格式导出与加载
+export/vllm/          vLLM 推理示例
+configs/              各阶段配置
+output/               本地日志、checkpoint 与评测产物（不纳入 Git）
 ```
 
 `tokenize/` 与 Python 标准库模块同名，因此不作为 Python 包导入；根目录的 `tokenizer.py` 是加载 `tokenize/tokenizer.py` 的兼容入口，现有 `from tokenizer import Tokenizer` 可以继续使用。

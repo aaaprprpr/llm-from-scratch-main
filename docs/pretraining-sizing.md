@@ -103,7 +103,7 @@ loader 按连续窗口读取；文件尾部不足完整 micro-batch 的部分会
 
 现在设为 `false`，由 PyTorch SDPA 自动选择可用内核。这不是禁用 FlashAttention：若目标机器支持，SDPA 仍可选用它。BF16、batch=4、16 次梯度累积、131,072 tokens/update 和关闭 activation checkpointing 保持不变。8GB 机器若显存不足，可把 batch 改为 2，累积次数会自动变为 32，总 batch 和学习率无需随之改变。
 
-审查时 `dataset/data_pipeline/data/train.bin`、`val.bin` 以及对应元数据在本机缺失。完整训练前需在训练机准备这四个文件，并保证元数据中的词表大小与 tokenizer SHA256 匹配 `tokenize/bpe/tokenizer_24576`。现有分词器实测词表为 24,576，未修改。
+审查时 `dataset/data_pipeline/data/train.bin`、`val.bin` 以及对应元数据在本机缺失。完整训练前需在训练机准备这四个文件，并保证元数据中的词表大小与 tokenizer SHA256 匹配 `tokenize/tokenizer_24576`。现有分词器实测词表为 24,576，未修改。
 
 在数据流水线已完成下载和预处理后，可用 `python -m dataset.data_pipeline.build_bin` 生成 bin。不要因为调整模型宽度重新训练 tokenizer；相同 tokenizer 的现有 bin 可以复用。
 

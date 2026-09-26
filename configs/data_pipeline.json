@@ -62,7 +62,7 @@
   },
   "build_bin": {
     "input": "minimind",
-    "tokenizer": "tokenize/bpe/tokenizer",
+    "tokenizer": "tokenize/tokenizer",
     "train_bin": "dataset/data_pipeline/data/minimind_full_8192/train.bin",
     "val_bin": "dataset/data_pipeline/data/minimind_full_8192/val.bin",
     "train_ratio": 0.95,

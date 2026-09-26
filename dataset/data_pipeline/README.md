@@ -6,7 +6,7 @@
 
 ```text
 sources.minimind.path                  dataset/data_pipeline/data/downloads/minimind/pretrain_t2t.jsonl
-build_bin.tokenizer                    tokenize/bpe/tokenizer
+build_bin.tokenizer                    tokenize/tokenizer
 build_bin.train_bin                    dataset/data_pipeline/data/minimind_full_8192/train.bin
 build_bin.val_bin                      dataset/data_pipeline/data/minimind_full_8192/val.bin
 ```

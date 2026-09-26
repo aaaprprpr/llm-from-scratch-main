@@ -26,7 +26,7 @@ def create_app(data_root: str | Path | None = None):
     tokenizer_path = Path(
         os.environ.get(
             "LABEL_TOKENIZER_PATH",
-            str(Path(__file__).resolve().parents[3] / "tokenize" / "bpe" / "tokenizer_24576"),
+            str(Path(__file__).resolve().parents[3] / "tokenize" / "tokenizer_24576"),
         )
     )
     context = ApiContext(root, tokenizer_path)

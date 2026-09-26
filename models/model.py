@@ -44,17 +44,10 @@ class Transformer(nn.Module):
                 f"num_layers must be a positive integer, got {num_layers}"
             )
 
-        if not isinstance(tie_word_embeddings, bool):
-            raise TypeError(
-                "tie_word_embeddings must be bool, got "
-                f"{type(tie_word_embeddings).__name__}"
-            )
-
         head_dim = d_model // n_head
 
         if head_dim % 2 != 0:
             raise ValueError(f"RoPE requires an even head_dim, got {head_dim}")
-
 
         self.rope = RoPE(theta=theta, d_k=head_dim)
         self.rope._maybe_extend_cache(
@@ -76,17 +69,7 @@ class Transformer(nn.Module):
 
     def tie_weights(self) -> None:
         """让输入词嵌入和输出分类头使用同一个 Parameter。"""
-        if self.embedding.weight.shape != self.lm_head.weight.shape:
-            raise RuntimeError(
-                "Cannot tie embedding and lm_head with different shapes: "
-                f"{tuple(self.embedding.weight.shape)} != "
-                f"{tuple(self.lm_head.weight.shape)}"
-            )
         self.lm_head.weight = self.embedding.weight
-
-        # 这里检查对象身份，而不只是数值相等；优化器必须只看到一份参数。
-        if self.lm_head.weight is not self.embedding.weight:
-            raise RuntimeError("Failed to tie embedding and lm_head weights")
 
     def _init_module(self, module: nn.Module) -> None:
         if isinstance(module, nn.Linear):
@@ -291,45 +274,16 @@ class Transformer(nn.Module):
             context_length: 模型支持的最大上下文长度
         """
 
-        if idx.ndim != 2:
-            raise ValueError(f"idx must have shape (B, T), got {tuple(idx.shape)}")
-
-        if idx.size(0) == 0:
-            raise ValueError("Batch size cannot be zero")
-
-        if idx.size(1) == 0:
-            raise ValueError("Prompt cannot be empty")
-
-        if idx.dtype not in (torch.int32, torch.int64):
-            raise TypeError(f"idx must contain integer token ids, got {idx.dtype}")
-
-        if not isinstance(max_new_tokens, int):
-            raise TypeError(
-                f"max_new_tokens must be int, got " f"{type(max_new_tokens).__name__}"
-            )
-
+        if idx.ndim != 2 or 0 in idx.shape:
+            raise ValueError("idx must have shape (B, T) with B, T > 0")
         if max_new_tokens < 0:
-            raise ValueError(
-                f"max_new_tokens must be non-negative, " f"got {max_new_tokens}"
-            )
-
+            raise ValueError("max_new_tokens must be non-negative")
         if temperature <= 0:
-            raise ValueError(f"temperature must be positive, got {temperature}")
-
+            raise ValueError("temperature must be positive")
         if not 0.0 < top_p <= 1.0:
-            raise ValueError(f"top_p must be in (0, 1], got {top_p}")
-
-        if eos_id is not None:
-            if not isinstance(eos_id, int):
-                raise TypeError(
-                    f"eos_id must be int or None, got " f"{type(eos_id).__name__}"
-                )
-
-            if not 0 <= eos_id < self.lm_head.out_features:
-                raise ValueError(
-                    f"eos_id {eos_id} is outside vocabulary range "
-                    f"[0, {self.lm_head.out_features})"
-                )
+            raise ValueError("top_p must be in (0, 1]")
+        if eos_id is not None and not 0 <= eos_id < self.lm_head.out_features:
+            raise ValueError("eos_id is outside the vocabulary")
 
         if context_length is None:
             context_length = self.context_length

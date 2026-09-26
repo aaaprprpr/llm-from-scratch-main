@@ -1,7 +1,7 @@
 {
   "sampling": {
     "input_paths": [
-      "../../dataset/data_pipeline/data/downloads/tigerresearch_pretrain_zh"
+      "../dataset/data_pipeline/data/downloads/tigerresearch_pretrain_zh"
     ],
     "output_file": "data/tigerresearch_pretrain_zh_sample.txt",
     "target_size_mib": 512,
