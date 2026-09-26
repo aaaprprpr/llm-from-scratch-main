@@ -2,7 +2,7 @@
 
 这个目录只审计从 token binary 开始，到训练 batch、next-token 标签、模型前向和
 checkpoint 的链路。预处理前后的正文质量不属于这里，标注清洗实验记录放在
-[`label/experiments`](../label/experiments/README.md)。
+[`dataset/label/experiments`](../dataset/label/experiments/README.md)。
 
 - `run_audit.py`：依次执行四项审计。
 - `audits/`：batching、model、bin、checkpoint 的具体检查。

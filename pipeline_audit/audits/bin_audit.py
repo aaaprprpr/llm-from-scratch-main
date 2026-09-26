@@ -15,7 +15,7 @@ from pipeline_audit.common import (
     sha256_file,
     tokenizer_file,
 )
-from pretrain.train_model import get_batch
+from train.pretrain.train_model import get_batch
 
 
 def _metadata_path(bin_path: Path) -> Path:

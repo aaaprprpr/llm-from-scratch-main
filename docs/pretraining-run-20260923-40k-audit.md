@@ -88,7 +88,7 @@
 
 **唯一带 weight decay 的参数组在收缩，不带衰减的 Muon 组（47,775,744 参数，占模型 77%）全部涨 3～4 倍。** 数据对所有参数组是同一份，只有分组不同，而增长只发生在无衰减组。这是本次 run 内部自带的对照实验。
 
-配置确认：`configs/pretrain.json` 中 `optimizer.weight_decay=0.1` 只作用于 AdamW 组；`optimizer.muon.weight_decay=0.0`，而 Muon 组持有 77% 的参数（`pretrain/run_train_model.py:157`）。
+配置确认：`configs/pretrain.json` 中 `optimizer.weight_decay=0.1` 只作用于 AdamW 组；`optimizer.muon.weight_decay=0.0`，而 Muon 组持有 77% 的参数（`train/pretrain/run_train_model.py`）。
 
 ## 5. 隐藏状态与梯度同步失控
 

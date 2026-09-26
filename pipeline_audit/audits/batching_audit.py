@@ -11,8 +11,8 @@ from pipeline_audit.common import (
     resolve_project_path,
     tokenizer_file,
 )
-from data_pipeline import build_bin
-from pretrain.train_model import TokenBatchLoader, get_batch
+from dataset.data_pipeline import build_bin
+from train.pretrain.train_model import TokenBatchLoader, get_batch
 
 
 class _BackendBatchAdapter:

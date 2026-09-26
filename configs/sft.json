@@ -1,8 +1,8 @@
 {
   "paths": {
-    "dataset": "sft/data/coig_cqia",
-    "tokenizer": "bpe/tokenizer",
-    "chat_template": "sft/chat_template.jinja",
+    "dataset": "train/sft/data/coig_cqia",
+    "tokenizer": "tokenize/bpe/tokenizer",
+    "chat_template": "train/sft/chat_template.jinja",
     "pretrained_weights": "output/train_logs/run_20260731_150306/ckpt_step_93277.pt",
     "sft_logs": "output/sft_logs",
     "tokenized_cache": "output/sft_cache/coig_cqia_sft_v2_tokenized_2k.pt",

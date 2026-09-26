@@ -45,3 +45,15 @@ class Config:
         if path.is_absolute():
             return path
         return PROJECT_ROOT / path
+
+
+def resolve_recorded_path(value: str | Path) -> Path:
+    """Resolve an asset path stored in a training run before directories moved."""
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    if path.parts and path.parts[0] == "bpe":
+        path = Path("tokenize") / path
+    elif path.parts and path.parts[0] == "data_pipeline":
+        path = Path("dataset") / path
+    return PROJECT_ROOT / path

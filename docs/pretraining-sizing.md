@@ -1,6 +1,6 @@
 # 预训练结构与训练预算审查
 
-审查日期：2026-09-22。以 `models/` 和 `pretrain/run_train_model.py` 的实际实现为准；根目录 README 中“手写 AdamW、没有 nn.Linear”等介绍已经过时。本次只调整 `configs/pretrain.json`，不改词表、分词器或后训练配置。
+审查日期：2026-09-22。以 `models/` 和 `train/pretrain/run_train_model.py` 的实际实现为准。本次只调整 `configs/pretrain.json`，不改词表、分词器或后训练配置。
 
 ## 已采用的结构
 
@@ -60,7 +60,7 @@ P = V*d + L*(4*d*d + 3*d*f + 2*d) + d
 
 ## 优化器与学习率
 
-> 本节记录 MiniMind 接入前的历史配置。当前完整预训练版 `pretrain_t2t.jsonl` 的默认值为全 AdamW、warmup=500、micro-batch=8、每 500 步验证并保存。此前 mini 版一遍为 1,987 次更新，不代表完整版的训练步数。以下旧 Muon、1,000 步 warmup 和 5,000 步保存间隔不再是当前启动参数，详见 [预训练 README](../pretrain/README.md)。
+> 本节记录 MiniMind 接入前的历史配置。当前完整预训练版 `pretrain_t2t.jsonl` 的默认值为全 AdamW、warmup=500、micro-batch=8、每 500 步验证并保存。此前 mini 版一遍为 1,987 次更新，不代表完整版的训练步数。以下旧 Muon、1,000 步 warmup 和 5,000 步保存间隔不再是当前启动参数，详见 [预训练 README](../train/pretrain/README.md)。
 
 当前实际使用的是 **torch.optim.Muon + torch.optim.AdamW**，并非所有参数都用 Muon，也不是根 README 所描述的手写 AdamW。
 
@@ -103,20 +103,20 @@ loader 按连续窗口读取；文件尾部不足完整 micro-batch 的部分会
 
 现在设为 `false`，由 PyTorch SDPA 自动选择可用内核。这不是禁用 FlashAttention：若目标机器支持，SDPA 仍可选用它。BF16、batch=4、16 次梯度累积、131,072 tokens/update 和关闭 activation checkpointing 保持不变。8GB 机器若显存不足，可把 batch 改为 2，累积次数会自动变为 32，总 batch 和学习率无需随之改变。
 
-审查时 `data_pipeline/data/train.bin`、`val.bin` 以及对应元数据在本机缺失。完整训练前需在训练机准备这四个文件，并保证元数据中的词表大小与 tokenizer SHA256 匹配 `bpe/tokenizer_24576`。现有分词器实测词表为 24,576，未修改。
+审查时 `dataset/data_pipeline/data/train.bin`、`val.bin` 以及对应元数据在本机缺失。完整训练前需在训练机准备这四个文件，并保证元数据中的词表大小与 tokenizer SHA256 匹配 `tokenize/bpe/tokenizer_24576`。现有分词器实测词表为 24,576，未修改。
 
-在数据流水线已完成下载和预处理后，可用 `python data_pipeline/build_bin.py` 生成 bin。不要因为调整模型宽度重新训练 tokenizer；相同 tokenizer 的现有 bin 可以复用。
+在数据流水线已完成下载和预处理后，可用 `python -m dataset.data_pipeline.build_bin` 生成 bin。不要因为调整模型宽度重新训练 tokenizer；相同 tokenizer 的现有 bin 可以复用。
 
 从仓库根目录启动：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pretrain.run_train_model --config configs/pretrain.json
+.\.venv\Scripts\python.exe -m train.pretrain.run_train_model --config configs/pretrain.json
 ```
 
 其他已装好依赖的训练机使用：
 
 ```bash
-python -m pretrain.run_train_model --config configs/pretrain.json
+python -m train.pretrain.run_train_model --config configs/pretrain.json
 ```
 
 ## 已完成的验证与能力边界
@@ -124,7 +124,7 @@ python -m pretrain.run_train_model --config configs/pretrain.json
 - 实例化实际模型并核对 61,945,920 个唯一参数、共享 embedding 身份和优化器分组。
 - 使用本机 CUDA / BF16 / 自动 SDPA，按最终配置运行一次完整合成数据更新：batch=4、sequence=2048、累积 16 次、131,072 tokens；覆盖实际 `TokenBatchLoader`、前向、反向、梯度裁剪和 Muon/AdamW 更新。loss、梯度及更新后的参数均有限值，权重实际发生改变。
 - 上述完整更新的 PyTorch 峰值 allocated 约 5.41 GiB、reserved 约 5.97 GiB，不包括桌面和其他进程显存。单次合成短测不能代表持续训练速度或长期稳定性。
-- 验证学习率首步、warmup 终点和最终步数值；运行 `python -m unittest discover -s pretrain/tests -v`，已有 4 项验证测试全部通过。
+- 验证学习率首步、warmup 终点和最终步数值；运行 `python -m unittest discover -s train/pretrain/tests -v`，已有 4 项验证测试全部通过。
 - 未运行真实语料的 loss 收敛测试，也没有开始真实预训练；本机缺少配置指向的 bin 文件及其元数据。
 
 约 6,195 万参数可作为低成本中文语言基础模型的实验起点；是否达到日常聊天要求，需要实际生成评测。预训练目标是 next-token prediction，不能保证只跑完预训练就具备稳定的多轮对话和指令遵循能力；例如 [SmolLM2 官方说明](https://huggingface.co/HuggingFaceTB/SmolLM2-135M) 也将基础模型与经过对话 SFT 的 instruct 模型分开。本次不调整后训练。

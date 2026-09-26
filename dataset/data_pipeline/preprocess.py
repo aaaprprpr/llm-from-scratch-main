@@ -1,0 +1,395 @@
+"""Normalize raw datasets into complete pretraining text records."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import sys
+import tempfile
+import unicodedata
+from collections import Counter
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterable, Mapping
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path = [
+    path for path in sys.path if Path(path or Path.cwd()).resolve() != SCRIPT_DIR
+]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from dataset.data_pipeline.config import load_config, project_path, selected_sources
+from dataset.data_pipeline.record_adapters import ADAPTERS, ADAPTER_COLUMNS
+
+LINK_ONLY_PATTERN = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+CONTROL_CHARACTER_TRANSLATION = {
+    codepoint: None
+    for codepoint in (*range(0x20), *range(0x7F, 0xA0))
+    if codepoint not in {0x09, 0x0A}
+}
+REPETITION_SAMPLE_SIZE = 4096
+_ftfy_fix_text = None
+KEEP_REASON = 0
+FILTER_REASONS = {
+    1: "empty_or_invalid",
+    2: "link_only",
+    3: "no_letters",
+    4: "corrupted",
+    5: "repetitive",
+}
+
+
+@dataclass
+class PreprocessStats:
+    dataset_sources: int = 0
+    dataset_rows: int = 0
+    accepted: int = 0
+
+
+def normalize_text(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+
+    text = value.replace("\r\n", "\n").replace("\r", "\n")
+    text = unicodedata.normalize("NFC", text).replace("\ufeff", "")
+    text = text.translate(CONTROL_CHARACTER_TRANSLATION)
+    return text.strip()
+
+
+def clean_record(
+    text: str | None,
+    max_repetition_ratio: float,
+    fix_text: bool,
+) -> tuple[str | None, int]:
+    if not text:
+        return None, 1
+
+    if fix_text:
+        global _ftfy_fix_text
+        if _ftfy_fix_text is None:
+            import ftfy
+
+            _ftfy_fix_text = ftfy.fix_text
+        text = _ftfy_fix_text(text)
+    text = normalize_text(text)
+    if not text:
+        return None, 1
+    if LINK_ONLY_PATTERN.fullmatch(text):
+        return None, 2
+
+    compact_length = 0
+    replacement_count = 0
+    has_letter = False
+    repetition_sample = []
+    for character in text:
+        if character.isspace():
+            continue
+        compact_length += 1
+        replacement_count += character == "\ufffd"
+        has_letter = has_letter or character.isalpha()
+        if len(repetition_sample) < REPETITION_SAMPLE_SIZE and character.isalnum():
+            repetition_sample.append(character.casefold())
+
+    if compact_length == 0:
+        return None, 1
+    if not has_letter:
+        return None, 3
+    if replacement_count / compact_length > 0.02:
+        return None, 4
+
+    if len(repetition_sample) >= 20:
+        most_common_count = Counter(repetition_sample).most_common(1)[0][1]
+        if most_common_count / len(repetition_sample) > max_repetition_ratio:
+            return None, 5
+        sample_text = "".join(repetition_sample)
+        max_pattern_length = min(16, len(sample_text) // 4)
+        for pattern_length in range(2, max_pattern_length + 1):
+            if sample_text[pattern_length:] == sample_text[:-pattern_length]:
+                return None, 5
+
+    return text, KEEP_REASON
+
+
+def iter_splits(dataset: Any) -> Iterable[tuple[str, Any]]:
+    if isinstance(dataset, Mapping):
+        for split_name in sorted(dataset):
+            yield split_name, dataset[split_name]
+    else:
+        yield "selected", dataset
+
+
+def clean_batch(
+    batch: Mapping[str, list[Any]],
+    rank: int | None,
+    adapter_name: str,
+    max_repetition_ratio: float,
+    fix_text: bool,
+    filter_stats_dir: str,
+) -> dict[str, list[Any]]:
+    adapter = ADAPTERS[adapter_name]
+    batch_size = len(next(iter(batch.values()), []))
+    texts = []
+    filtered_by_reason: Counter[str] = Counter()
+
+    for index in range(batch_size):
+        row = {name: values[index] for name, values in batch.items()}
+        original_text = adapter(row)
+        text, reason = clean_record(
+            original_text,
+            max_repetition_ratio,
+            fix_text,
+        )
+        if text is None:
+            filtered_by_reason[FILTER_REASONS[reason]] += 1
+            continue
+
+        texts.append(text)
+
+    if filtered_by_reason:
+        stats_path = Path(filter_stats_dir) / f"worker-{rank or 0:05d}.jsonl"
+        with stats_path.open("a", encoding="utf-8") as stream:
+            stream.write(
+                json.dumps(
+                    filtered_by_reason,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+            stream.write("\n")
+
+    return {"text": texts}
+
+
+def clean_source(
+    source: dict[str, Any],
+    max_repetition_ratio: float,
+    fix_text: bool,
+    workers: int,
+    map_batch_size: int,
+    stats: PreprocessStats,
+    cache_dir: Path,
+    filter_stats_dir: Path,
+) -> list[Any]:
+    from datasets import Features, Value, load_from_disk
+
+    input_path = project_path(source["path"])
+    if not input_path.exists():
+        message = (
+            f"Downloaded dataset does not exist for {source['source_id']}: "
+            f"{input_path}"
+        )
+        raise FileNotFoundError(message)
+
+    adapter_name = source.get("adapter", "plain_text")
+    if adapter_name not in ADAPTERS:
+        raise KeyError(
+            f"Unknown adapter {adapter_name!r} for source {source['source_id']}"
+        )
+
+    dataset = load_from_disk(str(input_path))
+    cleaned_splits = []
+    output_features = Features({"text": Value("string")})
+    num_proc = workers if workers > 1 else None
+
+    for split_index, (split_name, split) in enumerate(iter_splits(dataset)):
+        print(f"Processing dataset {source['source_id']} split {split_name}")
+        stats.dataset_rows += len(split)
+        input_columns = [
+            column
+            for column in split.column_names
+            if column in ADAPTER_COLUMNS[adapter_name]
+        ]
+        if not input_columns:
+            raise KeyError(
+                f"Dataset {source['source_id']} has none of the columns expected "
+                f"by adapter {adapter_name!r}."
+            )
+        split = split.select_columns(input_columns)
+
+        cache_prefix = f"{source['source_id']}-{split_index:03d}"
+        mapped = split.map(
+            clean_batch,
+            batched=True,
+            batch_size=map_batch_size,
+            num_proc=num_proc,
+            with_rank=True,
+            fn_kwargs={
+                "adapter_name": adapter_name,
+                "max_repetition_ratio": max_repetition_ratio,
+                "fix_text": fix_text,
+                "filter_stats_dir": str(filter_stats_dir),
+            },
+            remove_columns=split.column_names,
+            features=output_features,
+            cache_file_name=str(cache_dir / f"{cache_prefix}-map.arrow"),
+            desc=f"Cleaning {source['source_id']}:{split_name}",
+        )
+        if len(mapped):
+            cleaned_splits.append(mapped)
+
+    return cleaned_splits
+
+
+def build_dataset(
+    sources: list[dict[str, Any]],
+    stats: PreprocessStats,
+    cache_dir: Path,
+    max_repetition_ratio: float,
+    fix_text: bool,
+    workers: int,
+    map_batch_size: int,
+    filter_stats_dir: Path,
+):
+    from datasets import concatenate_datasets
+
+    cleaned_parts = []
+    for source in sources:
+        cleaned_parts.extend(
+            clean_source(
+                source,
+                max_repetition_ratio,
+                fix_text,
+                workers,
+                map_batch_size,
+                stats,
+                cache_dir,
+                filter_stats_dir,
+            )
+        )
+    if not cleaned_parts:
+        raise ValueError("No valid pretraining text records remain after cleaning.")
+
+    cleaned_dataset = concatenate_datasets(cleaned_parts)
+    stats.accepted = len(cleaned_dataset)
+    return cleaned_dataset
+
+
+def write_report(
+    stats: PreprocessStats,
+    filter_stats_dir: Path,
+    output_path: Path,
+) -> dict[str, Any]:
+    stats_files = sorted(filter_stats_dir.glob("*.jsonl"))
+    filtered_by_reason: Counter[str] = Counter()
+    for stats_file in stats_files:
+        with stats_file.open(encoding="utf-8") as stream:
+            for line in stream:
+                if line.strip():
+                    batch_counts = json.loads(line)
+                    for reason, count in batch_counts.items():
+                        if reason not in FILTER_REASONS.values():
+                            raise ValueError(f"Unknown filter reason in report: {reason}")
+                        if not isinstance(count, int) or count < 0:
+                            raise ValueError(
+                                f"Invalid filter count for {reason}: {count!r}"
+                            )
+                        filtered_by_reason[reason] += count
+
+    filtered_by_reason = {
+        reason: filtered_by_reason.get(reason, 0)
+        for reason in FILTER_REASONS.values()
+    }
+    filtered = sum(filtered_by_reason.values())
+    if stats.accepted + filtered != stats.dataset_rows:
+        raise RuntimeError(
+            "Preprocess statistics are inconsistent: "
+            f"{stats.accepted} accepted + {filtered} filtered != "
+            f"{stats.dataset_rows} input rows."
+        )
+    summary = {
+        "dataset_sources": stats.dataset_sources,
+        "input_records": stats.dataset_rows,
+        "accepted_records": stats.accepted,
+        "filtered_records": filtered,
+        "filtered_by_reason": filtered_by_reason,
+    }
+    output_path.write_text(
+        json.dumps({"summary": summary}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return summary
+
+
+def main() -> None:
+    root_config = load_config()
+    config = root_config.require("preprocess")
+    sources = selected_sources(root_config, "preprocess")
+    if not sources:
+        raise ValueError("preprocess.sources is empty; select at least one dataset")
+    if any(source["kind"] != "hf_dataset" for source in sources):
+        raise ValueError("preprocess.sources accepts only hf_dataset sources; JSONL enters build_bin directly")
+
+    output_path = project_path(config["output"])
+    overwrite = config.get("overwrite", False)
+    max_repetition_ratio = config.get("max_repetition_ratio", 0.8)
+    fix_text = config.get("fix_text", True)
+    workers = config.get("workers", "auto")
+    map_batch_size = config["batch_size"]
+
+    if not 0.0 < max_repetition_ratio <= 1.0:
+        raise ValueError("max_repetition_ratio must be between 0 and 1.")
+    if workers == "auto":
+        workers = max(1, (os.cpu_count() or 2) - 1)
+    if not isinstance(workers, int) or workers < 1:
+        raise ValueError("workers must be a positive integer or 'auto'.")
+    if not isinstance(map_batch_size, int) or map_batch_size < 1:
+        raise ValueError("preprocess.batch_size must be positive.")
+
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(
+            f"Output already exists: {output_path}. "
+            "Set overwrite=true in configs/data_pipeline.json to replace it."
+        )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    temporary_output = output_path.with_name(f".{output_path.name}.tmp")
+    report_path = output_path.with_name(f"{output_path.name}.report.json")
+    temporary_report = report_path.with_suffix(report_path.suffix + ".tmp")
+    if temporary_output.exists():
+        shutil.rmtree(temporary_output)
+    if temporary_report.exists():
+        temporary_report.unlink()
+
+    stats = PreprocessStats(dataset_sources=len(sources))
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=".preprocess-cache-",
+            dir=output_path.parent,
+        ) as cache_dir:
+            cache_path = Path(cache_dir)
+            filter_stats_dir = cache_path / "filter-stats"
+            filter_stats_dir.mkdir()
+            with build_dataset(
+                sources,
+                stats,
+                cache_path,
+                max_repetition_ratio,
+                fix_text,
+                workers,
+                map_batch_size,
+                filter_stats_dir,
+            ) as dataset:
+                output_records = len(dataset)
+                dataset.save_to_disk(str(temporary_output))
+            report = write_report(stats, filter_stats_dir, temporary_report)
+
+        if output_path.exists():
+            shutil.rmtree(output_path)
+        temporary_output.replace(output_path)
+        temporary_report.replace(report_path)
+    except BaseException:
+        if temporary_output.exists():
+            shutil.rmtree(temporary_output)
+        if temporary_report.exists():
+            temporary_report.unlink()
+        raise
+
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    print(f"Wrote {output_records:,} records to {output_path.resolve()}")
+
+
+if __name__ == "__main__":
+    main()

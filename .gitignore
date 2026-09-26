@@ -20,10 +20,10 @@ env/
 .idea/
 
 # Generated data and model weights
-/bpe/data/*.txt
-/data_pipeline/dataset_samples/*.sample.json
-/data_pipeline/data/*
-!/data_pipeline/data/README.md
+/tokenize/bpe/data/*.txt
+/dataset/data_pipeline/dataset_samples/*.sample.json
+/dataset/data_pipeline/data/*
+!/dataset/data_pipeline/data/README.md
 *.bin
 *.arrow
 *.pt
@@ -46,6 +46,6 @@ main/my_sft_model
 main/alpaca_zh_local
 ceval_all_local
 pretrained_weights
-sft/alpaca_zh_local
-sft/data/
-hf/dpo_model
+train/sft/alpaca_zh_local
+train/sft/data/
+export/hf/dpo_model
