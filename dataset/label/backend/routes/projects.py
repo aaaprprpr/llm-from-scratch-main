@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 from fastapi import APIRouter
 
 from ..api_context import ApiContext
@@ -46,18 +43,8 @@ def build_router(context: ApiContext) -> APIRouter:
     @router.post("/api/projects/{project_id}/sources")
     def attach_source(project_id: str, request: AttachSourceRequest):
         try:
-            revision_directory = Path(request.prepare_revision_directory).resolve()
-            manifest_path = revision_directory / "manifest.json"
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             with context.open_database() as database:
-                database.attach_source(
-                    project_id=project_id,
-                    source_id=manifest["source_id"],
-                    source_revision=manifest["source_revision"],
-                    dataset_path=revision_directory / manifest["dataset_path"],
-                    manifest_path=manifest_path,
-                    row_count=int(manifest["output_records"]),
-                )
+                database.attach_prepared_source(project_id, request.prepare_revision_directory)
                 return database.list_project_sources(project_id)
         except Exception as exc:
             context.raise_http(exc)

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -e
+
+cd "$(dirname "$0")"
+url=http://127.0.0.1:8000
+
+if ./.venv/bin/python - "$url/api/health" <<'CHECK'
+import sys
+from urllib.request import urlopen
+
+try:
+    with urlopen(sys.argv[1], timeout=1) as response:
+        raise SystemExit(response.status != 200)
+except OSError:
+    raise SystemExit(1)
+CHECK
+then
+    echo "清洗台已运行：$url"
+    exit 0
+fi
+
+echo "打开清洗台：$url"
+exec ./.venv/bin/python -m uvicorn dataset.label.backend.api:create_app --factory --host 127.0.0.1 --port 8000

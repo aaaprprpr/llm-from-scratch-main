@@ -19,12 +19,16 @@ def stable_json(value: Any) -> str:
     )
 
 
+def update_length_prefixed(digest: Any, value: str) -> None:
+    encoded = value.encode("utf-8")
+    digest.update(len(encoded).to_bytes(8, "big"))
+    digest.update(encoded)
+
+
 def _length_prefixed_digest(parts: tuple[str, ...], digest_size: int) -> str:
     digest = hashlib.blake2b(digest_size=digest_size)
     for part in parts:
-        encoded = part.encode("utf-8")
-        digest.update(len(encoded).to_bytes(8, "big"))
-        digest.update(encoded)
+        update_length_prefixed(digest, part)
     return digest.hexdigest()
 
 

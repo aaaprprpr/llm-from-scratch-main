@@ -51,6 +51,13 @@ class SourceAdapter(ABC):
         raise NotImplementedError
 
 
+def invalid_record_policy(spec: SourceSpec) -> str:
+    policy = str(spec.options.get("invalid_record_policy", "error"))
+    if policy not in {"error", "skip"}:
+        raise ValueError("invalid_record_policy must be 'error' or 'skip'")
+    return policy
+
+
 def sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:

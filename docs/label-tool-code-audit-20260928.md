@@ -1,0 +1,38 @@
+# 标注工具代码复查（2026-09-28）
+
+范围：`dataset/label` 的运行时代码，从数据源识别、导入、Prepare、项目与队列、人工编辑、单条和批量 LLM 清洗、进度索引、合并导出、CLI/API 到 React 页面。核对了数据库迁移、事件撤销和 Arrow 输出。 `experiments/` 是历史探针与结果，不由当前服务或 CLI 导入，不属于运行链路。
+
+## 当前主链路
+
+1. `source_catalog` 读取项目下载配置并推断字段；各 `SourceAdapter` 解析 JSONL、HF 本地数据集或文本。
+2. `ImportService` 生成不可变 Raw Arrow 快照；`PrepareService` 一对一规范化并繁转简，生成 Review Arrow 快照。
+3. `CurationDatabase` 保存项目、来源、虚拟全量队列、人工审核及事件；`DocumentService` 根据队列序号读取正文和块审核。
+4. 单条和批量均调用 `LlmCleaner.clean()`。单条完成后写入 `document_reviews`；批量通过线程池调用并按队列序号写 `progress.jsonl` / `cleaned.jsonl`，`CleaningProgressIndex` 提供快速查询。
+5. `BatchJobManager.document_view()` 将批量结果叠加到人工页；`export_effective()` 按队列位置合并，明确的人工保留/丢弃优先。
+6. 前端 `SetupWizard` 管导入与自动任务，`useReviewWorkspace` 管人工草稿，`BlockEditor` 编辑正文，`DraftDiff` 在 Worker 中算差异。
+
+## 此次确认并修复
+
+| 问题 | 修复 |
+| --- | --- |
+| CLI 重复审核把此前 `edited_text` 写成空值；CLI 查看不到批量结果 | CLI 查看复用 `BatchJobManager.document_view()`，审核保留原编辑；人工确认批量保留时直接采用批量正文。未明确传入的质量、类别、标志和备注也沿用现值。 |
+| 网页对批量丢弃条目按 Ctrl+D 时提交空 `edited_text`，数据库拒绝 | 丢弃时提交 `null`。人工和批量丢弃在编辑器中都显示为已删除段落，可逐段恢复。 |
+| 恢复已删除段落后翻页仍按“丢弃”保存 | 草稿恢复为非空时翻页保存为“保留”；正文全删时保存为“丢弃”。 |
+| 同项目的旧虚拟队列把其他来源的人工审核算进自己的完成数 | 按队列实际来源与文档 ID 定位人工审核；与批量进度共用这一定位逻辑。队列状态按项目修订号缓存，避免每次读取文档重新扫描。 |
+| 导入页会把旧未转简体队列当成已就绪的简体队列 | 只将 `simplify_chinese=true` 的准备副本匹配为清洗入口。 |
+| 多来源队列的总览重复计算同一个批量任务状态 | 每个队列计算一次，再用于各来源展示行。 |
+| CLI/API 重复实现准备快照挂载和 JSON 序列化 | 统一到 `CurationDatabase.attach_prepared_source()` 与 `backend.serialization.jsonable()`。 |
+| 逐条响应把批量正文在 `batch_clean.text` 和 `materialized_text` 重复发送 | `batch_clean` 只传状态，正文仍在 `materialized_text`；当前 Wiki 样例响应约 322 KB。 |
+
+## 仍需区分的两个输出
+
+`MaterializeService` 是按项目事件序号生成**人工审核快照**的 canonical Arrow 输出；它没有读取批量进度日志。自动任务页面的“生成合并语料”调用 `export_effective()`，输出包含批量与人工最终结果的 `effective_cleaned.jsonl`。两者用途、记录集合和版本依据不同，不能把前者当成自动清洗后的语料。若训练流程需要直接消费合并语料，应单独加一个从 `effective_cleaned.jsonl` 到现有训练输入格式的转换入口，并让它读取合并清单中的版本信息。
+
+当前多来源队列的人工位置映射在项目审核修订变化时，会重新按 `source_row + doc_id` 核对已审核文档。通常复用缓存；如果单项目积累大量人工审核并频繁切换来源组合，这一步仍会增加进度接口耗时。只有实际出现瓶颈时才需要持久化队列成员索引。
+
+## 验证
+
+- `.venv/bin/python -m unittest discover -s dataset/label/tests -v`：80 项通过。
+- 前端 TypeScript `tsc -b`、Vite 生产构建、7 项 diff 测试通过。
+- 回归覆盖 CLI 查看批量正文、人工修改不丢失、多来源队列计数、批量丢弃的人工确认与合并导出。
+- 本地服务重启后，首页和 API 均返回 200。真实 Wiki 队列仍为暂停状态：已扫描 160 条、完成 153 条、尝试 160 次；第 101 条仍显示批量清洗后的正文。未触发新的远程模型请求。

@@ -18,7 +18,7 @@ from tokenizer import Tokenizer
 from train.pretrain.train_model import load_token_bin
 
 ROOT = Path(__file__).resolve().parents[3]
-TOKENIZER_PATH = ROOT / "tokenize" / "tokenizer"
+TOKENIZER_PATH = ROOT / "tokenizer" / "bpe_8192"
 
 
 def settings(sources, source_name, train_bin, val_bin, *, preprocess_sources=None, prepared_path=None):

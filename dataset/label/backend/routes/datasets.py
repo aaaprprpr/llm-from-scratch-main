@@ -5,11 +5,13 @@ from pathlib import Path
 
 from fastapi import APIRouter
 
-from ..api_context import ApiContext, automatic_source_id, jsonable
+from ..api_context import ApiContext, automatic_source_id
+from ..serialization import jsonable
 from ..api_models import ImportRequest, InspectRequest, PrepareRequest, PreviewRequest
 from ..import_service import ImportService
 from ..importers import SourceSpec, get_adapter
 from ..prepare import PrepareConfig, PrepareService
+from ..source_catalog import list_download_sources
 
 
 def build_router(context: ApiContext) -> APIRouter:
@@ -54,6 +56,14 @@ def build_router(context: ApiContext) -> APIRouter:
             )
         return catalog
 
+    @router.get("/api/download-sources")
+    def download_sources():
+        try:
+            imported = [item["manifest"]["original_location"] for item in source_catalog()]
+            return list_download_sources(imported_locations=imported)
+        except Exception as exc:
+            context.raise_http(exc)
+
     @router.post("/api/imports/inspect")
     def inspect_source(request: InspectRequest):
         try:
@@ -94,18 +104,31 @@ def build_router(context: ApiContext) -> APIRouter:
         except Exception as exc:
             context.raise_http(exc)
 
+    @router.get("/api/prepares/progress/{progress_id}")
+    def prepare_progress(progress_id: str):
+        return context.get_prepare_progress(progress_id)
+
     @router.post("/api/prepares")
     def prepare_source(request: PrepareRequest):
+        progress_id = request.progress_id
+        if progress_id:
+            context.set_prepare_progress(progress_id, 0, 0, "opening")
         try:
-            return jsonable(
-                PrepareService().prepare_source(
-                    request.source_revision_directory,
-                    config=PrepareConfig(**request.config),
-                    max_shard_size=request.max_shard_size,
-                    read_batch_size=request.read_batch_size,
-                )
+            result = PrepareService().prepare_source(
+                request.source_revision_directory,
+                config=PrepareConfig(**request.config),
+                max_shard_size=request.max_shard_size,
+                read_batch_size=request.read_batch_size,
+                progress=(lambda count, total: context.set_prepare_progress(progress_id, count, total))
+                if progress_id else None,
             )
+            if progress_id:
+                context.set_prepare_progress(progress_id, result.manifest.output_records,
+                                             result.manifest.output_records, "done")
+            return jsonable(result)
         except Exception as exc:
+            if progress_id:
+                context.set_prepare_progress(progress_id, 0, 0, "failed")
             context.raise_http(exc)
 
     return router

@@ -1,7 +1,7 @@
 {
   "paths": {
     "dataset": "wenbopan/Chinese-dpo-pairs",
-    "tokenizer": "tokenize/tokenizer",
+    "tokenizer": "tokenizer/bpe_8192",
     "chat_template": "train/sft/chat_template.jinja",
     "sft_logs": "output/sft_logs",
     "sft_checkpoint": null,

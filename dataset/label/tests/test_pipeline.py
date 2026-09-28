@@ -88,6 +88,48 @@ class PipelineTests(unittest.TestCase):
             self.prepared.manifest.content_sequence_sha256,
         )
 
+    def test_prepare_reports_real_batch_progress(self):
+        updates = []
+        result = PrepareService().prepare_source(
+            self.imported.revision_directory,
+            config=PrepareConfig(strip_text=False),
+            read_batch_size=2,
+            max_shard_size="1MB",
+            progress=lambda processed, total: updates.append((processed, total)),
+        )
+        self.assertFalse(result.reused_existing)
+        self.assertEqual(updates, [(0, 4), (2, 4), (4, 4)])
+
+    def test_prepare_simplifies_review_text_and_title_without_changing_raw(self):
+        source_path = self.root / "traditional.jsonl"
+        source_path.write_text(
+            '{"id":"t0","title":"頭髮與乾坤","text":"數學、乾燥、後來。"}\n',
+            encoding="utf-8",
+        )
+        imported = ImportService(self.root / "managed").import_source(
+            source_id="traditional",
+            source_license="test",
+            adapter=JsonlAdapter(),
+            spec=SourceSpec(source_path),
+            mapping=FieldMapping(
+                text_fields=("text",), title_field="title", local_id_field="id",
+            ),
+            max_shard_size="1MB",
+        )
+        prepared = PrepareService().prepare_source(
+            imported.revision_directory,
+            config=PrepareConfig(simplify_chinese=True),
+            max_shard_size="1MB",
+        )
+        raw = load_dataset(imported.revision_directory / "raw")[0]
+        review = load_dataset(prepared.revision_directory / "dataset")[0]
+        self.assertEqual(raw["text"], "數學、乾燥、後來。")
+        self.assertEqual(review["text"], "数学、干燥、后来。")
+        self.assertEqual(review["title"], "头发与乾坤")
+        self.assertEqual(review["doc_id"], raw["doc_id"])
+        self.assertNotEqual(review["content_sha256"], raw["content_sha256"])
+        self.assertTrue(prepared.manifest.config["simplify_chinese"])
+
     def test_full_queue_review_and_materialization_policies(self):
         database, project_id = self._open_database()
         try:
@@ -192,7 +234,7 @@ class PipelineTests(unittest.TestCase):
                 keep_only.manifest.content_sequence_sha256,
             )
 
-            tokenizer_path = PROJECT_ROOT / "tokenize" / "tokenizer_24576"
+            tokenizer_path = PROJECT_ROOT / "tokenizer" / "bpe_24576"
             tokenizer = Tokenizer(str(tokenizer_path))
             eos_id = tokenizer.special_token_to_id["<|endoftext|>"]
             train_bin = self.root / "train.bin"

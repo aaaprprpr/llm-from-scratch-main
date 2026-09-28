@@ -38,7 +38,6 @@ export function useInspectorResize() {
       onPointerDown: (event: PointerEvent<HTMLDivElement>) => {
         if (event.button !== 0) return;
         event.preventDefault();
-        event.currentTarget.focus();
         event.currentTarget.setPointerCapture(event.pointerId);
         drag.current = { x: event.clientX, width };
         setResizing(true);
@@ -46,13 +45,16 @@ export function useInspectorResize() {
       onPointerMove: (event: PointerEvent<HTMLDivElement>) => {
         if (drag.current) setWidth(clampWidth(drag.current.width + drag.current.x - event.clientX));
       },
-      onPointerUp: endDrag, onPointerCancel: endDrag, onLostPointerCapture: endDrag,
+      onPointerUp: (event: PointerEvent<HTMLDivElement>) => {
+        endDrag();
+        if (document.activeElement === event.currentTarget) event.currentTarget.blur();
+      },
+      onPointerCancel: endDrag, onLostPointerCapture: endDrag,
       onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => {
-        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        if (event.key !== "Home" && event.key !== "End") return;
         event.preventDefault();
         event.stopPropagation();
-        setWidth(clampWidth(event.key === "Home" ? MIN_WIDTH : event.key === "End" ? maxWidth()
-          : width + (event.key === "ArrowLeft" ? 20 : -20)));
+        setWidth(clampWidth(event.key === "Home" ? MIN_WIDTH : maxWidth()));
       },
     },
   };

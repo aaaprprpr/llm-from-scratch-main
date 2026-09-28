@@ -410,6 +410,34 @@ export default function BlockEditor({
             if (sourceId) moveBlock(sourceId, block.id);
           }}
         >
+          <button
+            type="button"
+            className={`block-full-action ${block.deleted ? "restore-block" : "delete-block"}`}
+            disabled={busy}
+            onClick={() => {
+              clearSelection();
+              onChange(
+                blocks.map((value) => value.id === block.id ? { ...value, deleted: !value.deleted } : value),
+                { kind: "command" },
+              );
+            }}
+          >{block.deleted ? "恢复" : "删除"}</button>
+          <aside className="editable-block-meta" aria-label={`第 ${visibleIndex + 1} 段信息`}>
+            <span>第 {visibleIndex + 1} 段</span>
+            <span>{block.text.length.toLocaleString()} 字</span>
+          </aside>
+          <button
+            type="button"
+            className="block-drag-handle"
+            draggable={!busy}
+            title="拖动调整段落顺序"
+            aria-label={`拖动第 ${visibleIndex + 1} 段调整顺序`}
+            onDragStart={(event) => {
+              draggedBlockId.current = block.id;
+              event.dataTransfer.effectAllowed = "move";
+              event.dataTransfer.setData("application/x-curation-block", block.id);
+            }}
+          >⠿</button>
           <div className="editable-block-main">
           {block.deleted ? (
             <div className="editable-block-text deleted-preview">{block.text}</div>
@@ -437,33 +465,6 @@ export default function BlockEditor({
             />
           )}
           </div>
-          <aside className="editable-block-meta" aria-label={`第 ${visibleIndex + 1} 段信息`}>
-            <button
-              type="button"
-              className="block-drag-handle"
-              draggable={!busy}
-              title="拖动调整段落顺序"
-              onDragStart={(event) => {
-                draggedBlockId.current = block.id;
-                event.dataTransfer.effectAllowed = "move";
-                event.dataTransfer.setData("application/x-curation-block", block.id);
-              }}
-            >⠿</button>
-            <span>第 {visibleIndex + 1} 段</span>
-            <span>{block.text.length.toLocaleString()} 字</span>
-          </aside>
-          <button
-            type="button"
-            className={`block-full-action ${block.deleted ? "restore-block" : "delete-block"}`}
-            disabled={busy}
-            onClick={() => {
-              clearSelection();
-              onChange(
-                blocks.map((value) => value.id === block.id ? { ...value, deleted: !value.deleted } : value),
-                { kind: "command" },
-              );
-            }}
-          >{block.deleted ? "恢复" : "删除"}</button>
         </article>
       ))}
     </section>

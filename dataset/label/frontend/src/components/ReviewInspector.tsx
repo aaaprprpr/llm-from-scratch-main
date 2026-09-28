@@ -1,6 +1,6 @@
 import type { QueueDocument } from "../types";
 import { categories } from "../reviewState";
-import DraftDiff from "./DraftDiff";
+import DraftDiff, { type DiffView } from "./DraftDiff";
 
 type Props = {
   document: QueueDocument | null;
@@ -8,6 +8,8 @@ type Props = {
   quality: number | null;
   category: string;
   notes: string;
+  diffView: DiffView;
+  onDiffViewChange: (mode: DiffView) => void;
   onQualityChange: (quality: number | null) => void;
   onCategoryChange: (category: string) => void;
   onNotesChange: (notes: string) => void;
@@ -19,6 +21,8 @@ export default function ReviewInspector({
   quality,
   category,
   notes,
+  diffView,
+  onDiffViewChange,
   onQualityChange,
   onCategoryChange,
   onNotesChange,
@@ -62,7 +66,7 @@ export default function ReviewInspector({
             </dl>
           </details>
 
-          <DraftDiff key={document.document.doc_id} original={document.simplified.raw_text} draft={editorText} />
+          <DraftDiff original={document.review_text} draft={editorText} mode={diffView} onModeChange={onDiffViewChange} />
         </>
       ) : <p className="muted">选择文档后显示清洗标签和来源信息。</p>}
     </aside>

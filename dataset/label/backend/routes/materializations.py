@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
-from ..api_context import ApiContext, jsonable
+from ..api_context import ApiContext
+from ..serialization import jsonable
 from ..api_models import MaterializeRequest
 from ..materialize import MaterializeService
 

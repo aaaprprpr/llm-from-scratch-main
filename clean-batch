@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -e
+cd "$(dirname "$0")"
+if [[ $# -gt 0 ]]; then
+    exec ./.venv/bin/python -m dataset.label.cli llm-clean-batch --queue-id wiki_zh_20231101_full --limit "$1"
+fi
+exec ./.venv/bin/python -m dataset.label.cli llm-clean-batch --queue-id wiki_zh_20231101_full

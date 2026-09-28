@@ -1,25 +1,32 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from ..api_context import ApiContext
 from ..api_models import BlockReviewRequest, DocumentReviewRequest, LlmCleanRequest, UndoRequest
 from ..database import BlockReviewInput, DocumentReviewInput
 from ..documents import DocumentService
+from ..llm_cleaning import LlmCleaningError
 
 
 def build_router(context: ApiContext) -> APIRouter:
     router = APIRouter()
 
+    @router.get("/api/queues/{queue_id}/statuses")
+    def queue_statuses(queue_id: str, start: int = Query(0, ge=0),
+                       limit: int = Query(60, ge=1, le=100),
+                       status: str = "all"):
+        try:
+            return context.batch_jobs.item_status_page(queue_id, start, limit, status)
+        except Exception as exc:
+            context.raise_http(exc)
+
     @router.get("/api/queues/{queue_id}/items/{ordinal}")
     def get_queue_document(queue_id: str, ordinal: int):
         try:
             with context.open_database() as database:
-                return context.add_token_counts(
-                    context.add_simplified_view(DocumentService(database, context.repository).queue_document(
-                        queue_id, ordinal
-                    ))
-                )
+                value = DocumentService(database, context.repository).queue_document(queue_id, ordinal)
+            return context.batch_jobs.document_view(value)
         except Exception as exc:
             context.raise_http(exc)
 
@@ -76,14 +83,58 @@ def build_router(context: ApiContext) -> APIRouter:
                 revision = (value["document_review"] or {}).get("revision", 0)
                 if revision != request.expected_revision:
                     raise ValueError("文档审核状态已改变，请重新加载后清洗")
-            # No database transaction or human review is held/written during inference.
-            return context.llm_cleaner.clean(
-                [block.model_dump() for block in request.blocks],
-                title=value["provenance"]["title"],
-                provenance={**value["provenance"], "doc_id": doc_id,
-                            "queue_id": request.queue_id, "ordinal": request.ordinal,
-                            "expected_revision": request.expected_revision},
-            )
+                project_id = value["item"]["project_id"]
+            # Inference runs outside the database transaction; completed text is saved directly.
+            cleaner = context.llm_cleaner
+            try:
+                if cleaner.config.provider == "llamacpp":
+                    context.local_model.wait_ready()
+                result = cleaner.clean(
+                    [block.model_dump() for block in request.blocks],
+                    title=value["provenance"]["title"],
+                    provenance={**value["provenance"], "doc_id": doc_id,
+                                "queue_id": request.queue_id, "ordinal": request.ordinal,
+                                "expected_revision": request.expected_revision},
+                )
+            except (LlmCleaningError, RuntimeError) as error:
+                reason = ("risk" if "Content Exists Risk" in str(error) else
+                          "rejected" if "HTTP 400" in str(error) else "failed")
+                with context.open_database() as database:
+                    database.record_cleaning_failure(request.queue_id, request.ordinal,
+                                                     project_id, doc_id, reason)
+                raise LlmCleaningError(str(error)) from error
+            if not cleaner.is_complete(result):
+                reason = ("risk" if any("Content Exists Risk" in item for item in result.get("warnings", []))
+                          else "review")
+                with context.open_database() as database:
+                    database.record_cleaning_failure(request.queue_id, request.ordinal,
+                                                     project_id, doc_id, reason)
+                return {**result, "saved": False}
+            with context.open_database() as database:
+                current = DocumentService(database, context.repository).queue_document(
+                    request.queue_id, request.ordinal,
+                )
+                review = current["document_review"] or {}
+                if review.get("revision", 0) != request.expected_revision:
+                    raise ValueError("清洗期间文档审核状态已改变，请重新加载")
+                state, _ = database.set_document_review(
+                    project_id=current["item"]["project_id"],
+                    review=DocumentReviewInput(
+                        doc_id=doc_id,
+                        source_row=int(current["document"]["source_row"]),
+                        content_sha256=current["document"]["content_sha256"],
+                        decision=result["decision"],
+                        quality=result["quality"],
+                        primary_category=result["category"],
+                        flags=tuple(review.get("flags", ())),
+                        notes=review.get("notes", ""),
+                        edited_text=result["edited_text"] if result["decision"] == "keep" else None,
+                        guideline_version=database.get_project(current["item"]["project_id"])["guideline_version"],
+                    ),
+                    expected_revision=request.expected_revision,
+                    actor="llm-clean",
+                )
+            return {**result, "saved": True, "saved_review": state}
         except Exception as exc:
             context.raise_http(exc)
 

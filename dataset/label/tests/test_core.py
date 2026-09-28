@@ -69,7 +69,7 @@ class MigrationTests(unittest.TestCase):
                     "SELECT MAX(version) AS version FROM schema_migrations"
                 ).fetchone()["version"]
                 self.assertIn("edited_text", columns)
-                self.assertEqual(version, 2)
+                self.assertEqual(version, 3)
             finally:
                 database.close()
 
@@ -247,6 +247,21 @@ class DatabaseTests(unittest.TestCase):
             (queue_id,),
         ).fetchone()["count"]
         self.assertEqual(stored, 0)
+
+    def test_unsure_review_does_not_complete_queue_item(self):
+        self.database.set_document_review(
+            project_id=self.project_id,
+            review=self.review("doc-1", "unsure"),
+            expected_revision=0,
+        )
+        self.assertEqual(self.database.get_queue_item(self.queue_id, 0)["state"], "pending")
+        self.assertEqual(self.database.get_queue(self.queue_id)["state_counts"], {"pending": 2})
+        self.database.set_document_review(
+            project_id=self.project_id,
+            review=self.review("doc-1", "keep"),
+            expected_revision=1,
+        )
+        self.assertEqual(self.database.get_queue(self.queue_id)["state_counts"], {"pending": 1, "done": 1})
 
     def test_review_revision_snapshot_and_undo(self):
         first, first_event = self.database.set_document_review(

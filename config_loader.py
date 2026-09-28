@@ -48,14 +48,20 @@ class Config:
 
 
 def resolve_recorded_path(value: str | Path) -> Path:
-    """Resolve an asset path stored in a training run before directories moved."""
+    """Resolve paths saved by older training runs after directory moves."""
     path = Path(value)
     if path.is_absolute():
         return path
-    if path.parts and path.parts[0] == "bpe":
-        path = Path("tokenize") / Path(*path.parts[1:])
-    elif path.parts[:2] == ("tokenize", "bpe"):
-        path = Path("tokenize") / Path(*path.parts[2:])
-    elif path.parts and path.parts[0] == "data_pipeline":
-        path = Path("dataset") / path
+    if path.parts and path.parts[0] == "data_pipeline":
+        return PROJECT_ROOT / "dataset" / path
+
+    parts = path.parts
+    if parts[:2] == ("tokenize", "bpe"):
+        parts = parts[2:]
+    elif parts and parts[0] in {"bpe", "tokenize", "tokenizer"}:
+        parts = parts[1:]
+
+    old_names = {"tokenizer": "bpe_8192", "tokenizer_24576": "bpe_24576"}
+    if parts and parts[0] in old_names:
+        return PROJECT_ROOT / "tokenizer" / old_names[parts[0]] / Path(*parts[1:])
     return PROJECT_ROOT / path

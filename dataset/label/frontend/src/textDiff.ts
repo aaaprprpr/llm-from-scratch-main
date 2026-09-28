@@ -1,4 +1,4 @@
-import { diffChars, diffLines } from "diff";
+import { diffArrays, diffChars, diffLines } from "diff";
 
 export type DiffPart = {
   value: string;
@@ -6,26 +6,83 @@ export type DiffPart = {
   move?: number;
 };
 
-export function buildTextDiff(original: string, draft: string) {
-  let changes = diffChars(original, draft, { timeout: 60 });
-  const coarse = !changes;
-  changes ??= diffLines(original, draft, { timeout: 60 });
-  const parts: DiffPart[] = changes
-    ? changes.map((part) => ({ value: part.value, kind: part.added ? "added" : part.removed ? "removed" : "equal" }))
-    : [{ value: original, kind: "removed" }, { value: draft, kind: "added" }].filter((part) => part.value) as DiffPart[];
+function paragraphs(text: string): string[] {
+  return text.match(/[\s\S]*?(?:\r?\n\r?\n|$)/g)?.filter(Boolean) ?? [];
+}
 
-  // Pair exact moved fragments; other moves still appear as remove + insert.
-  const removed = new Map<string, DiffPart[]>();
+export function buildTextDiff(original: string, draft: string) {
+  const parts: DiffPart[] = [];
+  const append = (kind: DiffPart["kind"], value: string) => {
+    if (!value) return;
+    const last = parts.at(-1);
+    if (last?.kind === kind) last.value += value;
+    else parts.push({ kind, value });
+  };
+
+  // Anchor unchanged paragraphs first. A global character diff can match repeated
+  // words across distant sections and make unrelated sentences appear interleaved.
+  const changes = diffArrays(paragraphs(original), paragraphs(draft), { timeout: 60 });
+  let coarse = !changes;
+  if (changes) {
+    let removed: string[] = [];
+    let added: string[] = [];
+    const flush = () => {
+      if (removed.length === added.length && removed.length > 0 && removed.length <= 8) {
+        for (let index = 0; index < removed.length; index++) {
+          const before = removed[index];
+          const after = added[index];
+          const local = before.length + after.length <= 6000
+            ? diffChars(before, after, { timeout: 40 }) : undefined;
+          const common = local?.filter((part) => !part.added && !part.removed)
+            .reduce((sum, part) => sum + part.value.length, 0) ?? 0;
+          if (local && common >= Math.min(before.length, after.length) * .4) {
+            for (const part of local) append(part.added ? "added" : part.removed ? "removed" : "equal", part.value);
+          } else {
+            append("removed", before);
+            append("added", after);
+          }
+        }
+      } else {
+        const before = removed.join("");
+        const after = added.join("");
+        const local = before && after && before.length + after.length <= 6000
+          ? diffChars(before, after, { timeout: 40 }) : undefined;
+        const common = local?.filter((part) => !part.added && !part.removed)
+          .reduce((sum, part) => sum + part.value.length, 0) ?? 0;
+        if (local && common >= Math.min(before.length, after.length) * .5) {
+          for (const part of local) append(part.added ? "added" : part.removed ? "removed" : "equal", part.value);
+        } else {
+          append("removed", before);
+          append("added", after);
+        }
+      }
+      removed = [];
+      added = [];
+    };
+    for (const change of changes) {
+      if (change.removed) removed.push(...change.value);
+      else if (change.added) added.push(...change.value);
+      else { flush(); append("equal", change.value.join("")); }
+    }
+    flush();
+  } else {
+    // Large inputs still show both complete versions if paragraph matching times out.
+    const fallback = diffLines(original, draft, { timeout: 60 });
+    if (fallback) for (const part of fallback) append(part.added ? "added" : part.removed ? "removed" : "equal", part.value);
+    else { append("removed", original); append("added", draft); }
+  }
+
+  const removedByText = new Map<string, DiffPart[]>();
   for (const part of parts) {
     if (part.kind !== "removed" || Array.from(part.value.trim()).length < 4) continue;
-    const candidates = removed.get(part.value) ?? [];
+    const candidates = removedByText.get(part.value) ?? [];
     candidates.push(part);
-    removed.set(part.value, candidates);
+    removedByText.set(part.value, candidates);
   }
   let move = 0;
   for (const part of parts) {
     if (part.kind !== "added") continue;
-    const source = removed.get(part.value)?.shift();
+    const source = removedByText.get(part.value)?.shift();
     if (source) { source.move = ++move; part.move = move; }
   }
   return {

@@ -58,6 +58,7 @@ class ImportRequest(SourceRequest):
 
 class PrepareRequest(BaseModel):
     source_revision_directory: str
+    progress_id: str | None = None
     config: dict = Field(default_factory=dict)
     max_shard_size: str = "1GB"
     read_batch_size: int = Field(default=1024, ge=1)
@@ -71,10 +72,6 @@ class QueueCreateRequest(BaseModel):
     name: str
     policy: Literal["full_dataset"] = "full_dataset"
     queue_id: str | None = None
-
-
-class SimplifyTextRequest(BaseModel):
-    texts: list[str] = Field(min_length=1, max_length=10_000)
 
 
 class DocumentReviewRequest(BaseModel):
@@ -124,9 +121,3 @@ class MaterializeRequest(BaseModel):
     snapshot_event_seq: int | None = Field(default=None, ge=0)
     max_shard_size: str = "1GB"
     read_batch_size: int = Field(default=1024, ge=1)
-
-
-class PathPickerRequest(BaseModel):
-    kind: Literal["directory", "file"]
-    adapter: str = "huggingface_local"
-    initial_directory: str | None = None

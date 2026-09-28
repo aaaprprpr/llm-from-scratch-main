@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict, is_dataclass
+import os
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
+from .backend.batch_clean import clean_queue, output_path
+from .backend.batch_jobs import BatchJobManager
 from .backend.database import (
     BlockReviewInput,
     CurationDatabase,
@@ -13,11 +15,13 @@ from .backend.database import (
 )
 from .backend.documents import DocumentService
 from .backend.import_service import ImportService
+from .backend.llm_cleaning import CleaningConfig, LlmCleaner
 from .backend.importers import ADAPTERS, SourceSpec, get_adapter
 from .backend.materialize import MATERIALIZE_VERSION, MaterializeService
 from .backend.prepare import PrepareConfig, PrepareService
 from .backend.queueing import create_full_dataset_queue
 from .backend.schema import FieldMapping
+from .backend.serialization import jsonable
 
 
 def _read_json(path: str | Path | None, default: Any) -> Any:
@@ -33,20 +37,8 @@ def _mapping(path: str | Path) -> FieldMapping:
     return FieldMapping(**value)
 
 
-def _jsonable(value: Any) -> Any:
-    if is_dataclass(value):
-        return _jsonable(asdict(value))
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, Mapping):
-        return {str(key): _jsonable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(item) for item in value]
-    return value
-
-
 def _print_json(value: Any) -> None:
-    print(json.dumps(_jsonable(value), ensure_ascii=False, indent=2, sort_keys=True))
+    print(json.dumps(jsonable(value), ensure_ascii=False, indent=2, sort_keys=True))
 
 
 def _source_spec(args: argparse.Namespace) -> SourceSpec:
@@ -101,18 +93,8 @@ def command_project_create(args: argparse.Namespace) -> None:
 
 
 def command_source_attach(args: argparse.Namespace) -> None:
-    revision_directory = Path(args.prepare_revision_directory).resolve()
-    manifest_path = revision_directory / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     with CurationDatabase(args.database) as database:
-        database.attach_source(
-            project_id=args.project_id,
-            source_id=manifest["source_id"],
-            source_revision=manifest["source_revision"],
-            dataset_path=revision_directory / manifest["dataset_path"],
-            manifest_path=manifest_path,
-            row_count=int(manifest["output_records"]),
-        )
+        database.attach_prepared_source(args.project_id, args.prepare_revision_directory)
         _print_json(database.list_project_sources(args.project_id))
 
 
@@ -127,18 +109,31 @@ def command_queue_full(args: argparse.Namespace) -> None:
         _print_json(database.get_queue(queue_id))
 
 
+def _batch_document(database_path: str, value: dict) -> dict:
+    path = Path(database_path).resolve()
+    return BatchJobManager(
+        path.parent, path, CleaningConfig.from_file()
+    ).document_view(value)
+
+
 def command_show_item(args: argparse.Namespace) -> None:
     with CurationDatabase(args.database) as database:
-        _print_json(DocumentService(database).queue_document(args.queue_id, args.ordinal))
+        document = DocumentService(database).queue_document(args.queue_id, args.ordinal)
+    _print_json(_batch_document(args.database, document))
 
 
 def command_review_document(args: argparse.Namespace) -> None:
     with CurationDatabase(args.database) as database:
         document = DocumentService(database).queue_document(args.queue_id, args.ordinal)
+        document = _batch_document(args.database, document)
         item = document["item"]
         row = document["document"]
-        current = document["document_review"]
-        expected_revision = 0 if current is None else int(current["revision"])
+        current = document["document_review"] or {}
+        edited_text = current.get("edited_text")
+        if (args.decision == "keep" and edited_text is None
+                and document["effective_source"] == "batch"
+                and document["batch_clean"]["status"] == "keep"):
+            edited_text = document["materialized_text"]
         state, event_seq = database.set_document_review(
             project_id=item["project_id"],
             review=DocumentReviewInput(
@@ -146,15 +141,14 @@ def command_review_document(args: argparse.Namespace) -> None:
                 source_row=int(row["source_row"]),
                 content_sha256=row["content_sha256"],
                 decision=args.decision,
-                quality=args.quality,
-                primary_category=args.category,
-                flags=tuple(args.flag),
-                notes=args.notes,
-                guideline_version=database.get_project(item["project_id"])[
-                    "guideline_version"
-                ],
+                quality=args.quality if args.quality is not None else current.get("quality"),
+                primary_category=args.category if args.category is not None else current.get("primary_category"),
+                flags=tuple(args.flag if args.flag is not None else current.get("flags", ())),
+                notes=args.notes if args.notes is not None else current.get("notes", ""),
+                edited_text=edited_text,
+                guideline_version=database.get_project(item["project_id"])["guideline_version"],
             ),
-            expected_revision=expected_revision,
+            expected_revision=int(current.get("revision", 0)),
             actor=args.actor,
         )
         _print_json({"review": state, "event_seq": event_seq})
@@ -207,6 +201,32 @@ def command_materialize(args: argparse.Namespace) -> None:
             read_batch_size=args.read_batch_size,
         )
         _print_json(result)
+
+
+def command_llm_clean_batch(args: argparse.Namespace) -> None:
+    root = Path(args.data_root or os.environ.get("LABEL_DATA_ROOT", "dataset/label/data"))
+    from .backend.model_settings import ModelSettings
+    settings = ModelSettings(root)
+    config = settings.config(settings.read().batch)
+    output = Path(args.output_directory) if args.output_directory else output_path(root, args.queue_id, config)
+    cleaner = LlmCleaner(config, root / "llm_suggestions")
+    from .backend.local_model import LocalModelService
+    local_model = LocalModelService(root) if config.provider == "llamacpp" else None
+    try:
+        if local_model is not None:
+            local_model.wait_ready()
+        result = clean_queue(
+            database_path=root / "curation.sqlite3", queue_id=args.queue_id,
+            output_directory=output, limit=args.limit, cleaner=cleaner,
+            workers=args.workers, max_requests=args.max_requests,
+        )
+    finally:
+        if local_model is not None:
+            local_model.close()
+    result["effective_export"] = BatchJobManager(
+        root, root / "curation.sqlite3", config
+    ).export(args.queue_id, output)
+    _print_json(result)
 
 
 def _add_source_arguments(parser: argparse.ArgumentParser) -> None:
@@ -283,8 +303,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     review_document.add_argument("--quality", type=int, choices=range(4))
     review_document.add_argument("--category")
-    review_document.add_argument("--flag", action="append", default=[])
-    review_document.add_argument("--notes", default="")
+    review_document.add_argument("--flag", action="append")
+    review_document.add_argument("--notes")
     review_document.add_argument("--actor", default="local-cli")
     review_document.set_defaults(func=command_review_document)
 
@@ -316,6 +336,15 @@ def build_parser() -> argparse.ArgumentParser:
     materialize.add_argument("--max-shard-size", default="1GB")
     materialize.add_argument("--read-batch-size", type=int, default=1024)
     materialize.set_defaults(func=command_materialize)
+
+    llm_batch = commands.add_parser("llm-clean-batch", help="自动清洗整个队列，断点续跑，输出干净 JSONL")
+    llm_batch.add_argument("--workers", type=int, default=None, help="并行文档数；远程模型默认 6")
+    llm_batch.add_argument("--max-requests", type=int, default=None, help="同时发送的 API 请求数；远程模型默认 8")
+    llm_batch.add_argument("--queue-id", required=True)
+    llm_batch.add_argument("--data-root")
+    llm_batch.add_argument("--output-directory")
+    llm_batch.add_argument("--limit", type=int, help="本次最多再处理多少条")
+    llm_batch.set_defaults(func=command_llm_clean_batch)
     return parser
 
 

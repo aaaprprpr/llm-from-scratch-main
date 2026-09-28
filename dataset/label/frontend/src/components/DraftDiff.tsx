@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { TextDiff } from "../textDiff";
 
-type Props = { original: string; draft: string };
+export type DiffView = "diff" | "original" | "draft";
+type Props = { original: string; draft: string; mode: DiffView; onModeChange: (mode: DiffView) => void };
 
-export default function DraftDiff({ original, draft }: Props) {
-  const [mode, setMode] = useState<"diff" | "original" | "draft">("diff");
+export default function DraftDiff({ original, draft, mode, onModeChange }: Props) {
   const [diff, setDiff] = useState<{ original: string; draft: string; result: TextDiff } | null>(null);
   const [failed, setFailed] = useState(false);
   const worker = useRef<Worker | null>(null);
@@ -33,9 +33,9 @@ export default function DraftDiff({ original, draft }: Props) {
   return <section className="raw-preview draft-diff" aria-label="简体原文与当前草稿对照">
     <h3>简体原文与当前草稿</h3>
     <div className="diff-tabs" role="group" aria-label="预览方式">
-      <button className={mode === "diff" ? "active" : ""} onClick={() => setMode("diff")}>删改对照</button>
-      <button className={mode === "original" ? "active" : ""} onClick={() => setMode("original")}>简体原文</button>
-      <button className={mode === "draft" ? "active" : ""} onClick={() => setMode("draft")}>拼接结果</button>
+      <button className={mode === "diff" ? "active" : ""} onClick={() => onModeChange("diff")}>删改对照</button>
+      <button className={mode === "original" ? "active" : ""} onClick={() => onModeChange("original")}>简体原文</button>
+      <button className={mode === "draft" ? "active" : ""} onClick={() => onModeChange("draft")}>拼接结果</button>
     </div>
     {mode === "diff" && <>
       <p className="diff-legend"><span className="diff-removed">删除 / 移出</span><span className="diff-added">插入 / 移入</span></p>

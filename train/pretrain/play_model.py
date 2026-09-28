@@ -17,8 +17,8 @@ from tokenizer import Tokenizer
 
 CONFIG_PATH = PROJECT_ROOT / "configs" / "pretrain.json"
 
-# 指定文件时加载指定 checkpoint；保持 None 就玩最近保存的预训练模型。
-CHECKPOINT_PATH = None
+# 默认使用与当前 24K 词表配置匹配的最终 checkpoint。
+CHECKPOINT_PATH = "output/train_logs/run_20260923_130232/ckpt_step_13248.pt"
 
 MAX_NEW_TOKENS = 100
 TEMPERATURE = 0.7

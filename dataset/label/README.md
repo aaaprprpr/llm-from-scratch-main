@@ -18,83 +18,82 @@ Inspect / Preview
 
 ## 启动清洗台
 
-所有 Python 命令都显式使用项目虚拟环境：
-
-```powershell
-.\.venv\Scripts\python.exe -m uvicorn dataset.label.backend.api:create_app --factory --host 127.0.0.1 --port 8000
-```
-
-Ubuntu 对应命令：
+在项目根目录运行：
 
 ```bash
-./.venv/bin/python -m uvicorn dataset.label.backend.api:create_app --factory --host 127.0.0.1 --port 8000
+./clean
 ```
 
-前端开发模式（另开终端）：
+然后打开 `http://127.0.0.1:8000`。前端已有 `dist/` 时，只运行这一条命令即可；服务已经运行时脚本会直接提示地址。按 Ctrl+C 停止服务。
 
-```powershell
-cd dataset\label\frontend
+需要修改前端时，再另开终端运行：
+
+```bash
+cd dataset/label/frontend
 npm run dev
 ```
 
-打开 `http://127.0.0.1:5173`。也可以先运行 `npm run build`，此时 FastAPI 会直接托管 `dist/`，打开 `http://127.0.0.1:8000` 即可。
+开发页面地址是 `http://127.0.0.1:5173`。修改完可运行 `npm run build` 更新由后端托管的 `dist/`。
 
 默认数据根目录是 `dataset/label/data`，可通过 `LABEL_DATA_ROOT` 修改。
 
-## LLM API 清洗本条
+## LLM 自动清洗
 
-清洗工作区支持直接改字、选区删除、拖动选中文字到另一段中拼接、整段拖动重排、繁简转换、撤销和重做。最终保存的是编辑拼接后的正文。
+网页点击 **LLM 清洗本条** 后，完整清洗结果直接写入当前文档的正文审核记录，删除的片段不会留在训练正文里。页面只显示保存状态和删改数量，右侧仍可对照原文。无效的局部改写会被忽略，不会使同一块的有效删除失效；旧报告中的失败块会用已保存的模型响应恢复，必要时才重新调用模型。仍有未完成分块的文档不会自动保存为干净正文。
 
-打开每条文档时，使用固定版本 OpenCC 1.3.0 的 `t2s` 配置自动转简体，已保存的人工正文和可恢复的删除块也采用同一转换。转换在加载时完成，不在每次输入或撤销时重复执行，也不进入撤销历史。`t2s` 做繁简转换，不额外将“软体／滑鼠”等词替换成地区术语；粘贴繁体内容后仍可手动点击“繁体转简体”。保存时写入当前简体草稿，加载本身不写人工审核记录。
+在网页的「导入数据 → 已导入」中，每个来源显示原始条数、简体副本条数和繁简变更条数。创建全量队列后，可直接点击「开始自动清洗」。已有队列显示人工确认、单条 LLM 保存、人工待定和批量处理数量；保留/丢弃/未完成及完成百分比按同一队列条目去重，每 2 秒刷新。点击「暂停」立即停止派发新文档，等待正在执行的文档完成当前模型调用和结果落盘，然后状态变为「已暂停」；它不会中断已经发出的 HTTP 请求，也不影响单条人工清洗。再次点击「继续自动清洗」从进度文件续跑。关闭浏览器不会暂停后端任务；重启服务后，旧任务显示「服务中断，可续跑」。任务不会自动在导入完成时发起远程调用。
 
-右侧默认显示 **简体原文与当前草稿** 的逐字删改对照，红色表示删除/移出，绿色表示插入/移入。改字、拼接、重排、LLM 编辑和撤销都会更新；也可切换“简体原文”“拼接结果”。差异以原始快照转换后的简体文本为基准，因此包括已保存的历史编辑，但不把原始繁体到简体的转换算作删改。原始快照及来源校验哈希保持不变。大范围改动退回行级对照，计算在 Web Worker 中执行。
+单条清洗成功后保存在项目的 SQLite 审核记录；批量清洗的逐条日志保存在输出目录。进度接口把两者按队列位置合并，因此手动清洗已在批量范围内的条目会显示在“单条 LLM 保存”中，但总完成数不会重复加一。旧版翻页曾自动保存“待定”审核；现在未修改的翻页不会写入新审核，历史待定仍保留在审核记录中且不计入已完成。
 
-拖动正文与右侧栏之间的分隔条调整宽度，宽度自动记住；双击恢复默认，也可聚焦分隔条后使用左右方向键。窄屏自动改为上下排列。
+自动任务采用 6 个文档工作线程、全局最多 8 个同时进行的 API 请求。读取数据和人工标注状态在主线程完成，结果缓冲不超过工作线程数的 16 倍（最多 128 条）；长文自身可并发分块，但仍受全局 API 上限约束。批量结果按队列顺序提交到 `cleaned.jsonl`，只包含批量路径已完成且保留的正文。`progress.jsonl` 按条记录状态、序号、耗时、字符数和模型用量；`manifest.json` 保存持续更新的汇总、速度和任务状态。写入时先同步正文，再同步进度，重启会截掉未记录的正文尾部。未完成条目不进入清洗结果，下次续跑优先重试。人工明确保留或丢弃的条目直接复用，不再向模型发送请求。人工页按相同队列序号直接显示批量保留、丢弃和未完成结果；批量与单条共用同一个 `LlmCleaner.clean()` 及完成判定，批量每篇只调用一次，未完成的条目留待续跑。页面的「生成合并语料」会按队列顺序输出 `effective_cleaned.jsonl`：人工确认优先于先前的批量结果；每次人工修改或批量进度更新后，页面会标记旧合并文件需要重新生成。全量任务完成时会自动生成一次。输出目录按队列、模型和提示词版本隔离。
 
-正文上方点击 **LLM 清洗本条**，处理当前尚未保存的草稿，已手动删除的段落不会重新送入模型。LLM 返回可继续人工加工的编辑草稿及理由。
+批量清洗当前 Wiki 队列也可在项目根目录运行：
 
-- 当前清洗版本 `prose_extraction_v5` 以已完成的《数学》《哲学》人工结果为标准：保留具体论述，删除独立标题、目录名单、参考书目、外链和残破 Wiki 表格；有解释的列举仍保留。《文学》未清完，不用作标准。
-- 模型用 `removals` 删除整片，用 `edits` 裁剪片内文字和调整空白，用 `joins` 连接明确需要拼接的相邻保留片段。未列出的片段自动按原顺序保留。后端拒绝新增文字、改写、重排、重复或跳过保留片段的拼接方案。长文逐块处理，跨分块提供附属栏目/表格位置提示；拼接限于块内。
-- 判为“待定”的分块原样保留。提示词和校验不能保证语义判断正确，漏删标题和误删正文仍需人工对照修正。
-- 结果只进入可撤销的编辑草稿。点击“撤销本次清洗”或按 Ctrl Z 恢复；继续人工编辑后仍可逐步撤销。人工质量评分、类别不会被覆盖。
-- 审核后按 ↑ 保留并保存，Ctrl D 丢弃整条。沿用原有翻页行为：→ 会保存为当前决定，未审核条目保存为待定。刷新页面会丢失尚未保存的草稿。
-- JSON 格式、引用编号、局部编辑或输出长度校验失败时，带上错误原因仅重试当前分块一次，已成功的分块不会重跑。重试仍失败时显示具体分块位置，整次建议不应用，原草稿保留。连接失败不自动重试。
+```bash
+./clean-batch 100
+```
 
-服务配置在 `configs/label.json`，默认使用 DashScope 的 `qwen-plus`。后端自动读取**项目根目录**的 `.env`（不受启动目录影响），系统环境变量优先：
+参数是本次再处理的条数；省略参数则持续处理整个队列。中断后再次运行会从进度文件继续，不重复处理已完成条目；未完成条目会重试，重试成功后的文本追加到输出末尾，因此输出行顺序可能与原始队列不同。输出在 `dataset/label/data/batch_cleaned/wiki_zh_20231101_full/deepseek-deepseek-flash-prose_extraction_v6/cleaned.jsonl`，每行只有 `text` 字段；它是批量原始产物。如果批量处理后又手动修改了条目，使用合并后的 `effective_cleaned.jsonl` 作为最终数据集。整篇删除或仍有未完成分块的文档不会进入该文件；数量见 `manifest.json`，逐条状态见 `progress.jsonl`。已有人工确认并保存的正文会直接使用，避免重复调用模型。全量队列有 1,384,748 条，远程模型全量处理需要大量时间与 API 费用，可分批运行。
+
+通用入口是 `python -m dataset.label.cli llm-clean-batch --queue-id <queue_id> [--limit N]`，每次结束也会生成当前的合并语料；可用 `--workers`、`--max-requests` 调整并发，也可指定 `--data-root` 和 `--output-directory`。网页与 CLI 指向同一进度目录时会用任务锁避免同时写入。
+
+服务配置在 `configs/label.json`，当前使用 DeepSeek 的 `deepseek-flash`。如需切回 DashScope，把 `provider` 改为 `dashscope`，并将 `model`、`base_url` 改为原来的 Qwen 配置。后端自动读取**项目根目录**的 `.env`（不受启动目录影响），系统环境变量优先：
 
 ```dotenv
-DASHSCOPE_API_KEY=你的百炼API密钥
-DEFAULT_MODEL=qwen-plus
-# 可选：按密钥所属地域覆盖 API 地址
-# DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+DEEPSEEK_API_KEY=你的DeepSeek API密钥
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-flash
+# DashScope 模式使用 DASHSCOPE_API_KEY、DEFAULT_MODEL 和可选的 DASHSCOPE_BASE_URL
 ```
 
 `.env` 已加入 Git 忽略；可参考根目录 `.env.example`。依赖中新增 `python-dotenv`，已有环境执行 `python -m pip install python-dotenv`。修改配置或 `.env` 后重启后端。
 
-远程模式只调用 `/chat/completions`，使用 Bearer 认证、关闭思考和 JSON 输出模式；Schema 放在提示词中，返回后仍执行原有 Pydantic、片段编号及只删不改写校验。参数格式依据 [DashScope Chat API 文档](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions)。密钥仅由后端读取，不进入前端或建议报告。鉴权、限流、额度及连接错误会显示在原有工作区中。
+远程模式只调用 `/chat/completions`，使用 Bearer 认证、关闭思考和 JSON 输出模式；Schema 放在提示词中，返回后仍执行原有 Pydantic、片段编号及只删不改写校验。DeepSeek 的接口与关闭思考参数依据 [Chat API](https://api-docs.deepseek.com/api/create-chat-completion/) 和 [思考模式文档](https://api-docs.deepseek.com/guides/thinking_mode/)；DashScope 模式依据 [百炼 Chat API 文档](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions)。密钥仅由后端读取，不进入前端或建议报告。鉴权、限流、额度及连接错误会显示在原有工作区中。
 
-如需切回原有 4096 上下文的本地 llama.cpp，将 `provider` 设为 `llamacpp`、`base_url` 设为 `http://127.0.0.1:8080`、`model` 设为本地模型名，并恢复 `context_tokens=4096`、`max_output_tokens=1536`。该模式保留 `/props`、`/apply-template`、`/tokenize` 和 `/v1/chat/completions` 适配，且只允许回环地址，不读取 DashScope 环境配置。
+如需切回原有 4096 上下文的本地 llama.cpp，将 `provider` 设为 `llamacpp`、`base_url` 设为 `http://127.0.0.1:8080`、`model` 设为本地模型名，并恢复 `context_tokens=4096`、`max_output_tokens=1536`。该模式保留 `/props`、`/apply-template`、`/tokenize` 和 `/v1/chat/completions` 适配，且只允许回环地址，不读取远端模型环境配置。
 
-长文按句子和行拆分，成对中文引号内的问号、句号和换行不作为普通切分点，避免将同一引文拆散后引发片段编号错配。超长引文仍受单片长度和上下文上限约束。逐块串行处理全部正文，不静默截断。远程模式按包含 Schema 的完整提示词 UTF-8 字节数保守估算输入预算，预留输出及重试空间，不依赖本地 tokenizer；实际 token 用量以 API 返回值为准。本地模式仍使用服务的聊天模板与 tokenizer 计算。当前远程配置为 32768 上下文预算、4096 输出 token、10 万字符、64 个分块，单次请求超时 120 秒；长文可能花几分钟。超限会明确报错。
+长文按句子和行拆分，成对中文引号内的问号、句号和换行不作为普通切分点，避免将同一引文拆散后引发片段编号错配。超长引文仍受单片长度和上下文上限约束。远端最多 4 块并发处理、本地模型默认串行；结果仍按原文顺序组装，不静默截断。远程模式按包含 Schema 的完整提示词 UTF-8 字节数保守估算输入预算，预留输出及重试空间，不依赖本地 tokenizer；实际 token 用量以 API 返回值为准。本地模式仍使用服务的聊天模板与 tokenizer 计算。当前远程配置为每块最多 48 片段、最多 4 块并发、32768 上下文预算、4096 输出 token、10 万字符、64 个分块，单次请求超时 120 秒；长文仍可能花几分钟。超限会明确报错。
 
-每次完整成功的建议单独保存到 `dataset/label/data/llm_suggestions/<suggestion_id>.json`（使用自定义数据根目录时随根目录移动），记录原始草稿及分隔符、来源、模型、提示词版本、删除位置、局部裁剪、拼接计划、重试原因及结果。它不会自动写入人工审核表或成为已接受的训练数据。后续可将这些建议与人工最终结果对照，积累快速分类器的训练样本。
+模型响应和操作记录保存在 `dataset/label/data/llm_suggestions/`，供断点恢复和审计；清洗正文以审核记录或批量输出中的 `text` 为准。
 
-本次工作区只导入 `dataset/data_pipeline/data/downloads/wiki_zh_20231101`，项目为 `wiki_zh_20231101`，全量人工队列为 `wiki_zh_20231101_full`。正文映射 `text`，`title`、`url`、`id` 保存为来源信息。队列包含全部 1,384,748 条文档；点击 **LLM 清洗本条** 才会调用 API 处理当前文档，创建队列不会自动批量调用模型。
+本次工作区只导入 `dataset/data_pipeline/data/downloads/wiki_zh_20231101`，项目为 `wiki_zh_20231101`，全量人工队列为 `wiki_zh_20231101_full`。正文映射 `text`，`title`、`url`、`id` 保存为来源信息。队列包含全部 1,384,748 条文档；网页单条清洗会直接保存；批量清洗使用 `./clean-batch`。
 
-网页左侧选择“导入数据”，即可从空目录完成：
+Wiki 队列当前使用全量 `t2s` 后的 Review Snapshot，Prepare 修订为 `62dd96394dd8ffedc9145daa527cbc64`。与旧 Review Snapshot 相比，1,058,168 条正文和 526,266 条标题发生变化，文档身份与顺序保持一致。原始 Raw Snapshot、旧 Review Snapshot 和下载数据集均保留；本次只切换了清洗队列的快照路径。转换配置是 `PrepareConfig(simplify_chinese=True)`，实际处理版本和结果保存在该修订的 `manifest.json`。
 
-1. 点击“选择文件夹”选择本地 Hugging Face `save_to_disk` 数据集；JSONL/TXT 使用文件选择窗口。
-2. 自动识别记录数、内容格式、正文列和稳定 ID，显示前三条正文预览。内容格式与字段映射可直接调整，调整后重新预览。
-3. 点击“导入数据集”，生成 Raw Snapshot 和一进一出的 Review Snapshot。
-4. 新建或选择 Project，为全部文档创建人工清洗任务。
+网页左侧选择“导入数据”后：
 
-原生选择窗口由运行 FastAPI 的机器打开，不会把几十 GB 数据上传到浏览器。无桌面环境的 Ubuntu 可以展开“无法打开选择窗口”，手动填写服务器路径。
+1. 从 `configs/data_pipeline.json` 配置的项目下载目录中选择来源。当前支持 MiniMind JSONL，以及 FineWeb、FineWiki、中文维基和 TigerResearch 的本地 Hugging Face 数据集；不用填写路径。
+2. 系统用来源结构推断正文、标题和 ID；页面只列出来源名称、格式和记录数。
+3. 点击“导入”。Import 保留原始 Raw Snapshot；随后的 Prepare 对所有正文和标题执行一次繁体转简体。页面显示已处理条数和百分比。旧 Raw Snapshot 也可在“已有导入”中生成简体副本。
+4. 选择或新建项目，创建全量清洗队列，然后选择「人工查看」或「开始自动清洗」。标注页直接读取已转换的 Review Snapshot，不再进行繁简转换，也不再显示转换按钮。
+
+正式导入仍须完整读取数据集，118GB 级来源可能需要较长时间。原始下载文件保持不变；简体正文写入版本化的 Review Snapshot。默认 `PrepareConfig(simplify_chinese=True)`，旧版未转简体的快照不会被导入页直接选为清洗数据。
 
 内容适配复用 `dataset/data_pipeline/record_adapters.py`：文章、分类正文、instruction/input/output、问答、问答含 think/reasoning、ShareGPT、role/content 对话（含 messages）、贴吧主楼与回复。只抽取并拼接原有文字，不生成 SFT/DPO 格式；role、分类标签不会混入正文。自定义映射仍支持点路径字符串列；直接选中数组或对象会报错，避免只留下标题而静默丢失正文。
 
 API/CLI 的 mapping 可指定 `record_adapter` 和空 `text_fields`；原有纯字段映射不需修改，旧快照的版本标识保持兼容。这里只做内容格式适配，Import 不执行旧预处理的过滤规则。
 
-已经成功导入的 Source/Prepare 会显示在“已有快照”中；刷新网页后可以直接继续，不会重复导入。
+已经导入的来源只显示在“已导入”，不再出现在“下载目录”；刷新网页后可以直接继续。
 
 ## CLI
 
@@ -124,7 +123,7 @@ inspect → preview → import → prepare → project-create → source-attach
 → queue-full → show-item/review-* → materialize
 ```
 
-Materialize 输出仍保留 canonical provenance 列。`dataset/data_pipeline/build_bin.py` 只在检测到标注输出专用的 `dataset.json` 时启用新 loader；原有 `save_to_disk` 预处理结果继续走原来的 `datasets.load_from_disk`，并继续要求只有 `text` 一列。
+Materialize 输出仍保留 canonical provenance 列，但仅使用人工审核事件；自动任务的最新合并结果在 `effective_cleaned.jsonl` 中。两种输出不能互换。完整运行链与这次代码复查见 [标注工具代码复查](../../docs/label-tool-code-audit-20260928.md)。`dataset/data_pipeline/build_bin.py` 只在检测到标注输出专用的 `dataset.json` 时启用新 loader；原有 `save_to_disk` 预处理结果继续走原来的 `datasets.load_from_disk`，并继续要求只有 `text` 一列。
 
 ## 验证
 
@@ -134,3 +133,11 @@ cd dataset\label\frontend
 npm test
 npm run build
 ```
+
+## 清洗模型设置
+
+清洗台左侧“设置”分别选择单条和批量清洗的模型来源：DeepSeek API、Qwen API、本地 Qwen 27B。默认单条使用 DeepSeek，批量使用本地模型；API Key 仍放在根目录 `.env`。切换批量模型需先暂停运行中的任务，已有队列进度会继续使用，不会重新处理已完成条目。
+
+启动 `./clean` 时会检测同级 `qwen/` 项目的 27B CUDA 服务是否已在 `127.0.0.1:8080` 运行；没有运行才会启动，首次加载需要稍等。当前服务由清洗台启动时，在退出清洗台后释放；此前已运行的服务不受影响。`./clean-batch` 选择本地模型时也会自动启动并等待它就绪。本地服务日志写入忽略版本控制的 `dataset/label/data/local_model.log`。
+
+本地样本效果见 [27B 清洗试验](../../docs/local-qwen-cleaning-evaluation-20260928.md)。

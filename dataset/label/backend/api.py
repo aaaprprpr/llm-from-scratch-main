@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from .api_context import ApiContext
 from .routes import include_api_routes
 
 
-def create_app(data_root: str | Path | None = None):
+def create_app(data_root: str | Path | None = None, *, start_local_model: bool | None = None):
     try:
         from fastapi import FastAPI
         from fastapi.middleware.cors import CORSMiddleware
@@ -23,15 +24,21 @@ def create_app(data_root: str | Path | None = None):
             str(Path(__file__).resolve().parents[1] / "data"),
         )
     )
-    tokenizer_path = Path(
-        os.environ.get(
-            "LABEL_TOKENIZER_PATH",
-            str(Path(__file__).resolve().parents[3] / "tokenize" / "tokenizer_24576"),
-        )
-    )
-    context = ApiContext(root, tokenizer_path)
+    context = ApiContext(root)
 
-    app = FastAPI(title="LLM Dataset Curation", version="0.1.0")
+    if start_local_model is None:
+        start_local_model = data_root is None
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        if start_local_model:
+            context.local_model.ensure_running()
+        try:
+            yield
+        finally:
+            context.local_model.close()
+
+    app = FastAPI(title="LLM Dataset Curation", version="0.1.0", lifespan=lifespan)
     app.state.dataset_repository = context.repository
     app.state.api_context = context
     app.add_middleware(
@@ -45,7 +52,12 @@ def create_app(data_root: str | Path | None = None):
 
     frontend_distribution = Path(__file__).resolve().parents[1] / "frontend" / "dist"
     if frontend_distribution.is_dir():
+        from fastapi.responses import FileResponse
         from fastapi.staticfiles import StaticFiles
+
+        @app.get("/", include_in_schema=False)
+        def index():
+            return FileResponse(frontend_distribution / "index.html", headers={"Cache-Control": "no-store"})
 
         app.mount("/", StaticFiles(directory=frontend_distribution, html=True))
 

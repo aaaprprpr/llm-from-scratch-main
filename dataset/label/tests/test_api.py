@@ -4,34 +4,17 @@ import tempfile
 import unittest
 import sqlite3
 import json
-from pathlib import Path
 from unittest.mock import patch
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from dataset.label.backend.api import create_app
+from dataset.label.backend.llm_cleaning import LlmCleaningError
 
 
 class ApiTests(unittest.TestCase):
-    def test_simplification_preserves_phrases_whitespace_and_is_idempotent(self):
-        with tempfile.TemporaryDirectory() as root:
-            client = TestClient(create_app(root))
-            texts = [
-                "乾坤、乾燥、乾隆、頭髮、發展、皇后、後來、重複、覆蓋",
-                "  繁體\n\n數學\r\nx² + y² = 1\t🙂 https://example.com/a?q=1  ",
-                "臺灣軟體與滑鼠", "已经是简体", "",
-            ]
-            converted = client.post("/api/text/simplify", json={"texts": texts}).json()
-            self.assertEqual(converted["texts"], [
-                "乾坤、干燥、乾隆、头发、发展、皇后、后来、重复、覆盖",
-                "  繁体\n\n数学\r\nx² + y² = 1\t🙂 https://example.com/a?q=1  ",
-                "台湾软体与滑鼠", "已经是简体", "",
-            ])
-            second = client.post("/api/text/simplify", json={"texts": converted["texts"]}).json()
-            self.assertEqual(second["texts"], converted["texts"])
-            self.assertEqual(second["changed_characters"], 0)
-
-    def test_document_load_uses_simplified_baseline_without_overwriting_reviews(self):
+    def test_default_prepare_simplifies_before_review_without_changing_raw(self):
         with tempfile.TemporaryDirectory() as root:
             app = create_app(root)
             client = TestClient(app)
@@ -41,39 +24,57 @@ class ApiTests(unittest.TestCase):
             imported = client.post("/api/imports", json={
                 "adapter": "jsonl", "path": str(source), "mapping": {"text_fields": ["text"]},
             }).json()
-            prepared = client.post("/api/prepares", json={"source_revision_directory": imported["revision_directory"]}).json()
+            prepared = client.post("/api/prepares", json={
+                "source_revision_directory": imported["revision_directory"],
+                "progress_id": "test-conversion",
+            }).json()
+            self.assertTrue(prepared["manifest"]["config"]["simplify_chinese"])
+            progress = client.get("/api/prepares/progress/test-conversion").json()
+            self.assertEqual(progress, {"processed": 1, "total": 1, "stage": "done"})
             project = client.post("/api/projects", json={"name": "简体基准"}).json()["project_id"]
             client.post(f"/api/projects/{project}/sources", json={"prepare_revision_directory": prepared["revision_directory"]})
             queue = client.post(f"/api/projects/{project}/queues", json={"name": "全部"}).json()["queue_id"]
             url = f"/api/queues/{queue}/items/0"
-            revision_before = client.get(f"/api/projects/{project}").json()["project"]["current_revision"]
             initial = client.get(url).json()
-            simplified_raw = "数学研究数量。\n\n点击广告。\n\n头发与乾坤。"
-            self.assertEqual(initial["simplified"]["raw_text"], simplified_raw)
-            self.assertEqual(initial["simplified"]["materialized_text"], simplified_raw)
-            self.assertEqual(initial["simplified"]["block_texts"], ["数学研究数量。", "点击广告。", "头发与乾坤。"])
+            simplified = "数学研究数量。\n\n点击广告。\n\n头发与乾坤。"
             self.assertEqual(initial["raw_text"], raw_text)
-            self.assertIsNone(initial["document_review"])
-            self.assertEqual(client.get(f"/api/projects/{project}").json()["project"]["current_revision"], revision_before)
-            # Existing reviews may still contain traditional text; loading must
-            # preserve their deletions and revision while simplifying the view.
-            saved = client.put(f"/api/reviews/documents/{initial['document']['doc_id']}", json={
-                "queue_id": queue, "ordinal": 0, "expected_revision": 0, "decision": "keep",
-                "edited_text": "數學研究數量。\n\n頭髮與乾坤。",
+            self.assertEqual(initial["review_text"], simplified)
+            self.assertEqual(initial["materialized_text"], simplified)
+            self.assertEqual([block["text"] for block in initial["blocks"]],
+                             ["数学研究数量。", "点击广告。", "头发与乾坤。"])
+            self.assertNotIn("simplified", initial)
+            self.assertEqual(client.post("/api/text/simplify", json={"texts": [raw_text]}).status_code, 405)
+            client.close()
+            app.state.dataset_repository.clear()
+
+    def test_prepared_simplified_document_is_not_converted_twice(self):
+        with tempfile.TemporaryDirectory() as root:
+            app = create_app(root)
+            client = TestClient(app)
+            source = Path(root) / "traditional.jsonl"
+            source.write_text(
+                json.dumps({"title": "學堂", "text": "學堂隸屬於倫敦傳道會"}) + "\n",
+                encoding="utf-8",
+            )
+            imported = client.post("/api/imports", json={
+                "adapter": "jsonl", "path": str(source),
+                "mapping": {"text_fields": ["text"], "title_field": "title"},
             }).json()
-            reloaded = client.get(url).json()
-            self.assertEqual(reloaded["simplified"]["materialized_text"], "数学研究数量。\n\n头发与乾坤。")
-            self.assertEqual(reloaded["simplified"]["raw_text"], simplified_raw)
-            self.assertEqual(reloaded["document_review"], saved["review"])
-            self.assertEqual(reloaded["document"]["content_sha256"], initial["document"]["content_sha256"])
-            saved_simplified = client.put(f"/api/reviews/documents/{initial['document']['doc_id']}", json={
-                "queue_id": queue, "ordinal": 0, "expected_revision": saved["review"]["revision"], "decision": "keep",
-                "edited_text": reloaded["simplified"]["materialized_text"],
+            prepared = client.post("/api/prepares", json={
+                "source_revision_directory": imported["revision_directory"],
+                "config": {"simplify_chinese": True},
+            }).json()
+            project = client.post("/api/projects", json={"name": "简体快照"}).json()["project_id"]
+            client.post(f"/api/projects/{project}/sources", json={
+                "prepare_revision_directory": prepared["revision_directory"],
             })
-            self.assertEqual(saved_simplified.status_code, 200, saved_simplified.text)
-            final = client.get(url).json()
-            self.assertEqual(final["materialized_text"], reloaded["simplified"]["materialized_text"])
-            self.assertEqual(final["simplified"], reloaded["simplified"])
+            queue = client.post(f"/api/projects/{project}/queues", json={"name": "全部"}).json()["queue_id"]
+            document = client.get(f"/api/queues/{queue}/items/0").json()
+            once = "学堂隶属於伦敦传道会"
+            self.assertEqual(document["review_text"], once)
+            self.assertEqual(document["materialized_text"], once)
+            self.assertEqual([block["text"] for block in document["blocks"]], [once])
+            self.assertEqual(document["provenance"]["title"], "学堂")
             client.close()
             app.state.dataset_repository.clear()
 
@@ -99,13 +100,6 @@ class ApiTests(unittest.TestCase):
             health = client.get("/api/health")
             self.assertEqual(health.status_code, 200)
             self.assertEqual(health.json()["status"], "ok")
-            simplified = client.post(
-                "/api/text/simplify",
-                json={"texts": ["數學與軟體", "已经是简体"]},
-            )
-            self.assertEqual(simplified.status_code, 200)
-            self.assertEqual(simplified.json()["texts"], ["数学与软体", "已经是简体"])
-            self.assertGreater(simplified.json()["changed_characters"], 0)
             created = client.post(
                 "/api/projects",
                 json={"name": "API test", "project_id": "api-project"},
@@ -134,17 +128,6 @@ class ApiTests(unittest.TestCase):
                 '{"id":"2","title":"标题二","text":"正文二"}\n',
                 encoding="utf-8",
             )
-            with patch(
-                "dataset.label.backend.routes.system.select_local_path",
-                return_value=str(source_path.parent),
-            ):
-                selected = client.post(
-                    "/api/system/select-path",
-                    json={"kind": "directory", "adapter": "huggingface_local"},
-                )
-            self.assertEqual(selected.status_code, 200)
-            self.assertEqual(selected.json()["path"], str(source_path.parent))
-
             source_request = {
                 "adapter": "jsonl",
                 "path": str(source_path),
@@ -222,7 +205,7 @@ class ApiTests(unittest.TestCase):
                 f"/api/queues/{queue.json()['queue_id']}/items/0"
             )
             self.assertEqual(document.status_code, 200)
-            self.assertIsNotNone(document.json()["token_counts"])
+            self.assertNotIn("token_counts", document.json())
             cleaning_request = {
                 "queue_id": queue.json()["queue_id"], "ordinal": 0,
                 "expected_revision": 0,
@@ -230,23 +213,41 @@ class ApiTests(unittest.TestCase):
                 "blocks": [{"id": "draft-1", "text": "尚未保存的编辑正文", "separator_after": ""}],
             }
             cleaning_url = f"/api/reviews/documents/{document.json()['document']['doc_id']}/llm-clean"
-            with patch.object(app.state.api_context.llm_cleaner, "clean", return_value={"suggestion_id": "test"}) as cleaner:
-                suggestion = client.post(cleaning_url, json=cleaning_request)
-                self.assertEqual(suggestion.status_code, 200, suggestion.text)
+            with patch.object(app.state.api_context.llm_cleaner, "clean", return_value={
+                "suggestion_id": "test", "decision": "keep", "quality": 2,
+                "category": "encyclopedia", "edited_text": "清理后的正文",
+                "assessments": [{"chunk": 1, "decision": "keep"}],
+            }) as cleaner:
+                cleaned = client.post(cleaning_url, json=cleaning_request)
+                self.assertEqual(cleaned.status_code, 200, cleaned.text)
+                self.assertTrue(cleaned.json()["saved"])
                 self.assertEqual(cleaner.call_args.args[0], cleaning_request["blocks"])
                 self.assertEqual(client.post(cleaning_url, json={**cleaning_request, "expected_revision": 7}).status_code, 422)
                 self.assertEqual(client.post(cleaning_url, json={**cleaning_request, "content_sha256": "stale"}).status_code, 422)
                 self.assertEqual(cleaner.call_count, 1)
-            after_suggestion = client.get(f"/api/queues/{queue.json()['queue_id']}/items/0").json()
-            self.assertIsNone(after_suggestion["document_review"])
-            self.assertEqual(after_suggestion["materialized_text"], document.json()["materialized_text"])
-            self.assertEqual(after_suggestion["queue"]["state_counts"]["pending"], 2)
+            after_clean = client.get(f"/api/queues/{queue.json()['queue_id']}/items/0").json()
+            self.assertEqual(after_clean["document_review"]["edited_text"], "清理后的正文")
+            self.assertEqual(after_clean["materialized_text"], "清理后的正文")
+            self.assertEqual(after_clean["queue"]["state_counts"]["done"], 1)
+            exported = client.post("/api/materializations", json={
+                "project_id": "api-project", "policy": "keep_only",
+            })
+            self.assertEqual(exported.status_code, 200, exported.text)
+            from dataset.label.backend.dataset_store import load_dataset
+            rows = load_dataset(Path(exported.json()["output_directory"]) / "dataset")
+            self.assertEqual(list(rows["text"]), ["清理后的正文"])
+            with patch.object(app.state.api_context.llm_cleaner, "clean", return_value={
+                "decision": "unsure", "assessments": [{"chunk": 1, "fallback": True}],
+            }):
+                incomplete = client.post(cleaning_url, json={**cleaning_request, "expected_revision": 1})
+            self.assertFalse(incomplete.json()["saved"])
+            self.assertEqual(client.get(f"/api/queues/{queue.json()['queue_id']}/items/0").json()["document_review"]["revision"], 1)
             saved = client.put(
                 f"/api/reviews/documents/{document.json()['document']['doc_id']}",
                 json={
                     "queue_id": queue.json()["queue_id"],
                     "ordinal": 0,
-                    "expected_revision": 0,
+                    "expected_revision": 1,
                     "decision": "keep",
                     "edited_text": "人工修改正文",
                 },
@@ -263,6 +264,38 @@ class ApiTests(unittest.TestCase):
             refreshed_queue = client.get("/api/projects/api-project").json()["queues"][0]
             self.assertEqual(refreshed_queue["state_counts"]["done"], 1)
             self.assertEqual(refreshed_queue["state_counts"]["pending"], 1)
+            with patch.object(app.state.api_context.llm_cleaner, "clean", return_value={
+                "decision": "drop", "quality": 0, "category": "other", "edited_text": "",
+                "assessments": [{"chunk": 1, "decision": "drop"}],
+            }):
+                dropped = client.post(cleaning_url, json={**cleaning_request, "expected_revision": 2})
+            self.assertEqual(dropped.status_code, 200, dropped.text)
+            self.assertTrue(dropped.json()["saved"])
+            after_drop = client.get(f"/api/queues/{queue.json()['queue_id']}/items/0").json()
+            self.assertEqual(after_drop["document_review"]["decision"], "drop")
+            self.assertEqual(after_drop["materialized_text"], "")
+            second = client.get(f"/api/queues/{queue.json()['queue_id']}/items/1").json()
+            second_id = second["document"]["doc_id"]
+            second_request = {
+                "queue_id": queue.json()["queue_id"], "ordinal": 1,
+                "expected_revision": 0,
+                "content_sha256": second["document"]["content_sha256"],
+                "blocks": [{"id": "second", "text": second["review_text"], "separator_after": ""}],
+            }
+            with patch.object(app.state.api_context.llm_cleaner, "clean",
+                              side_effect=LlmCleaningError("Content Exists Risk")):
+                rejected = client.post(f"/api/reviews/documents/{second_id}/llm-clean",
+                                       json=second_request)
+            self.assertEqual(rejected.status_code, 502)
+            risk_items = client.get(f"/api/queues/{queue.json()['queue_id']}/statuses",
+                                    params={"status": "risk"}).json()["items"]
+            self.assertEqual([item["ordinal"] for item in risk_items], [1])
+            client.put(f"/api/reviews/documents/{second_id}", json={
+                "queue_id": queue.json()["queue_id"], "ordinal": 1,
+                "expected_revision": 0, "decision": "drop", "edited_text": None,
+            })
+            self.assertEqual(client.get(f"/api/queues/{queue.json()['queue_id']}/statuses",
+                                        params={"status": "risk"}).json()["items"], [])
             client.close()
             app.state.dataset_repository.clear()
 

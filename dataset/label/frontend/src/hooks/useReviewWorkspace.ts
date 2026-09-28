@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { requestJson } from "../api";
 import {
   renderEditableBlocks,
-  editableBlocksFromText,
   serializeEditableBlocks,
   type EditAction,
   type EditableBlock,
@@ -16,9 +15,10 @@ import {
 } from "../reviewState";
 import type { LlmCleaningResult, Project, ProjectDetail, QueueDocument } from "../types";
 
-export function useReviewWorkspace() {
+export function useReviewWorkspace(showSettings = false) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
+  const [chosenQueueId, setChosenQueueId] = useState("");
   const [project, setProject] = useState<ProjectDetail | null>(null);
   const [ordinal, setOrdinal] = useState(0);
   const [pageInput, setPageInput] = useState("1");
@@ -34,6 +34,7 @@ export function useReviewWorkspace() {
   const [llmResult, setLlmResult] = useState<LlmCleaningResult | null>(null);
   const llmInFlight = useRef(false);
   const documentVersion = useRef(0);
+  const lastBatchRefresh = useRef("");
   const [status, setStatus] = useState("正在连接后端…");
   const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
   const undoStack = useRef<EditableBlock[][]>([]);
@@ -41,16 +42,45 @@ export function useReviewWorkspace() {
   const typingGroup = useRef<{ blockId: string; at: number } | null>(null);
   const [showSetup, setShowSetup] = useState(false);
   const [projectRefresh, setProjectRefresh] = useState(0);
+  const [cleanProgress, setCleanProgress] = useState<{ completed: number; processed: number; attempts: number;
+    manual_completed: number; manual_llm_saved: number;
+    batch_counts: { keep?: number; drop?: number; incomplete?: number } } | null>(null);
 
   const selectedQueue = useMemo(() => {
     const fullQueues = project?.queues.filter(
       (queue) => queue.sampling_policy.type === "full_dataset",
     ) ?? [];
-    return fullQueues[fullQueues.length - 1] ?? null;
-  }, [project]);
+    return fullQueues.find((queue) => queue.queue_id === chosenQueueId)
+      ?? fullQueues[fullQueues.length - 1] ?? null;
+  }, [project, chosenQueueId]);
   const queueId = selectedQueue?.queue_id ?? "";
   const totalItems = queueSize(selectedQueue);
-  const activeDecision = document?.document_review?.decision ?? "unreviewed";
+  const batchDecision = document?.batch_clean?.status;
+  const activeDecision = document?.effective_source === "batch" && (batchDecision === "keep" || batchDecision === "drop")
+    ? batchDecision : document?.document_review?.decision ?? "unreviewed";
+  const activeDecisionOrigin = document?.effective_source === "batch" ? "批量 LLM · " : "";
+  const metadataDirty = quality !== (document?.document_review?.quality ?? null)
+    || category !== (document?.document_review?.primary_category ?? "")
+    || notes !== (document?.document_review?.notes ?? "");
+
+  const refreshCleanProgress = useCallback(async () => {
+    if (!queueId) { setCleanProgress(null); return; }
+    try {
+      const value = await requestJson<{ completed: number; processed: number; attempts: number;
+        manual_completed: number; manual_llm_saved: number;
+        batch_counts: { keep?: number; drop?: number; incomplete?: number } }>(
+        `/api/auto-clean/${queueId}`,
+      );
+      setCleanProgress(value);
+    } catch { /* Keep the last visible progress during a transient refresh error. */ }
+  }, [queueId]);
+
+  useEffect(() => {
+    void refreshCleanProgress();
+    if (!queueId) return;
+    const timer = window.setInterval(() => void refreshCleanProgress(), 2000);
+    return () => window.clearInterval(timer);
+  }, [queueId, refreshCleanProgress]);
 
   const loadProjects = useCallback(async () => {
     try {
@@ -69,18 +99,19 @@ export function useReviewWorkspace() {
   }, [loadProjects]);
 
   useEffect(() => {
-    if (!projectId) {
-      setProject(null);
-      return;
-    }
+    setProject(null);
+    if (!projectId) return;
+    let active = true;
     void requestJson<ProjectDetail>(`/api/projects/${projectId}`)
-      .then((value) => setProject(value))
-      .catch((error) => setStatus(`读取项目失败：${String(error)}`));
+      .then((value) => { if (active) setProject(value); })
+      .catch((error) => { if (active) setStatus(`读取项目失败：${String(error)}`); });
+    return () => { active = false; };
   }, [projectId, projectRefresh]);
 
-  const finishSetup = useCallback(async (nextProjectId: string, _nextQueueId: string) => {
+  const finishSetup = useCallback(async (nextProjectId: string, nextQueueId: string) => {
     await loadProjects();
     setProjectId(nextProjectId);
+    setChosenQueueId(nextQueueId);
     setOrdinal(0);
     setProjectRefresh((value) => value + 1);
     setShowSetup(false);
@@ -91,6 +122,7 @@ export function useReviewWorkspace() {
     setLlmResult(null);
     if (!queueId || totalItems === 0) {
       setDocument(null);
+      setBusy(false);
       return;
     }
     setBusy(true);
@@ -102,7 +134,7 @@ export function useReviewWorkspace() {
       setDocument(value);
       const nextBlocks = makeEditableBlocks(value);
       setDraftBlocks(nextBlocks);
-      setEditorText(value.simplified.materialized_text);
+      setEditorText(value.materialized_text);
       setTextDirty(false);
       setActiveBlockId(nextBlocks[0]?.id ?? null);
       undoStack.current = [];
@@ -135,6 +167,20 @@ export function useReviewWorkspace() {
   useEffect(() => {
     setPageInput(String(ordinal + 1));
   }, [ordinal]);
+
+  useEffect(() => {
+    if (!document || busy || textDirty || metadataDirty || document.item.ordinal !== ordinal) return;
+    if (document.document_review?.decision === "keep" || document.document_review?.decision === "drop") return;
+    if (document.document_review?.edited_text != null) return;
+    const hasNewResult = document.batch_clean === null && (cleanProgress?.processed ?? 0) > ordinal;
+    const mayHaveRetried = document.batch_clean?.status === "incomplete";
+    const refreshKey = `${queueId}:${ordinal}:${cleanProgress?.attempts ?? 0}`;
+    if ((hasNewResult || mayHaveRetried) && lastBatchRefresh.current !== refreshKey) {
+      lastBatchRefresh.current = refreshKey;
+      void loadDocument();
+    }
+  }, [busy, cleanProgress?.attempts, cleanProgress?.processed, document, loadDocument,
+      metadataDirty, ordinal, queueId, textDirty]);
 
   useEffect(() => {
     if (!queueId || totalItems <= 0) return;
@@ -176,10 +222,11 @@ export function useReviewWorkspace() {
           primary_category: category || null,
           flags: document.document_review?.flags ?? [],
           notes,
-          edited_text: editorText,
+          edited_text: decision === "drop" ? null : editorText,
         }),
       });
       setTextDirty(false);
+      void refreshCleanProgress();
       setStatus(`已保存：${decisionLabels[decision]}`);
       if (destination >= 0 && destination < totalItems && destination !== ordinal) {
         go(destination);
@@ -202,6 +249,7 @@ export function useReviewWorkspace() {
     ordinal,
     quality,
     queueId,
+    refreshCleanProgress,
     totalItems,
   ]);
 
@@ -209,8 +257,8 @@ export function useReviewWorkspace() {
     setDraftBlocks(nextBlocks);
     const nextText = renderEditableBlocks(nextBlocks);
     setEditorText(nextText);
-    setTextDirty(nextText !== document?.simplified.materialized_text);
-  }, [document?.simplified.materialized_text]);
+    setTextDirty(nextText !== document?.materialized_text);
+  }, [document?.materialized_text]);
 
   const updateDraftBlocks = useCallback((
     nextBlocks: EditableBlock[],
@@ -231,41 +279,6 @@ export function useReviewWorkspace() {
       : null;
     applyDraftBlocks(nextBlocks);
   }, [applyDraftBlocks, draftBlocks]);
-
-  const simplifyCurrentDocument = useCallback(async () => {
-    if (busy || llmInFlight.current) return;
-    const keptBlocks = draftBlocks.filter((block) => !block.deleted);
-    if (!keptBlocks.length) {
-      setStatus("当前清洗结果为空，没有可转换的正文");
-      return;
-    }
-    setBusy(true);
-    setStatus("正在将当前正文中的繁体字转换为简体字…");
-    try {
-      const result = await requestJson<{ texts: string[]; changed_characters: number }>(
-        "/api/text/simplify",
-        {
-          method: "POST",
-          body: JSON.stringify({ texts: keptBlocks.map((block) => block.text) }),
-        },
-      );
-      let convertedIndex = 0;
-      const nextBlocks = draftBlocks.map((block) => block.deleted ? block : {
-        ...block,
-        text: result.texts[convertedIndex++],
-      });
-      if (result.changed_characters > 0) {
-        updateDraftBlocks(nextBlocks, { kind: "command" });
-        setStatus(`已转换 ${result.changed_characters.toLocaleString()} 个字符，尚未保存`);
-      } else {
-        setStatus("当前正文没有需要转换的繁体字");
-      }
-    } catch (error) {
-      setStatus(`繁体转简体失败：${String(error)}`);
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, draftBlocks, updateDraftBlocks]);
 
   const cleanCurrentDocument = useCallback(async () => {
     if (!document || busy || llmInFlight.current) return;
@@ -293,13 +306,15 @@ export function useReviewWorkspace() {
         },
       );
       if (version !== documentVersion.current) return;
-      if (result.text_changed) {
-        updateDraftBlocks(editableBlocksFromText(result.edited_text, document.document.doc_id));
+      if (result.saved) {
+        void refreshCleanProgress();
+        await loadDocument();
+        setLlmResult(result);
+        setStatus(`已清洗并保存第 ${ordinal + 1} 条：删除 ${result.removals.length} 处、修订 ${result.edits.length} 处`);
+      } else {
+        setLlmResult(result);
+        setStatus(`第 ${ordinal + 1} 条有未完成分块，未写入清洗结果；再次点击会重试未完成分块`);
       }
-      setLlmResult(result);
-      setStatus(result.text_changed
-        ? "LLM 清洗完成：重组草稿已载入，可继续编辑、拖动拼接；右侧查看全部删改"
-        : "LLM 清洗完成：未修改正文，请查看模型判断");
     } catch (error) {
       if (version === documentVersion.current) setStatus(`LLM 清洗失败：${String(error)}；草稿已保留`);
     } finally {
@@ -307,7 +322,7 @@ export function useReviewWorkspace() {
       setLlmCleaning(false);
       if (version === documentVersion.current) setBusy(false);
     }
-  }, [busy, document, draftBlocks, ordinal, queueId, updateDraftBlocks]);
+  }, [busy, document, draftBlocks, ordinal, queueId, loadDocument, refreshCleanProgress]);
 
   const undoDraft = useCallback(() => {
     if (busy || llmInFlight.current) return;
@@ -332,9 +347,15 @@ export function useReviewWorkspace() {
   }, [applyDraftBlocks, busy, draftBlocks]);
 
   const saveAndGo = useCallback((destination: number) => {
-    const decision = activeDecision === "unreviewed" ? "unsure" : activeDecision;
+    const unchanged = !textDirty && !metadataDirty;
+    if (unchanged) {
+      go(destination);
+      return;
+    }
+    const decision = textDirty ? (editorText.trim() ? "keep" : "drop")
+      : activeDecision === "unreviewed" ? "unsure" : activeDecision;
     void saveDocument(decision, destination);
-  }, [activeDecision, saveDocument]);
+  }, [activeDecision, editorText, go, metadataDirty, saveDocument, textDirty]);
 
   const commitPageInput = useCallback(() => {
     if (busy || llmInFlight.current) return;
@@ -351,10 +372,23 @@ export function useReviewWorkspace() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (showSetup || showSettings) return;
+      // Reserve plain left/right for document navigation before focused controls handle them.
+      if ((event.key === "ArrowLeft" || event.key === "ArrowRight")
+        && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+        && !event.isComposing) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (!busy && !llmInFlight.current) {
+          saveAndGo(ordinal + (event.key === "ArrowRight" ? 1 : -1));
+        }
+        return;
+      }
       if (busy || llmInFlight.current) return;
       const target = event.target as HTMLElement;
-      const typing = target.isContentEditable
-        || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+      // Form fields keep their native undo and other shortcuts; the block editor uses our draft history.
+      if (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
+      const typing = target.isContentEditable;
       if (event.ctrlKey && event.key.toLowerCase() === "z") {
         event.preventDefault();
         if (event.shiftKey) redoDraft();
@@ -382,17 +416,9 @@ export function useReviewWorkspace() {
         event.preventDefault();
         void saveDocument("keep");
       }
-      if (event.key === "ArrowRight") {
-        event.preventDefault();
-        saveAndGo(ordinal + 1);
-      }
-      if (event.key === "ArrowLeft") {
-        event.preventDefault();
-        saveAndGo(ordinal - 1);
-      }
     };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [
     activeBlockId,
     busy,
@@ -401,6 +427,8 @@ export function useReviewWorkspace() {
     redoDraft,
     saveAndGo,
     saveDocument,
+    showSetup,
+    showSettings,
     undoDraft,
     updateDraftBlocks,
   ]);
@@ -408,6 +436,7 @@ export function useReviewWorkspace() {
   const changeProject = useCallback((nextProjectId: string) => {
     if (busy || llmInFlight.current) return;
     setProjectId(nextProjectId);
+    setChosenQueueId("");
     setOrdinal(0);
   }, [busy]);
 
@@ -431,7 +460,9 @@ export function useReviewWorkspace() {
     showSetup,
     selectedQueue,
     totalItems,
+    cleanProgress,
     activeDecision,
+    activeDecisionOrigin,
     setPageInput,
     setQuality,
     setCategory,
@@ -440,7 +471,6 @@ export function useReviewWorkspace() {
     setShowSetup,
     finishSetup,
     updateDraftBlocks,
-    simplifyCurrentDocument,
     cleanCurrentDocument,
     undoDraft,
     saveAndGo,

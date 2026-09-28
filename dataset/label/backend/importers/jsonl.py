@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import hashlib
-from pathlib import Path
 from typing import Iterator
 
 from ..schema import FieldMapping, ImportedDocument, Inspection
@@ -11,12 +10,20 @@ from .base import (
     SourceSpec,
     flatten_field_names,
     mapped_document,
+    invalid_record_policy,
 )
 
 
 class JsonlAdapter(SourceAdapter):
     adapter_name = "jsonl"
     adapter_version = "1"
+
+    @staticmethod
+    def _parse_object(raw_line: bytes, encoding: str) -> dict:
+        value = json.loads(raw_line.decode(encoding))
+        if not isinstance(value, dict):
+            raise ValueError("JSON value is not an object")
+        return value
 
     def inspect(self, spec: SourceSpec) -> Inspection:
         path = spec.path
@@ -28,18 +35,14 @@ class JsonlAdapter(SourceAdapter):
         invalid_records = 0
         preview_records = int(spec.options.get("inspect_records", 100))
         encoding = str(spec.options.get("encoding", "utf-8"))
-        policy = str(spec.options.get("invalid_record_policy", "error"))
-        if policy not in {"error", "skip"}:
-            raise ValueError("invalid_record_policy must be 'error' or 'skip'")
+        policy = invalid_record_policy(spec)
         with path.open("rb") as stream:
             for line_number, raw_line in enumerate(stream, start=1):
                 digest.update(raw_line)
                 if not raw_line.strip():
                     continue
                 try:
-                    value = json.loads(raw_line.decode(encoding))
-                    if not isinstance(value, dict):
-                        raise ValueError("JSON value is not an object")
+                    value = self._parse_object(raw_line, encoding)
                 except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
                     invalid_records += 1
                     if policy == "error":
@@ -64,9 +67,7 @@ class JsonlAdapter(SourceAdapter):
         spec: SourceSpec,
         mapping: FieldMapping,
     ) -> Iterator[ImportedDocument]:
-        policy = str(spec.options.get("invalid_record_policy", "error"))
-        if policy not in {"error", "skip"}:
-            raise ValueError("invalid_record_policy must be 'error' or 'skip'")
+        policy = invalid_record_policy(spec)
         encoding = str(spec.options.get("encoding", "utf-8"))
         with spec.path.open("rb") as stream:
             line_number = 0
@@ -80,9 +81,7 @@ class JsonlAdapter(SourceAdapter):
                     continue
                 locator = f"line:{line_number}:byte:{byte_offset}"
                 try:
-                    value = json.loads(raw_line.decode(encoding))
-                    if not isinstance(value, dict):
-                        raise ValueError("JSON value is not an object")
+                    value = self._parse_object(raw_line, encoding)
                     yield mapped_document(
                         value,
                         mapping,

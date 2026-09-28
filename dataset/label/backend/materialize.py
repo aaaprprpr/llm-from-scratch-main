@@ -13,7 +13,7 @@ from typing import Any, Mapping
 from .blocks import BLOCK_PARSER_VERSION, parse_blocks, render_blocks
 from .database import CurationDatabase
 from .dataset_store import write_arrow_dataset
-from .identity import sha256_text, stable_json
+from .identity import sha256_text, stable_json, update_length_prefixed
 from .queueing import OpenProjectSource, open_project_sources
 from .schema import Decision, SCHEMA_VERSION, canonical_features, write_manifest
 
@@ -55,12 +55,6 @@ class MaterializationResult:
     manifest: MaterializationManifest
     output_directory: Path
     reused_existing: bool
-
-
-def _digest_value(digest: Any, value: str) -> None:
-    encoded = value.encode("utf-8")
-    digest.update(len(encoded).to_bytes(8, "big"))
-    digest.update(encoded)
 
 
 def _configuration(
@@ -261,7 +255,7 @@ class MaterializeService:
             for block_review in blocks_by_document.get(row["doc_id"], ()):
                 if parsed_blocks is None:
                     parsed_blocks = parse_blocks(row["text"], row["doc_id"])
-                by_id = {block.block_id: block for block in parsed_blocks}
+                    by_id = {block.block_id: block for block in parsed_blocks}
                 block = by_id.get(block_review["block_id"])
                 if block is None:
                     raise ValueError(f"stale block review {block_review['block_id']}")
@@ -296,8 +290,8 @@ class MaterializeService:
             output = dict(row)
             output["text"] = text
             output["content_sha256"] = content_hash
-            _digest_value(sequence_digest, output["doc_id"])
-            _digest_value(sequence_digest, content_hash)
+            update_length_prefixed(sequence_digest, output["doc_id"])
+            update_length_prefixed(sequence_digest, content_hash)
             output_count += 1
             source_output_counts[source.key] += 1
             yield output

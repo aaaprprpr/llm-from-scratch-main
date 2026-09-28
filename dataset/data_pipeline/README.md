@@ -6,9 +6,9 @@
 
 ```text
 sources.minimind.path                  dataset/data_pipeline/data/downloads/minimind/pretrain_t2t.jsonl
-build_bin.tokenizer                    tokenize/tokenizer
-build_bin.train_bin                    dataset/data_pipeline/data/minimind_full_8192/train.bin
-build_bin.val_bin                      dataset/data_pipeline/data/minimind_full_8192/val.bin
+build_bin.tokenizer                    tokenizer/bpe_24576
+build_bin.train_bin                    dataset/data_pipeline/data/minimind_full/train.bin
+build_bin.val_bin                      dataset/data_pipeline/data/minimind_full/val.bin
 ```
 
 从仓库根目录执行：
@@ -20,7 +20,7 @@ python -m dataset.data_pipeline.build_bin  # 验证 JSONL，再划分、编码�
 
 JSONL 每行必须是含非空 `text` 字符串的对象。构建器只保存行偏移，按批读取原文，不生成清洗副本；记录不截断、不补齐，末尾追加当前分词器的 EOS。源文件的 SHA256 与 `sources.minimind.sha256` 不符时直接报错。已有 bin 或元数据且 `build_bin.overwrite=false` 时，会在扫描大文件前报错。成功写入时使用临时文件，bin 元数据记录原始指纹、划分、词表指纹和实际 token 数。
 
-当前 8K bin 与训练配置已存在。上面的构建命令用于重建或换数据时复现，运行前先选新的输出路径；不要覆盖已训练权重对应的 bin。MiniMind 的 mini 版实验需要同时修改 `sources.minimind.filename`、`path`、`sha256` 和 `build_bin.train_bin` / `val_bin`，并同步修改 `configs/pretrain.json` 的路径。
+当前 24K bin 与训练配置已存在。上面的构建命令用于重建或换数据时复现，运行前先选新的输出路径；不要覆盖已训练权重对应的 bin。MiniMind 的 mini 版实验需要同时修改 `sources.minimind.filename`、`path`、`sha256` 和 `build_bin.train_bin` / `val_bin`，并同步修改 `configs/pretrain.json` 的路径。
 
 ## 其他 Hugging Face 数据集
 

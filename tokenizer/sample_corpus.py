@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 
 BASE_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = BASE_DIR / "config.json"
+CONFIG_PATH = BASE_DIR / "training_config.json"
 
 
 @dataclass(frozen=True)

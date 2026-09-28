@@ -5,6 +5,7 @@ import io
 import json
 import os
 import tempfile
+import threading
 import unittest
 import urllib.error
 from pathlib import Path
@@ -99,7 +100,7 @@ class RemoteLlmCleaningTests(unittest.TestCase):
         self.assertIn('"properties"', system_prompt)
         self.assertIn('"required"', system_prompt)
 
-        reports = list(self.reports.glob("*.json"))
+        reports = list(self.reports.rglob("*.json"))
         self.assertEqual(len(reports), 1)
         report_text = reports[0].read_text(encoding="utf-8")
         self.assertNotIn(API_KEY, report_text)
@@ -111,6 +112,73 @@ class RemoteLlmCleaningTests(unittest.TestCase):
         self.assertEqual(report["result"], result)
         self.assertEqual(report["context_tokens"], 32768)
 
+    def test_deepseek_uses_non_thinking_json_completion(self):
+        config = self.config(provider="deepseek", base_url="https://api.deepseek.com",
+                             model="deepseek-flash")
+        cleaner = LlmCleaner(config, self.reports)
+        sent = []
+
+        def request(path, payload=None):
+            sent.append((path, payload))
+            return completion()
+
+        with patch.object(cleaner, "_request", side_effect=request):
+            result = cleaner.clean([{"id": "body", "text": "原始百科正文。"}],
+                                   title="百科条目", provenance={"doc_id": "deepseek"})
+        self.assertEqual(result["edited_text"], "原始百科正文。\n\n")
+        self.assertEqual(len(sent), 1)
+        path, payload = sent[0]
+        self.assertEqual(path, "/chat/completions")
+        self.assertEqual(payload["model"], "deepseek-flash")
+        self.assertEqual(payload["thinking"], {"type": "disabled"})
+        self.assertEqual(payload["response_format"], {"type": "json_object"})
+        self.assertNotIn("seed", payload)
+        self.assertNotIn("enable_thinking", payload)
+        self.assertNotIn("chat_template_kwargs", payload)
+
+    def test_deepseek_long_document_uses_one_api_request(self):
+        sentence = "这是一段连续叙述，交代事件经过、背景与影响。"
+        blocks = [{"id": str(index), "text": sentence * 5} for index in range(273)]
+        config = self.config(
+            provider="deepseek", base_url="https://api.deepseek.com", model="deepseek-flash",
+            context_tokens=900000, max_output_tokens=32768,
+            max_units_per_chunk=4096, max_chunk_characters=100000,
+            max_attempts_per_chunk=1,
+        )
+        cleaner = LlmCleaner(config, self.reports)
+        with patch.object(cleaner, "_request", return_value=completion()) as request:
+            result = cleaner.clean(blocks, title="长文", provenance={"doc_id": "long"})
+        self.assertGreater(len("".join(block["text"] for block in blocks)), 30000)
+        self.assertEqual(result["chunks"], 1)
+        self.assertEqual(result["requests"], 1)
+        request.assert_called_once()
+
+    def test_deepseek_single_attempt_does_not_repeat_invalid_output(self):
+        config = self.config(
+            provider="deepseek", base_url="https://api.deepseek.com", model="deepseek-flash",
+            max_attempts_per_chunk=1,
+        )
+        cleaner = LlmCleaner(config, self.reports)
+        with patch.object(cleaner, "_request", return_value=completion(decision="drop")) as request:
+            with self.assertRaises(LlmCleaningError):
+                cleaner.clean([{"id": "a", "text": "完整正文。"}], title=None,
+                              provenance={"doc_id": "invalid"})
+        request.assert_called_once()
+
+    def test_deepseek_reads_its_own_dotenv_settings(self):
+        self.write_config(provider="deepseek", base_url="https://api.deepseek.com",
+                          model="config-model", context_tokens=32768)
+        self.env_path.write_text(
+            "DEEPSEEK_API_KEY=sk-deepseek-test\nDEEPSEEK_MODEL=deepseek-flash\n"
+            "DEEPSEEK_BASE_URL=https://api.deepseek.com\nDEFAULT_MODEL=qwen-plus\n",
+            encoding="utf-8",
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            config = CleaningConfig.from_file(self.config_path, self.env_path)
+        self.assertEqual(config.api_key, "sk-deepseek-test")
+        self.assertEqual(config.model, "deepseek-flash")
+        self.assertEqual(config.base_url, "https://api.deepseek.com")
+
     def test_remote_chunks_keep_all_original_text_without_local_tokenizer_calls(self):
         blocks = [{"id": str(index), "text": f"第{index}段正文。", "separator_after": "\n\n"}
                   for index in range(30)]
@@ -120,18 +188,51 @@ class RemoteLlmCleaningTests(unittest.TestCase):
         self.assertEqual(result["edited_text"], "".join(b["text"] + b["separator_after"] for b in blocks))
         self.assertFalse(result["text_changed"])
 
-    def test_remote_invalid_suggestion_retries_with_feedback_before_saving(self):
-        bad = completion(edits=[{"unit_id": 0, "replacement": "凭空新增文字"}])
-        result = self.clean([bad, completion()])
-        self.assertEqual(result["retry_count"], 1)
+    def test_parallel_chunks_preserve_source_order(self):
+        config = self.config(max_parallel_chunks=4, max_units_per_chunk=24)
+        cleaner = LlmCleaner(config, self.reports)
+        blocks = [{"id": str(index), "text": f"第{index}段正文。", "separator_after": "\n\n"}
+                  for index in range(96)]
+        barrier = threading.Barrier(4)
+        calls = []
+
+        def request(path, payload=None):
+            self.assertEqual(path, "/chat/completions")
+            calls.append(json.loads(payload["messages"][1]["content"])["units"][0]["text"])
+            barrier.wait(timeout=3)
+            return completion()
+
+        with patch.object(cleaner, "_request", side_effect=request):
+            result = cleaner.clean(blocks, title="百科条目", provenance={"doc_id": "parallel"})
+        self.assertEqual(result["chunks"], 4)
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(result["edited_text"], "".join(b["text"] + b["separator_after"] for b in blocks))
+        self.assertEqual([item["chunk"] for item in result["chunk_timings"]], [1, 2, 3, 4])
+        self.assertEqual([item["requests"] for item in result["chunk_timings"]], [1, 1, 1, 1])
+
+    def test_larger_chunks_reduce_request_count(self):
+        blocks = [{"id": str(index), "text": f"第{index}段正文。"} for index in range(96)]
+        result = self.clean([completion()], blocks, self.config(max_units_per_chunk=48))
+        self.assertEqual(result["chunks"], 2)
         self.assertEqual(len(self.requests), 2)
-        retry_payload = json.loads(self.requests[1].data)
-        retry_input = json.loads(retry_payload["messages"][1]["content"])
-        self.assertIn("retry_instruction", retry_input)
+
+    def test_remote_invalid_edit_is_ignored_without_retry(self):
+        bad = completion(edits=[{"unit_id": 0, "replacement": "凭空新增文字"}])
+        result = self.clean([bad])
+        self.assertEqual(result["retry_count"], 0)
+        self.assertEqual(len(self.requests), 1)
         self.assertEqual(result["edited_text"], "原始百科正文。")
-        self.assertEqual(result["input_tokens"], 250)
-        report_text = next(self.reports.glob("*.json")).read_text(encoding="utf-8")
+        self.assertEqual(result["edits"], [])
+        self.assertEqual(result["input_tokens"], 125)
+        report_text = next(self.reports.rglob("*.json")).read_text(encoding="utf-8")
         self.assertNotIn(API_KEY, report_text)
+
+    def test_remote_all_removed_with_keep_label_is_completed_as_drop(self):
+        result = self.clean([completion(removals=[{"unit_id": 0, "reason": "unrelated"}])])
+        self.assertEqual(result["decision"], "drop")
+        self.assertEqual(result["edited_text"], "")
+        self.assertEqual(result["retry_count"], 0)
+        self.assertEqual(len(self.requests), 1)
 
     def test_remote_still_rejects_invalid_schema_and_unsafe_source_edits(self):
         for response in [
@@ -139,9 +240,7 @@ class RemoteLlmCleaningTests(unittest.TestCase):
             completion(category="unsupported"),
             completion(unexpected="not allowed"),
             completion(removals=[{"unit_id": 9, "reason": "advertisement"}]),
-            completion(removals=[{"unit_id": 0, "reason": "advertisement"}]),
             completion(decision="drop"),
-            completion(edits=[{"unit_id": 0, "replacement": "不存在于原文的观点。"}]),
             completion(joins=[[0, 0]]),
             {"choices": [{"finish_reason": "length", "message": {"content": "{}"}}]},
             {"choices": [{"finish_reason": "stop", "message": {"content": "not json"}}]},
@@ -153,12 +252,18 @@ class RemoteLlmCleaningTests(unittest.TestCase):
                 self.assertEqual(len(self.requests), 2)
                 self.assert_no_reports()
 
-    def test_failure_after_successful_chunk_does_not_write_partial_report(self):
+    def test_invalid_later_chunk_preserves_it_and_reports_partial_result(self):
         blocks = [{"id": str(index), "text": "原始正文。"} for index in range(25)]
-        with self.assertRaises(LlmCleaningError):
-            self.clean([completion(), completion(removals=[{"unit_id": 99, "reason": "markup"}])], blocks)
+        result = self.clean([
+            completion(removals=[{"unit_id": 0, "reason": "markup"}]),
+            completion(removals=[{"unit_id": 99, "reason": "markup"}]),
+        ], blocks)
         self.assertEqual(len(self.requests), 3)
-        self.assert_no_reports()
+        self.assertTrue(result["text_changed"])
+        self.assertEqual(result["decision"], "unsure")
+        self.assertEqual(len(result["warnings"]), 1)
+        self.assertEqual(result["assessments"][1]["fallback"], True)
+        self.assertEqual(len(list(self.reports.rglob("*.json"))), 1)
 
     def test_missing_key_is_actionable_and_never_sends_a_request(self):
         with patch("urllib.request.OpenerDirector.open") as open_request:
@@ -170,7 +275,7 @@ class RemoteLlmCleaningTests(unittest.TestCase):
         self.assert_no_reports()
 
     def test_remote_http_errors_are_clear_and_do_not_expose_credentials(self):
-        for status in [401, 403, 429, 500]:
+        for status in [400, 401, 403, 422, 429, 500]:
             with self.subTest(status=status):
                 error = urllib.error.HTTPError(
                     BASE_URL + "/chat/completions", status, "provider diagnostic " + API_KEY,
@@ -182,6 +287,25 @@ class RemoteLlmCleaningTests(unittest.TestCase):
                 self.assertIn(str(status), message)
                 self.assertNotIn(API_KEY, message)
                 self.assert_no_reports()
+
+    def test_late_http_400_preserves_finished_chunks_for_resume(self):
+        blocks = [{"id": str(index), "text": "正文。"} for index in range(25)]
+        error = urllib.error.HTTPError(
+            BASE_URL + "/chat/completions", 400, "Bad Request", {},
+            io.BytesIO(b'{"error":{"message":"context length exceeded"}}'),
+        )
+        first = self.clean([completion(), error], blocks)
+        self.assertEqual(first["chunks"], 2)
+        self.assertFalse(first["complete"])
+        self.assertTrue(first["assessments"][1]["fallback"])
+        self.assertIn("context length exceeded", first["warnings"][0])
+        self.assertEqual(first["retry_count"], 0)
+        self.assertEqual(len(self.requests), 2)
+        self.requests.clear()
+        resumed = self.clean([completion()], blocks)
+        self.assertTrue(resumed["complete"])
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(resumed["edited_text"], "正文。\n\n" * 25)
 
     def test_remote_connection_errors_do_not_expose_transport_details(self):
         for error in [urllib.error.URLError("connection failed " + API_KEY), TimeoutError(API_KEY)]:
@@ -203,6 +327,54 @@ class RemoteLlmCleaningTests(unittest.TestCase):
         self.assertIn("第 1/1 块", str(caught.exception))
         self.assertNotIn(API_KEY, str(caught.exception))
         open_request.assert_called_once()
+        self.assert_no_reports()
+
+    def test_content_risk_uses_qwen_once_and_caches_the_result(self):
+        fallback = self.config()
+        config = self.config(provider="deepseek", base_url="https://api.deepseek.com",
+                             model="deepseek-flash", risk_fallback=fallback)
+        cleaner = LlmCleaner(config, self.reports)
+        rejected = urllib.error.HTTPError(
+            "https://api.deepseek.com/chat/completions", 400, "Bad Request", {},
+            io.BytesIO(b'{"error":{"message":"Content Exists Risk"}}'),
+        )
+        blocks = [{"id": "body", "text": "百科正文。"}]
+        with patch.object(cleaner._opener, "open", side_effect=rejected) as deepseek, \
+                patch.object(cleaner._risk_fallback._opener, "open",
+                             return_value=io.BytesIO(json.dumps(completion()).encode())) as qwen:
+            result = cleaner.clean(blocks, title="百科", provenance={"doc_id": "risk"})
+            cached = cleaner.clean(blocks, title="百科", provenance={"doc_id": "risk"})
+        self.assertEqual(result["model"], "qwen-plus")
+        self.assertEqual(result["requests"], 2)
+        self.assertEqual(result["risk_fallback_chunks"], [
+            {"chunk": 1, "provider": "dashscope", "model": "qwen-plus"},
+        ])
+        self.assertEqual(cached["requests"], 0)
+        deepseek.assert_called_once()
+        qwen.assert_called_once()
+        sent = json.loads(qwen.call_args.args[0].data)
+        self.assertEqual(sent["model"], "qwen-plus")
+        self.assertIs(sent["enable_thinking"], False)
+        self.assertNotIn("thinking", sent)
+
+    def test_content_risk_and_qwen_failure_stays_unsaved(self):
+        fallback = self.config()
+        config = self.config(provider="deepseek", base_url="https://api.deepseek.com",
+                             model="deepseek-flash", risk_fallback=fallback)
+        cleaner = LlmCleaner(config, self.reports)
+        rejected = urllib.error.HTTPError(
+            "https://api.deepseek.com/chat/completions", 400, "Bad Request", {},
+            io.BytesIO(b'{"error":{"message":"Content Exists Risk"}}'),
+        )
+        qwen_error = urllib.error.HTTPError(BASE_URL + "/chat/completions", 429, "Limited", {}, io.BytesIO())
+        with patch.object(cleaner._opener, "open", side_effect=rejected) as deepseek, \
+                patch.object(cleaner._risk_fallback._opener, "open", side_effect=qwen_error) as qwen:
+            with self.assertRaises(LlmCleaningError) as caught:
+                cleaner.clean([{"id": "body", "text": "百科正文。"}],
+                              title="百科", provenance={"doc_id": "risk"})
+        self.assertIn("Content Exists Risk", str(caught.exception))
+        deepseek.assert_called_once()
+        qwen.assert_called_once()
         self.assert_no_reports()
 
     def test_dotenv_populates_remote_settings_without_mutating_process_environment(self):

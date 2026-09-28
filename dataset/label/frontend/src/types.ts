@@ -6,6 +6,8 @@ export type Project = {
 };
 
 export type LlmCleaningResult = {
+  saved: boolean;
+  complete: boolean;
   suggestion_id: string;
   model: string;
   decision: "keep" | "drop" | "unsure";
@@ -18,6 +20,8 @@ export type LlmCleaningResult = {
   reordered_chunks: number;
   removals: Array<{ block_id: string; start: number; end: number; text: string; reason: string }>;
   chunks: number;
+  requests?: number;
+  risk_fallback_chunks?: Array<{ chunk: number; provider: string; model: string }>;
   elapsed_seconds: number;
   warnings: string[];
 };
@@ -83,17 +87,8 @@ export type QueueDocument = {
   review_text: string;
   block_materialized_text: string;
   materialized_text: string;
-  simplified: {
-    raw_text: string;
-    materialized_text: string;
-    block_texts: string[];
-  };
-  token_counts: {
-    raw: number;
-    review: number;
-    materialized: number;
-  } | null;
-  tokenizer_path?: string;
+  batch_clean: { status: "keep" | "drop" | "incomplete" } | null;
+  effective_source: "original" | "manual" | "batch";
   blocks: ReviewBlock[];
   document_review: DocumentReview | null;
   provenance: {

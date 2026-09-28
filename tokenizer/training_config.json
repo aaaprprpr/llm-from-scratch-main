@@ -23,7 +23,7 @@
     "input_files": [
       "data/tigerresearch_pretrain_zh_sample.txt"
     ],
-    "output_dir": "tokenizer_24576",
+    "output_dir": "bpe_24576",
     "vocab_size": 24576,
     "min_frequency": 10,
     "max_token_length": 20,

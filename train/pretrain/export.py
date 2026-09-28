@@ -16,8 +16,8 @@ CHECKPOINT_PATH = (
     PROJECT_ROOT
     / "output"
     / "train_logs"
-    / "run_20260706_175441"
-    / "ckpt_step_130000.pt"
+    / "run_20260923_130232"
+    / "ckpt_step_13248.pt"
 )
 OUTPUT_PATH = PROJECT_ROOT / "output" / "pretrained_weights" / "model.pt"
 

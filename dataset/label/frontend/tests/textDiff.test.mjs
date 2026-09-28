@@ -15,6 +15,25 @@ test("partial removal marks the selected garbage, preserving Chinese body", () =
   assert.equal(diff.added, 0);
 });
 
+test("removed heading stays a single paragraph deletion", () => {
+  const original = "计算机系统\n\n计算机体系结构与计算机工程\n\n计算机系统结构，或者数字计算机组织，是计算机系统的概念设计。";
+  const draft = "计算机系统\n\n计算机系统结构，或者数字计算机组织，是计算机系统的概念设计。";
+  const diff = assertRoundTrip(original, draft);
+  assert.deepEqual(diff.parts.filter(part => part.kind === "removed").map(part => part.value), ["计算机体系结构与计算机工程\n\n"]);
+  assert.equal(diff.added, 0);
+});
+
+test("two removed headings stay at their original location without marking the following body", () => {
+  const body = "计算机系统结构，或者数字计算机组织，是一个计算机系统的概念设计和根本运作结构。";
+  const headings = "计算机系统\n\n计算机体系结构与计算机工程 \n\n";
+  const original = `前一段正文。\n\n${headings}${body}\n\n后一段正文。`;
+  const draft = `前一段正文。\n\n${body}\n\n后一段正文。`;
+  const diff = assertRoundTrip(original, draft);
+  assert.deepEqual(diff.parts.filter(part => part.kind === "removed").map(part => part.value), [headings]);
+  assert.ok(diff.parts.some(part => part.kind === "equal" && part.value.includes(body)));
+  assert.equal(diff.added, 0);
+});
+
 test("edits and traditional to simplified conversion show both old and new characters", () => {
   const diff = assertRoundTrip("數學🙂很有趣", "数学🙃非常有趣");
   assert.ok(diff.removed > 0 && diff.added > 0);

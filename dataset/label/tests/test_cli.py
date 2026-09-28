@@ -8,6 +8,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from dataset.label.backend.batch_clean import output_path
+from dataset.label.backend.database import CurationDatabase, DocumentReviewInput
+from dataset.label.backend.llm_cleaning import CleaningConfig
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -108,6 +112,21 @@ class CliEndToEndTests(unittest.TestCase):
                 "0",
             )
             self.assertEqual(shown["review_text"], "第一条")
+            output = output_path(database.parent, "cli-queue", CleaningConfig.from_file())
+            output.mkdir(parents=True, exist_ok=True)
+            cleaned = (json.dumps({"text": "批量清洗后的第一条"}, ensure_ascii=False) + "\n").encode("utf-8")
+            (output / "cleaned.jsonl").write_bytes(cleaned)
+            (output / "progress.jsonl").write_text(
+                json.dumps({
+                    "ordinal": 0, "doc_id": shown["document"]["doc_id"],
+                    "status": "keep", "cleaned_offset": len(cleaned),
+                }, ensure_ascii=False) + "\n", encoding="utf-8",
+            )
+            batch_shown = self.run_cli(
+                "show-item", "--database", database, "--queue-id", "cli-queue", "--ordinal", "0",
+            )
+            self.assertEqual(batch_shown["materialized_text"], "批量清洗后的第一条")
+            self.assertEqual(batch_shown["effective_source"], "batch")
             review = self.run_cli(
                 "review-document",
                 "--database",
@@ -121,6 +140,26 @@ class CliEndToEndTests(unittest.TestCase):
                 "--quality",
                 "2",
             )
+            self.assertEqual(review["review"]["edited_text"], "批量清洗后的第一条")
+            with CurationDatabase(database) as db:
+                current = review["review"]
+                revised, _ = db.set_document_review(
+                    project_id="cli-project",
+                    review=DocumentReviewInput(
+                        doc_id=current["doc_id"], source_row=current["source_row"],
+                        content_sha256=current["content_sha256"], decision="keep",
+                        quality=2, primary_category=None, flags=(),
+                        notes="", edited_text="人工修改后的正文",
+                        guideline_version="1",
+                    ),
+                    expected_revision=current["revision"], actor="test",
+                )
+            review = self.run_cli(
+                "review-document", "--database", database, "--queue-id", "cli-queue",
+                "--ordinal", "0", "--decision", "keep", "--quality", "3",
+            )
+            self.assertEqual(review["review"]["edited_text"], "人工修改后的正文")
+            self.assertEqual(review["review"]["quality"], 3)
             materialized = self.run_cli(
                 "materialize",
                 "--database",
@@ -135,6 +174,9 @@ class CliEndToEndTests(unittest.TestCase):
                 root / "exports",
             )
             self.assertEqual(materialized["manifest"]["output_records"], 1)
+            from dataset.label.backend.dataset_store import load_dataset
+            exported = load_dataset(Path(materialized["output_directory"]) / "dataset")
+            self.assertEqual(exported[0]["text"], "人工修改后的正文")
 
 
 if __name__ == "__main__":

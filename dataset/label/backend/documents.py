@@ -110,7 +110,10 @@ class DocumentService:
             project_id,
             row["doc_id"],
         )
-        item["state"] = "done" if document_review is not None else "pending"
+        item["state"] = (
+            "done" if document_review is not None
+            and document_review["decision"] in {"keep", "drop"} else "pending"
+        )
         if document_review is not None:
             if document_review["content_sha256"] != row["content_sha256"]:
                 raise ValueError("stale document review content hash")
@@ -118,12 +121,12 @@ class DocumentService:
                 raise ValueError("stale document review source_row")
 
         block_materialized_text = render_blocks(row["text"], blocks, dropped)
-        materialized_text = (
-            document_review["edited_text"]
-            if document_review is not None
-            and document_review.get("edited_text") is not None
-            else block_materialized_text
-        )
+        if document_review is not None and document_review["decision"] == "drop":
+            materialized_text = ""
+        elif document_review is not None and document_review.get("edited_text") is not None:
+            materialized_text = document_review["edited_text"]
+        else:
+            materialized_text = block_materialized_text
 
         return {
             "queue": self.database.get_queue(queue_id),
@@ -166,3 +169,74 @@ class DocumentService:
             raise ValueError("queue source_row does not match Dataset row")
         if sha256_text(row["text"]) != row["content_sha256"]:
             raise ValueError("review text content hash mismatch")
+
+
+class QueueTextReader:
+    """Read just the review text and saved decisions; skip raw-row and manifest reloads."""
+
+    def __init__(self, database: CurationDatabase, queue: dict):
+        self.database = database
+        self.queue = queue
+        self.queue_id = queue["queue_id"]
+        self.project_id = queue["project_id"]
+        self.repository = DatasetRepository()
+        self.fallback = DocumentService(database, self.repository)
+        self.sources = []
+        if queue["sampling_policy"].get("type") == "full_dataset":
+            attached = {(item["source_id"], item["source_revision"]): item
+                        for item in database.list_project_sources(self.project_id)}
+            start = 0
+            for source in queue["sampling_policy"]["sources"]:
+                key = source["source_id"], source["source_revision"]
+                entry = attached[key]
+                count = int(source["row_count"])
+                prepare = json.loads(Path(entry["manifest_path"]).read_text(encoding="utf-8"))
+                source_manifest_path = Path(prepare["source_manifest_path"])
+                source_manifest = json.loads(source_manifest_path.read_text(encoding="utf-8"))
+                dataset = self.repository.open(entry["dataset_path"])
+                if len(dataset) != count:
+                    raise ValueError(f"队列数据量与已准备数据不符：{key}")
+                self.sources.append((start, start + count, dataset, entry, source_manifest, source_manifest_path))
+                start += count
+
+    def read(self, ordinal: int) -> dict:
+        if not self.sources:
+            return self.fallback.queue_document(self.queue_id, ordinal)
+        for start, end, dataset, entry, source_manifest, source_manifest_path in self.sources:
+            if start <= ordinal < end:
+                break
+        else:
+            raise IndexError(f"队列序号超出数据范围：{ordinal}")
+        row = dataset[ordinal - start]
+        doc_id = row["doc_id"]
+        review = self.database.get_document_review(self.project_id, doc_id)
+        if review and review["content_sha256"] != row["content_sha256"]:
+            raise ValueError(f"人工审核记录与数据版本不符：{doc_id}")
+        text = row["text"]
+        if review and review.get("edited_text") is not None:
+            text = review["edited_text"]
+        else:
+            decisions = self.database.list_block_reviews(self.project_id, doc_id)
+            if decisions:
+                blocks = parse_blocks(text, doc_id)
+                by_id = {block.block_id: block for block in blocks}
+                for item in decisions:
+                    block = by_id.get(item["block_id"])
+                    if block is None or item["base_block_hash"] != block.content_sha256:
+                        raise ValueError(f"人工段落审核记录与数据版本不符：{doc_id}")
+                dropped = {item["block_id"] for item in decisions if item["decision"] == "drop"}
+                text = render_blocks(text, blocks, dropped)
+        return {
+            "document": {"doc_id": doc_id},
+            "materialized_text": text,
+            "document_review": review,
+            "provenance": {
+                "source_id": row["source_id"], "source_revision": row["source_revision"],
+                "source_row": row["source_row"], "source_local_id": row["source_local_id"],
+                "title": row["title"], "url": row["url"],
+                "license": source_manifest["license"],
+                "original_location": source_manifest["original_location"],
+                "source_manifest_path": str(source_manifest_path),
+                "prepare_manifest_path": entry["manifest_path"],
+            },
+        }

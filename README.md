@@ -8,7 +8,7 @@
 
 ```text
 models/                Transformer、注意力、RoPE、KV cache
-tokenize/              分词器与词表训练
+tokenizer/             分词器加载与 BPE 词表训练
 dataset/data_pipeline/ 数据下载、清洗与 token bin 构建
 dataset/label/         语料标注与清洗台
 train/pretrain/        预训练、推理、评估与纯权重导出
@@ -20,7 +20,7 @@ configs/              各阶段配置
 output/               本地日志、checkpoint 与评测产物（不纳入 Git）
 ```
 
-`tokenize/` 与 Python 标准库模块同名，因此不作为 Python 包导入；根目录的 `tokenizer.py` 是加载 `tokenize/tokenizer.py` 的兼容入口，现有 `from tokenizer import Tokenizer` 可以继续使用。
+`tokenizer/` 是 Python 包：`from tokenizer import Tokenizer` 加载运行时封装。两版词表分别放在 `bpe_8192/` 和 `bpe_24576/`；采样、训练入口及配置见 [tokenizer/README.md](tokenizer/README.md)。
 
 ## 从仓库根目录运行
 

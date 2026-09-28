@@ -62,9 +62,9 @@
   },
   "build_bin": {
     "input": "minimind",
-    "tokenizer": "tokenize/tokenizer",
-    "train_bin": "dataset/data_pipeline/data/minimind_full_8192/train.bin",
-    "val_bin": "dataset/data_pipeline/data/minimind_full_8192/val.bin",
+    "tokenizer": "tokenizer/bpe_24576",
+    "train_bin": "dataset/data_pipeline/data/minimind_full/train.bin",
+    "val_bin": "dataset/data_pipeline/data/minimind_full/val.bin",
     "train_ratio": 0.95,
     "seed": 42,
     "workers": "auto",

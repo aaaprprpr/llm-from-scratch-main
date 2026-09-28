@@ -13,7 +13,7 @@ from .identity import stable_json
 from .schema import Decision, PrimaryCategory, REVIEW_FLAGS
 
 
-DATABASE_SCHEMA_VERSION = 2
+DATABASE_SCHEMA_VERSION = 3
 
 
 def utc_now() -> str:
@@ -61,6 +61,8 @@ class UndoConflictError(RuntimeError):
 
 
 class CurationDatabase:
+    _virtual_count_cache: dict[tuple[str, str], tuple[int, int]] = {}
+
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -118,6 +120,9 @@ class CurationDatabase:
         if current_version == 1:
             self._apply_migration_2()
             current_version = 2
+        if current_version == 2:
+            self._apply_migration_3()
+            current_version = 3
         if current_version != DATABASE_SCHEMA_VERSION:
             raise RuntimeError(
                 f"Database migration stopped at version {current_version}"
@@ -275,6 +280,43 @@ class CurationDatabase:
         else:
             self.connection.commit()
 
+    def _apply_migration_3(self) -> None:
+        with self.transaction() as connection:
+            connection.execute("""
+                CREATE TABLE cleaning_failures (
+                    queue_id TEXT NOT NULL,
+                    ordinal INTEGER NOT NULL,
+                    project_id TEXT NOT NULL,
+                    doc_id TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(queue_id, ordinal)
+                )
+            """)
+            connection.execute(
+                "CREATE INDEX cleaning_failures_document ON cleaning_failures(project_id, doc_id)"
+            )
+            connection.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (3, utc_now()),
+            )
+
+    def record_cleaning_failure(self, queue_id: str, ordinal: int, project_id: str,
+                                doc_id: str, reason: str) -> None:
+        with self.transaction() as connection:
+            connection.execute("""
+                INSERT INTO cleaning_failures(queue_id, ordinal, project_id, doc_id, reason, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(queue_id, ordinal) DO UPDATE SET
+                    project_id=excluded.project_id, doc_id=excluded.doc_id,
+                    reason=excluded.reason, updated_at=excluded.updated_at
+            """, (queue_id, ordinal, project_id, doc_id, reason, utc_now()))
+
+    def list_cleaning_failures(self, queue_id: str) -> dict[int, str]:
+        return {row["ordinal"]: row["reason"] for row in self.connection.execute(
+            "SELECT ordinal, reason FROM cleaning_failures WHERE queue_id=?", (queue_id,)
+        )}
+
     def create_project(
         self,
         name: str,
@@ -374,6 +416,19 @@ class CurationDatabase:
                     utc_now(),
                 ),
             )
+
+    def attach_prepared_source(self, project_id: str, revision_directory: str | Path) -> None:
+        directory = Path(revision_directory).resolve()
+        manifest_path = directory / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.attach_source(
+            project_id=project_id,
+            source_id=manifest["source_id"],
+            source_revision=manifest["source_revision"],
+            dataset_path=directory / manifest["dataset_path"],
+            manifest_path=manifest_path,
+            row_count=int(manifest["output_records"]),
+        )
 
     def list_project_sources(self, project_id: str) -> list[dict[str, Any]]:
         return [
@@ -537,6 +592,44 @@ class CurationDatabase:
             raise KeyError(f"Unknown queue item: {queue_id}/{ordinal}")
         return dict(row)
 
+    def full_queue_review_positions(
+        self, queue: dict[str, Any], repository: Any | None = None,
+    ) -> dict[int, dict[str, Any]]:
+        """Map this full queue's saved reviews to ordinals, including subset queues."""
+        policy = queue["sampling_policy"]
+        if policy.get("type") != "full_dataset":
+            raise ValueError("expected a full_dataset queue")
+        reviews = self.connection.execute(
+            "SELECT doc_id, source_row, decision, edited_text IS NOT NULL AS has_edit "
+            "FROM document_reviews WHERE project_id=?",
+            (queue["project_id"],),
+        ).fetchall()
+        if not reviews:
+            return {}
+        from .dataset_store import load_dataset
+
+        attached = {
+            (item["source_id"], item["source_revision"]): item
+            for item in self.list_project_sources(queue["project_id"])
+        }
+        positions: dict[int, dict[str, Any]] = {}
+        start = 0
+        for source in policy["sources"]:
+            key = (source["source_id"], source["source_revision"])
+            entry = attached[key]
+            dataset = (repository.open(entry["dataset_path"]) if repository is not None
+                       else load_dataset(entry["dataset_path"]))
+            count = int(source["row_count"])
+            for review in reviews:
+                row = int(review["source_row"])
+                if 0 <= row < count and dataset[row]["doc_id"] == review["doc_id"]:
+                    positions[start + row] = {
+                        "doc_id": review["doc_id"], "decision": review["decision"],
+                        "has_edit": bool(review["has_edit"]),
+                    }
+            start += count
+        return positions
+
     def get_queue(self, queue_id: str) -> dict[str, Any]:
         row = self.connection.execute(
             "SELECT * FROM review_queues WHERE queue_id = ?",
@@ -557,10 +650,32 @@ class CurationDatabase:
                 source_counts[source_id] = source_counts.get(source_id, 0) + count
             reviewed = int(
                 self.connection.execute(
-                    "SELECT COUNT(*) AS count FROM document_reviews WHERE project_id = ?",
+                    """SELECT COUNT(*) AS count FROM document_reviews
+                    WHERE project_id = ? AND decision IN ('keep', 'drop')""",
                     (result["project_id"],),
                 ).fetchone()["count"]
             )
+            if reviewed:
+                queue_sources = {
+                    (source["source_id"], source["source_revision"]) for source in sources
+                }
+                project_sources = {
+                    (source["source_id"], source["source_revision"])
+                    for source in self.list_project_sources(result["project_id"])
+                }
+                if queue_sources != project_sources:
+                    revision = self.get_project(result["project_id"])["current_revision"]
+                    cache_key = (str(self.path.resolve()), queue_id)
+                    cached = self._virtual_count_cache.get(cache_key)
+                    if cached is not None and cached[0] == revision:
+                        reviewed = cached[1]
+                    else:
+                        positions = self.full_queue_review_positions(result)
+                        reviewed = sum(
+                            item["decision"] in {"keep", "drop"}
+                            for item in positions.values()
+                        )
+                        self._virtual_count_cache[cache_key] = (revision, reviewed)
             reviewed = min(reviewed, total)
             result["state_counts"] = {
                 "pending": total - reviewed,
@@ -571,10 +686,17 @@ class CurationDatabase:
 
         counts = self.connection.execute(
             """
-            SELECT state, COUNT(*) AS count FROM queue_items
-            WHERE queue_id = ? GROUP BY state
+            SELECT CASE
+                WHEN qi.state = 'skipped' THEN 'skipped'
+                WHEN dr.decision IN ('keep', 'drop') THEN 'done'
+                ELSE 'pending'
+            END AS state, COUNT(*) AS count
+            FROM queue_items AS qi
+            LEFT JOIN document_reviews AS dr
+                ON dr.project_id = ? AND dr.doc_id = qi.doc_id
+            WHERE qi.queue_id = ? GROUP BY 1
             """,
-            (queue_id,),
+            (result["project_id"], queue_id),
         )
         result["state_counts"] = {row["state"]: row["count"] for row in counts}
         source_counts = self.connection.execute(
@@ -792,6 +914,10 @@ class CurationDatabase:
                 (project_id, review.doc_id),
             ).fetchone()
             after = self._document_row_to_state(after_row)
+            connection.execute(
+                "DELETE FROM cleaning_failures WHERE project_id=? AND doc_id=?",
+                (project_id, review.doc_id),
+            )
             event_seq = self._append_event(
                 connection,
                 project_id=project_id,
@@ -804,12 +930,16 @@ class CurationDatabase:
             )
             connection.execute(
                 """
-                UPDATE queue_items SET state = 'done'
+                UPDATE queue_items SET state = ?
                 WHERE doc_id = ? AND queue_id IN (
                     SELECT queue_id FROM review_queues WHERE project_id = ?
                 )
                 """,
-                (review.doc_id, project_id),
+                (
+                    "done" if review.decision in {"keep", "drop"} else "pending",
+                    review.doc_id,
+                    project_id,
+                ),
             )
         assert after is not None
         return after, event_seq
@@ -1027,7 +1157,10 @@ class CurationDatabase:
                     )
                     """,
                     (
-                        "pending" if restored is None else "done",
+                        (
+                            "done" if restored is not None
+                            and restored["decision"] in {"keep", "drop"} else "pending"
+                        ),
                         event["entity_id"],
                         project_id,
                     ),

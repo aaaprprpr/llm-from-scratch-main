@@ -1,12 +1,17 @@
 {
   "llm_cleaning": {
-    "provider": "dashscope",
-    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    "model": "qwen-plus",
-    "context_tokens": 32768,
-    "max_output_tokens": 4096,
-    "timeout_seconds": 120,
+    "provider": "deepseek",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-flash",
+    "context_tokens": 900000,
+    "max_output_tokens": 32768,
+    "timeout_seconds": 300,
     "max_document_characters": 100000,
-    "max_chunks": 64
+    "max_chunks": 64,
+    "max_units_per_chunk": 4096,
+    "max_parallel_chunks": 4,
+    "max_chunk_characters": 100000,
+    "max_attempts_per_chunk": 1,
+    "content_risk_fallback": "dashscope"
   }
 }

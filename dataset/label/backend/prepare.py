@@ -10,9 +10,9 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
-from .identity import sha256_text, stable_json
+from .identity import sha256_text, stable_json, update_length_prefixed
 from .dataset_store import load_dataset, write_arrow_dataset
 from .schema import SCHEMA_VERSION, SourceManifest, canonical_features, write_manifest
 
@@ -42,13 +42,17 @@ class PrepareConfig:
     remove_control_characters: bool = True
     strip_text: bool = True
     fix_text: bool = False
+    simplify_chinese: bool = True
 
     def __post_init__(self) -> None:
         if self.unicode_normalization not in {"NFC", "NFKC", "none"}:
             raise ValueError("unicode_normalization must be NFC, NFKC, or none")
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        if not self.simplify_chinese:
+            value.pop("simplify_chinese")  # Keep existing Prepare revision IDs stable.
+        return value
 
 
 @dataclass(frozen=True)
@@ -83,7 +87,7 @@ class PrepareResult:
     reused_existing: bool
 
 
-def normalize_review_text(text: str, config: PrepareConfig) -> str:
+def normalize_review_text(text: str, config: PrepareConfig, converter: Any | None = None) -> str:
     if not isinstance(text, str):
         raise TypeError("review text must be a string")
     result = text
@@ -101,15 +105,15 @@ def normalize_review_text(text: str, config: PrepareConfig) -> str:
         result = result.translate(_CONTROL_CHARACTER_TRANSLATION)
     if config.strip_text:
         result = result.strip()
+    if config.simplify_chinese:
+        if converter is None:
+            from opencc import OpenCC
+
+            converter = OpenCC("t2s")
+        result = converter.convert(result)
     if not result:
         raise ValueError("normalization produced empty review text")
     return result
-
-
-def _update_length_prefixed(digest: Any, value: str) -> None:
-    encoded = value.encode("utf-8")
-    digest.update(len(encoded).to_bytes(8, "big"))
-    digest.update(encoded)
 
 
 def _prepare_revision(source_revision: str, config: PrepareConfig) -> tuple[str, str]:
@@ -117,7 +121,7 @@ def _prepare_revision(source_revision: str, config: PrepareConfig) -> tuple[str,
     config_hash = hashlib.sha256(config_json.encode("utf-8")).hexdigest()
     revision_digest = hashlib.blake2b(digest_size=16)
     for value in (source_revision, PREPARE_VERSION, config_hash, SCHEMA_VERSION):
-        _update_length_prefixed(revision_digest, value)
+        update_length_prefixed(revision_digest, value)
     return revision_digest.hexdigest(), config_hash
 
 
@@ -152,6 +156,7 @@ class PrepareService:
         config: PrepareConfig | None = None,
         max_shard_size: str | int = "1GB",
         read_batch_size: int = 1024,
+        progress: Callable[[int, int], None] | None = None,
     ) -> PrepareResult:
         config = config or PrepareConfig()
         if read_batch_size <= 0:
@@ -184,6 +189,8 @@ class PrepareService:
             manifest = PrepareManifest(
                 **json.loads(manifest_path.read_text(encoding="utf-8"))
             )
+            if progress:
+                progress(manifest.output_records, manifest.output_records)
             return PrepareResult(manifest, revision_directory, True)
 
         parent = revision_directory.parent
@@ -195,6 +202,13 @@ class PrepareService:
         output_count = 0
         changed_count = 0
         sequence_digest = hashlib.sha256()
+        if progress:
+            progress(0, len(input_dataset))
+        converter = None
+        if config.simplify_chinese:
+            from opencc import OpenCC
+
+            converter = OpenCC("t2s")
 
         def generate_rows():
             nonlocal output_count, changed_count
@@ -213,7 +227,7 @@ class PrepareService:
                             f"dataset row {dataset_row} stores source_row "
                             f"{row['source_row']}"
                         )
-                    text = normalize_review_text(row["text"], config)
+                    text = normalize_review_text(row["text"], config, converter)
                     if text != row["text"]:
                         changed_count += 1
                     if "\ufffd" in text:
@@ -222,13 +236,17 @@ class PrepareService:
                         diagnostics["contains_no_letters"] += 1
                     output = dict(row)
                     output["text"] = text
+                    if converter is not None and output["title"] is not None:
+                        output["title"] = converter.convert(output["title"])
                     output["content_sha256"] = sha256_text(text)
-                    _update_length_prefixed(sequence_digest, output["doc_id"])
-                    _update_length_prefixed(
+                    update_length_prefixed(sequence_digest, output["doc_id"])
+                    update_length_prefixed(
                         sequence_digest, output["content_sha256"]
                     )
                     output_count += 1
                     yield output
+                if progress:
+                    progress(output_count, len(input_dataset))
 
         try:
             store = write_arrow_dataset(

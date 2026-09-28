@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .identity import make_doc_id, make_source_revision, validate_source_id
+from .identity import make_doc_id, make_source_revision, update_length_prefixed, validate_source_id
 from .dataset_store import write_arrow_dataset
 from .importers.base import SourceAdapter, SourceSpec
 from .schema import (
@@ -76,11 +76,6 @@ class ImportService:
         imported_count = 0
         sequence_digest = hashlib.sha256()
 
-        def update_digest(value: str) -> None:
-            encoded = value.encode("utf-8")
-            sequence_digest.update(len(encoded).to_bytes(8, "big"))
-            sequence_digest.update(encoded)
-
         def generate_rows():
             nonlocal imported_count
             for source_row, document in enumerate(
@@ -98,8 +93,8 @@ class ImportService:
                     source_row=source_row,
                     document=document,
                 )
-                update_digest(row["doc_id"])
-                update_digest(row["content_sha256"])
+                update_length_prefixed(sequence_digest, row["doc_id"])
+                update_length_prefixed(sequence_digest, row["content_sha256"])
                 yield row
                 imported_count += 1
 
