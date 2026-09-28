@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 
 from ..api_context import ApiContext
-from ..api_models import BlockReviewRequest, DocumentReviewRequest, LlmCleanRequest, UndoRequest
+from ..api_models import BlockReviewRequest, DocumentReviewRequest, LlmCleanRequest, ReviewPositionRequest, UndoRequest
 from ..database import BlockReviewInput, DocumentReviewInput
 from ..documents import DocumentService
 from ..llm_cleaning import LlmCleaningError
@@ -11,6 +11,23 @@ from ..llm_cleaning import LlmCleaningError
 
 def build_router(context: ApiContext) -> APIRouter:
     router = APIRouter()
+
+    @router.get("/api/queues/{queue_id}/position")
+    def get_review_position(queue_id: str):
+        try:
+            with context.open_database() as database:
+                return {"ordinal": database.get_review_position(queue_id)}
+        except Exception as exc:
+            context.raise_http(exc)
+
+    @router.put("/api/queues/{queue_id}/position")
+    def set_review_position(queue_id: str, request: ReviewPositionRequest):
+        try:
+            with context.open_database() as database:
+                database.set_review_position(queue_id, request.ordinal)
+            return {"ordinal": request.ordinal}
+        except Exception as exc:
+            context.raise_http(exc)
 
     @router.get("/api/queues/{queue_id}/statuses")
     def queue_statuses(queue_id: str, start: int = Query(0, ge=0),

@@ -69,7 +69,7 @@ class MigrationTests(unittest.TestCase):
                     "SELECT MAX(version) AS version FROM schema_migrations"
                 ).fetchone()["version"]
                 self.assertIn("edited_text", columns)
-                self.assertEqual(version, 3)
+                self.assertEqual(version, 4)
             finally:
                 database.close()
 

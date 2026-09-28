@@ -178,7 +178,7 @@ python .\qwen_capture_auth.py 53267
 node .\qwen_chat.mjs '请只回复 OK'
 ```
 
-导出脚本通过本机 Chrome DevTools Protocol 读取登录 Cookie、网页 `localStorage` 中的 `qwen_chat` 签名材料以及公共查询参数，写入 `.qwen-web-auth.json`，终端只打印项目数量。`.env` 中的 `QWEN_WEB_AUTH_FILE` 指向该文件；默认路径也就是项目根目录的 `.qwen-web-auth.json`。Cookie、`ut` 和签名材料均属于网页登录凭据，不要分享或提交文件。签名材料有有效期，失效或用完后重新导出即可。
+导出脚本通过本机 Chrome DevTools Protocol 读取登录 Cookie、网页 `localStorage` 中的 `qwen_chat` 签名材料以及公共查询参数，写入 `.qwen-web-auth.json`，终端只打印项目数量。`.env` 中的 `QWEN_WEB_AUTH_FILE` 指向该文件；默认路径也就是项目根目录的 `.qwen-web-auth.json`。Cookie、`ut` 和签名材料均属于网页登录凭据，不要分享或提交文件。签名材料余量低或将过期时，聊天脚本会自动补充；两个批量槽共用凭据文件锁，并按至少 2 秒的间隔启动请求。补充也失败时，检查网页登录状态并重新导出。
 
 ### 发消息
 

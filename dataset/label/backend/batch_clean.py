@@ -17,7 +17,7 @@ from pathlib import Path
 from .blocks import parse_blocks
 from .database import CurationDatabase
 from .documents import QueueTextReader
-from .deepseek_web import WEB_BATCH_SLOTS, DEEPSEEK_WEB_BATCH_SLOTS
+from .deepseek_web import QWEN_WEB_BATCH_SLOTS, DEEPSEEK_WEB_BATCH_SLOTS
 from .cleaning_progress import CleaningProgressIndex, write_snapshot
 from .llm_cleaning import CleaningConfig, LlmCleaner, LlmCleaningError, PROMPT_VERSION
 
@@ -50,9 +50,11 @@ def _read_progress(stream, total: int):
     counts: Counter[str] = Counter()
     usage: Counter[str] = Counter()
     source_attempts: Counter[str] = Counter()
+    source_outcomes: dict[str, Counter[str]] = {}
     incomplete: set[int] = set()
     paid_attempted: set[int] = set()
     risk_seen: set[int] = set()
+    source_rejected: set[int] = set()
     stream.seek(0)
     while True:
         start = stream.tell()
@@ -82,6 +84,8 @@ def _read_progress(stream, total: int):
         status = item["status"]
         if item.get("source") == "deepseek_api_retry":
             paid_attempted.add(ordinal)
+        if "FAIL_SYS_USER_VALIDATE" in item.get("error", ""):
+            source_rejected.add(ordinal)
         if status == "incomplete":
             incomplete.add(ordinal)
             reason = CleaningProgressIndex.failure_reason(item) or "uncertain"
@@ -94,7 +98,9 @@ def _read_progress(stream, total: int):
         clean_offset = item["cleaned_offset"]
         attempts += 1
         if item.get("source"):
-            source_attempts[item["source"]] += 1
+            source = item["source"]
+            source_attempts[source] += 1
+            source_outcomes.setdefault(source, Counter())[status] += 1
         for key in ("requests", "input_tokens", "output_tokens", "input_characters", "output_characters"):
             usage[key] += item.get(key, 0)
     holes = []
@@ -105,7 +111,8 @@ def _read_progress(stream, total: int):
     stream.seek(0, os.SEEK_END)
     pending = sorted(incomplete.union(holes))
     return (next_ordinal, clean_offset, counts, pending, incomplete,
-            paid_attempted, risk_seen, usage, attempts, source_attempts, seen, processed)
+            paid_attempted, risk_seen, source_rejected, usage, attempts,
+            source_attempts, source_outcomes, seen, processed)
 
 
 def _process(ordinal: int, value: dict, queue_id: str, cleaner: LlmCleaner) -> dict:
@@ -191,7 +198,7 @@ def clean_queue(
     # fixed fraction of the corpus and blocks all remote workers.
     capacities = {source: (1 if source in retry_only or selected.config.provider == "llamacpp" else
                            DEEPSEEK_WEB_BATCH_SLOTS if selected.config.provider == "deepseek_web" else
-                           WEB_BATCH_SLOTS if selected.config.provider == "qwen_web" else 6)
+                           QWEN_WEB_BATCH_SLOTS if selected.config.provider == "qwen_web" else 6)
                   for source, selected in sources.items()}
     total_capacity = sum(capacities.values())
     workers = min(workers if workers is not None else min(total_capacity, 16), total_capacity)
@@ -263,7 +270,8 @@ def clean_queue(
             cleaned_path = output / "cleaned.jsonl"
             with progress_path.open("a+b") as progress, cleaned_path.open("a+b") as cleaned:
                 (next_ordinal, clean_offset, counts, incomplete, failed_ordinals,
-                 paid_attempted, risk_seen, usage, attempts, source_attempts, seen, processed_count) = _read_progress(progress, total)
+                 paid_attempted, risk_seen, source_rejected, usage, attempts,
+                 source_attempts, source_outcomes, seen, processed_count) = _read_progress(progress, total)
                 if cleaned.seek(0, os.SEEK_END) < clean_offset:
                     raise ValueError("清洗数据文件短于进度记录")
                 cleaned.truncate(clean_offset)
@@ -277,16 +285,6 @@ def clean_queue(
                 session_completed = 0
                 pending_records: list[dict] = []
                 source_errors: dict[str, str] = {}
-                for source, selected in sources.items():
-                    if selected.config.provider != "qwen_web":
-                        continue
-                    try:
-                        auth = json.loads(Path(selected.config.api_key).read_text(encoding="utf-8"))
-                        signatures = auth["storage"]["scene_list"]["qwen_chat"]["eo-clt-bacsft"]
-                    except (OSError, ValueError, KeyError, TypeError):
-                        continue  # The provider will report malformed credentials itself.
-                    if isinstance(signatures, list) and not signatures:
-                        source_errors[source] = "千问签名材料已用完，请重新运行 qwen_capture_auth.py"
                 source_activity = {source: {"capacity": capacity, "active": 0,
                                             "completed": 0, "incomplete": 0,
                                             "last_seconds": None}
@@ -313,6 +311,8 @@ def clean_queue(
                                 "completed": completed, "remaining": remaining,
                                 "counts": dict(counts), "attempts": attempts,
                                 "source_attempts": dict(source_attempts),
+                                "source_outcomes": {source: dict(outcomes)
+                                                    for source, outcomes in source_outcomes.items()},
                                 "source_activity": activity,
                                 "source_errors": source_errors.copy(),
                                 "requests": usage["requests"],
@@ -363,6 +363,7 @@ def clean_queue(
                         if row.get("source"):
                             source = row["source"]
                             source_attempts[source] += 1
+                            source_outcomes.setdefault(source, Counter())[status] += 1
                             activity = source_activity[source]
                             activity["last_seconds"] = row.get("elapsed_seconds")
                             if status in {"keep", "drop"}:
@@ -391,8 +392,9 @@ def clean_queue(
                         retry_exclude: dict[int, str] = {}
                         retry_preferred = {ordinal: fallback_source for ordinal in selected_incomplete
                                            if fallback_source and ordinal in failed_ordinals
-                                           and ordinal not in paid_attempted and ordinal not in risk_seen}
-                        retried: set[int] = set(failed_ordinals)
+                                           and ordinal not in paid_attempted and ordinal not in risk_seen
+                                           and ordinal not in source_rejected}
+                        retried: set[int] = set(failed_ordinals - source_rejected)
                         nonrisk_failed: set[int] = set()
                         available_slots = {source: deque(range(capacity))
                                            for source, capacity in capacities.items()}
@@ -470,6 +472,7 @@ def clean_queue(
                                             item != source and item not in source_errors
                                             for item in primary_sources))
                                         paid = (fallback_source if not other and ordinal not in risk_seen
+                                                and ordinal not in source_rejected
                                                 and fallback_source != source and ordinal not in paid_attempted
                                                 and fallback_source not in source_errors else None)
                                         if other or paid:
@@ -486,6 +489,7 @@ def clean_queue(
                                         retry_exclude[ordinal] = source
                                         retry_ordinals.append(ordinal)
                                     elif (ordinal in nonrisk_failed and ordinal not in risk_seen
+                                          and ordinal not in source_rejected
                                           and fallback_source and fallback_source != source
                                           and ordinal not in paid_attempted
                                           and fallback_source not in source_errors):

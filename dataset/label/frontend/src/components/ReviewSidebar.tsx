@@ -20,6 +20,7 @@ type Props = {
     batch_counts: { keep?: number; drop?: number; incomplete?: number } } | null;
   ordinal: number;
   pageInput: string;
+  savedPositionOrdinal: number | null;
   statusRefresh: string;
   onShowSetupChange: (showSetup: boolean) => void;
   onSetupPageChange: (page: SetupPage) => void;
@@ -47,6 +48,7 @@ export default function ReviewSidebar({
   cleanProgress,
   ordinal,
   pageInput,
+  savedPositionOrdinal,
   statusRefresh,
   onShowSetupChange,
   onSetupPageChange,
@@ -121,6 +123,11 @@ export default function ReviewSidebar({
           />
           <button onClick={() => onNavigate(ordinal + 1)} disabled={ordinal + 1 >= totalItems || busy}>→</button>
         </div>
+        {savedPositionOrdinal !== null && <div className="saved-position">
+          <span>上次看到第 {savedPositionOrdinal + 1} 条</span>
+          {savedPositionOrdinal !== ordinal && <button onClick={() => onNavigate(savedPositionOrdinal)}
+            disabled={busy}>回到这里</button>}
+        </div>}
         <p className="shortcut-help">
           ↑ 保存本条并保留 · ← 上一条 · → 下一条<br />
           左右键在输入框和编辑区也翻页<br />

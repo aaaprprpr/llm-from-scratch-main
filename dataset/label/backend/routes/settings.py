@@ -11,6 +11,7 @@ from ..model_settings import ModelSelection, ModelSource
 class ModelSettingsRequest(BaseModel):
     single: ModelSource
     batch: ModelSource | list[ModelSource]
+    failure_fallback: bool | None = None
 
 
 def build_router(context: ApiContext) -> APIRouter:
@@ -30,8 +31,12 @@ def build_router(context: ApiContext) -> APIRouter:
     @router.put("/api/settings/models")
     def update_models(request: ModelSettingsRequest):
         try:
-            selection = ModelSelection(single=request.single, batch=request.batch)
             previous = context.model_settings.read()
+            selection = ModelSelection(
+                single=request.single, batch=request.batch,
+                failure_fallback=(previous.failure_fallback if request.failure_fallback is None
+                                  else request.failure_fallback),
+            )
             context.set_model_selection(selection)
             if ((selection.single == "local" and previous.single != "local")
                     or (selection.batch != previous.batch and "local" in selection.batch)):

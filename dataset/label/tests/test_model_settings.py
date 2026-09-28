@@ -54,6 +54,45 @@ class ModelSettingsTests(unittest.TestCase):
                 self.assertEqual(invalid.status_code, 422)
             self.assertEqual(settings.read().batch, ("deepseek_web", "local"))
 
+    def test_paid_failure_fallback_can_be_toggled_while_batch_is_running(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = create_app(root)
+            manager = app.state.api_context.batch_jobs
+            active = SimpleNamespace(is_alive=lambda: True)
+            with patch.object(manager, "_thread", active), TestClient(app) as client:
+                initial = client.get("/api/settings/models").json()
+                self.assertTrue(initial["failure_fallback"])
+                disabled = client.put("/api/settings/models", json={
+                    "single": "deepseek", "batch": ["local"], "failure_fallback": False,
+                })
+                self.assertEqual(disabled.status_code, 200, disabled.text)
+                self.assertFalse(disabled.json()["failure_fallback"])
+                # Older clients omitting the flag must not silently re-enable it.
+                changed_single = client.put("/api/settings/models", json={
+                    "single": "qwen_api", "batch": ["local"],
+                })
+                self.assertEqual(changed_single.status_code, 200, changed_single.text)
+                self.assertFalse(changed_single.json()["failure_fallback"])
+            self.assertFalse(ModelSettings(root).read().failure_fallback)
+
+    def test_cli_respects_disabled_paid_failure_fallback(self):
+        from argparse import Namespace
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from dataset.label.cli import command_llm_clean_batch
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ModelSettings(root).write(ModelSelection("deepseek", ("deepseek_web",), False))
+            args = Namespace(data_root=str(root), output_directory=None, queue_id="sample",
+                             limit=1, workers=1, max_requests=1)
+            with patch("dataset.label.cli.clean_queue", return_value={"processed": 1}) as run, \
+                 patch("dataset.label.backend.deepseek_web.cleanup_batch_sessions", return_value=[]), \
+                 patch("dataset.label.backend.batch_jobs.BatchJobManager.export", return_value={}), \
+                 redirect_stdout(StringIO()):
+                command_llm_clean_batch(args)
+            self.assertIsNone(run.call_args.kwargs["failure_fallback"])
+
     def test_web_source_is_selectable_for_single_and_batch(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

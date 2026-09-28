@@ -37,6 +37,7 @@ function App() {
           cleanProgress={review.cleanProgress}
           ordinal={review.ordinal}
           pageInput={review.pageInput}
+          savedPositionOrdinal={review.savedPositionOrdinal}
           statusRefresh={`${review.cleanProgress?.attempts ?? 0}:${review.cleanProgress?.manual_completed ?? 0}:${review.cleanProgress?.manual_llm_saved ?? 0}:${review.document?.document_review?.revision ?? 0}:${review.status}`}
           onShowSetupChange={(value) => { setShowSettings(false); review.setShowSetup(value); }}
           onSetupPageChange={(page) => { setShowSettings(false); setSetupPage(page); review.setShowSetup(true); }}

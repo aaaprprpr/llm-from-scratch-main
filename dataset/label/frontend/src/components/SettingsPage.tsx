@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { requestJson } from "../api";
 
 type Source = "deepseek" | "qwen_api" | "local" | "deepseek_web" | "qwen_web";
-type Choice = { single: Source; batch: Source[] };
+type Choice = { single: Source; batch: Source[]; failure_fallback: boolean };
 type Settings = Choice & {
   available: Record<Source, { model: string; configured: boolean }>;
   local_model: { state: string; detail: string };
@@ -19,7 +19,7 @@ const choices: { value: Source; label: string }[] = [
 export default function SettingsPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [draft, setDraft] = useState<Choice | null>(null);
-  const [saving, setSaving] = useState<"single" | "batch" | null>(null);
+  const [saving, setSaving] = useState<"single" | "batch" | "fallback" | null>(null);
   const [message, setMessage] = useState("");
 
   useEffect(() => {
@@ -28,8 +28,13 @@ export default function SettingsPage() {
       try {
         const value = await requestJson<Settings>("/api/settings/models");
         if (!active) return;
+        if (typeof value.failure_fallback !== "boolean") {
+          setMessage("当前清洗台后端仍是旧版本。请暂停批量任务后重启 ./clean。");
+          return;
+        }
         setSettings(value);
-        setDraft((current) => current ?? { single: value.single, batch: value.batch });
+        setDraft((current) => current ?? { single: value.single, batch: value.batch,
+          failure_fallback: value.failure_fallback });
       } catch (error) {
         if (active) setMessage(String(error).includes("404")
           ? "当前清洗台后端仍是旧版本。请停止旧服务，再运行 ./clean。"
@@ -47,22 +52,27 @@ export default function SettingsPage() {
       : [...current.batch, source] }));
   }
 
-  async function save(kind: "single" | "batch") {
+  async function save(kind: "single" | "batch" | "fallback") {
     if (!draft || !settings) return;
     setSaving(kind);
     setMessage("");
     try {
-      const selection = kind === "single"
-        ? { single: draft.single, batch: settings.batch }
-        : { single: settings.single, batch: draft.batch };
+      const selection = {
+        single: kind === "single" ? draft.single : settings.single,
+        batch: kind === "batch" ? draft.batch : settings.batch,
+        failure_fallback: kind === "fallback" ? draft.failure_fallback : settings.failure_fallback,
+      };
       const value = await requestJson<Settings>("/api/settings/models", {
         method: "PUT", body: JSON.stringify(selection),
       });
       setSettings(value);
       setDraft((current) => current && (kind === "single"
         ? { ...current, single: value.single }
-        : { ...current, batch: value.batch }));
-      setMessage(kind === "single" ? "单条清洗模型已保存。" : "批量清洗模型已保存，后续任务按新设置执行。");
+        : kind === "batch" ? { ...current, batch: value.batch }
+          : { ...current, failure_fallback: value.failure_fallback }));
+      setMessage(kind === "single" ? "单条清洗模型已保存。"
+        : kind === "batch" ? "批量清洗模型已保存，后续任务按新设置执行。"
+          : "失败补救设置已保存，下次启动或续跑批量任务时生效。");
     } catch (error) {
       setMessage(`保存失败：${String(error)}`);
     } finally {
@@ -100,6 +110,18 @@ export default function SettingsPage() {
           <button className="primary" onClick={() => void save("batch")}
             disabled={saving !== null || !draft.batch.length || draft.batch.join(",") === settings.batch.join(",")}>
             {saving === "batch" ? "保存中…" : "保存批量模型"}
+          </button>
+        </div>
+        <div className="settings-card">
+          <label className="settings-batch-option">
+            <input type="checkbox" checked={draft.failure_fallback} disabled={saving !== null}
+              onChange={(event) => setDraft({ ...draft, failure_fallback: event.target.checked })} />
+            <span>普通清洗失败后，交给 DeepSeek API 补一次</span>
+          </label>
+          <p className="muted">仅用于批量清洗：勾选的模型仍未完成时补救。曾触发内容敏感拒绝的条目不会发送；正常新条目不会交给这个备用来源。{!settings.available.deepseek?.configured && "当前未配置 DeepSeek API Key，开启后也不会调用。"}</p>
+          <button className="primary" onClick={() => void save("fallback")}
+            disabled={saving !== null || draft.failure_fallback === settings.failure_fallback}>
+            {saving === "fallback" ? "保存中…" : "保存失败补救设置"}
           </button>
         </div>
         <div className="settings-card settings-sources">

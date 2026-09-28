@@ -211,9 +211,11 @@ def command_llm_clean_batch(args: argparse.Namespace) -> None:
     config = next(iter(configs.values()))
     output = Path(args.output_directory) if args.output_directory else output_path(root, args.queue_id, config)
     cleaners = {source: LlmCleaner(item, root / "llm_suggestions") for source, item in configs.items()}
-    paid = settings.config("deepseek")
-    failure_fallback = (LlmCleaner(paid, root / "llm_suggestions")
-                        if paid.provider == "deepseek" and paid.api_key else None)
+    failure_fallback = None
+    if settings.read().failure_fallback:
+        paid = settings.config("deepseek")
+        if paid.provider == "deepseek" and paid.api_key:
+            failure_fallback = LlmCleaner(paid, root / "llm_suggestions")
     from .backend.deepseek_web import cleanup_batch_sessions
     from .backend.local_model import LocalModelService
     local_model = LocalModelService(root) if any(item.provider == "llamacpp" for item in configs.values()) else None

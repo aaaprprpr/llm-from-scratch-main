@@ -303,9 +303,12 @@ class BatchJobManager:
                         self.local_model.wait_ready()
                     cleaners = {source: LlmCleaner(config, self.root / "llm_suggestions")
                                 for source, config in configs.items()}
-                    paid = ModelSettings(self.root).config("deepseek")
-                    failure_fallback = (LlmCleaner(paid, self.root / "llm_suggestions")
-                                        if paid.provider == "deepseek" and paid.api_key else None)
+                    settings = ModelSettings(self.root)
+                    failure_fallback = None
+                    if settings.read().failure_fallback:
+                        paid = settings.config("deepseek")
+                        if paid.provider == "deepseek" and paid.api_key:
+                            failure_fallback = LlmCleaner(paid, self.root / "llm_suggestions")
                     result = clean_queue(database_path=self.database_path, queue_id=queue_id,
                                          output_directory=output, limit=limit,
                                          cleaner=next(iter(cleaners.values())), cleaners=cleaners,

@@ -22,6 +22,10 @@ export function useReviewWorkspace(showSettings = false) {
   const [project, setProject] = useState<ProjectDetail | null>(null);
   const [ordinal, setOrdinal] = useState(0);
   const [pageInput, setPageInput] = useState("1");
+  const [positionReadyQueueId, setPositionReadyQueueId] = useState("");
+  const [savedPosition, setSavedPosition] = useState<{ queueId: string; ordinal: number } | null>(null);
+  const positionWrite = useRef<Promise<void>>(Promise.resolve());
+  const lastPositionSent = useRef<{ queueId: string; ordinal: number } | null>(null);
   const [document, setDocument] = useState<QueueDocument | null>(null);
   const [draftBlocks, setDraftBlocks] = useState<EditableBlock[]>([]);
   const [editorText, setEditorText] = useState("");
@@ -106,15 +110,43 @@ export function useReviewWorkspace(showSettings = false) {
     await loadProjects();
     setProjectId(nextProjectId);
     setChosenQueueId(nextQueueId);
-    setOrdinal(0);
     setProjectRefresh((value) => value + 1);
     setShowSetup(false);
   }, [loadProjects]);
 
+  useEffect(() => {
+    setPositionReadyQueueId("");
+    if (!queueId || totalItems <= 0) return;
+    let active = true;
+    void (async () => {
+      try {
+        await positionWrite.current;
+      } catch { /* A failed save must not block restoring the queue. */ }
+      try {
+        const result = await requestJson<{ ordinal: number | null }>(`/api/queues/${queueId}/position`);
+        if (!active) return;
+        const cached = Number(window.localStorage.getItem(`label.queue.${queueId}.ordinal`));
+        const restored = result.ordinal ?? (Number.isInteger(cached) && cached >= 0 ? cached : 0);
+        const bounded = Math.max(0, Math.min(totalItems - 1, restored));
+        setOrdinal(bounded);
+        setSavedPosition(result.ordinal === null ? null : { queueId, ordinal: bounded });
+        lastPositionSent.current = result.ordinal === null ? null : { queueId, ordinal: bounded };
+      } catch {
+        if (!active) return;
+        const cached = Number(window.localStorage.getItem(`label.queue.${queueId}.ordinal`));
+        const bounded = Number.isInteger(cached) && cached >= 0 ? Math.min(totalItems - 1, cached) : 0;
+        setOrdinal(bounded);
+        setSavedPosition(Number.isInteger(cached) && cached >= 0 ? { queueId, ordinal: bounded } : null);
+      }
+      if (active) setPositionReadyQueueId(queueId);
+    })();
+    return () => { active = false; };
+  }, [queueId, totalItems]);
+
   const loadDocument = useCallback(async () => {
     const version = ++documentVersion.current;
     setLlmResult(null);
-    if (!queueId || totalItems === 0) {
+    if (!queueId || totalItems === 0 || positionReadyQueueId !== queueId) {
       setDocument(null);
       setBusy(false);
       return;
@@ -141,6 +173,19 @@ export function useReviewWorkspace(showSettings = false) {
         ),
       } : current);
       setStatus(`已加载第 ${ordinal + 1} 条`);
+      window.localStorage.setItem(`label.queue.${queueId}.ordinal`, String(ordinal));
+      if (lastPositionSent.current?.queueId !== queueId || lastPositionSent.current.ordinal !== ordinal) {
+        lastPositionSent.current = { queueId, ordinal };
+        positionWrite.current = positionWrite.current.then(async () => {
+          await requestJson(`/api/queues/${queueId}/position`, {
+            method: "PUT", body: JSON.stringify({ ordinal }),
+          });
+          setSavedPosition({ queueId, ordinal });
+        }).catch(() => {
+          if (lastPositionSent.current?.queueId === queueId
+            && lastPositionSent.current.ordinal === ordinal) lastPositionSent.current = null;
+        });
+      }
     } catch (error) {
       if (version !== documentVersion.current) return;
       setDocument(null);
@@ -148,7 +193,7 @@ export function useReviewWorkspace(showSettings = false) {
     } finally {
       if (version === documentVersion.current) setBusy(false);
     }
-  }, [ordinal, queueId, totalItems]);
+  }, [ordinal, positionReadyQueueId, queueId, totalItems]);
 
   useEffect(() => {
     void loadDocument();
@@ -172,22 +217,11 @@ export function useReviewWorkspace(showSettings = false) {
   }, [busy, cleanProgress?.attempts, cleanProgress?.processed, document, loadDocument,
       ordinal, queueId, textDirty]);
 
-  useEffect(() => {
-    if (!queueId || totalItems <= 0) return;
-    const saved = Number(window.localStorage.getItem(`label.queue.${queueId}.ordinal`));
-    if (Number.isInteger(saved) && saved >= 0) {
-      setOrdinal(Math.min(totalItems - 1, saved));
-    }
-  }, [queueId, totalItems]);
-
   const go = useCallback((next: number) => {
     if (!totalItems) return;
     const bounded = Math.max(0, Math.min(totalItems - 1, next));
     setOrdinal(bounded);
-    if (queueId) {
-      window.localStorage.setItem(`label.queue.${queueId}.ordinal`, String(bounded));
-    }
-  }, [queueId, totalItems]);
+  }, [totalItems]);
 
   const saveDocument = useCallback(async (
     decision: "keep" | "drop" | "unsure",
@@ -430,7 +464,6 @@ export function useReviewWorkspace(showSettings = false) {
     if (busy || llmInFlight.current) return;
     setProjectId(nextProjectId);
     setChosenQueueId("");
-    setOrdinal(0);
   }, [busy]);
 
   return {
@@ -438,6 +471,7 @@ export function useReviewWorkspace(showSettings = false) {
     projectId,
     ordinal,
     pageInput,
+    savedPositionOrdinal: savedPosition?.queueId === queueId ? savedPosition.ordinal : null,
     document,
     draftBlocks,
     editorText,

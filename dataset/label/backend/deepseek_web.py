@@ -13,8 +13,9 @@ from functools import lru_cache
 from pathlib import Path
 
 
-WEB_BATCH_SLOTS = 6
 DEEPSEEK_WEB_BATCH_SLOTS = 2  # The web service reports a parallel chat limit above this.
+QWEN_WEB_BATCH_SLOTS = 2
+WEB_SESSION_CLEANUP_SLOTS = 6  # Also remove sessions from older six-slot Qwen runs.
 
 
 class DeepSeekWebError(RuntimeError):
@@ -176,7 +177,7 @@ class WebChatClient:
             return True
 
 
-class DeepSeekWebClient(WebChatClient):
+class PacedWebChatClient(WebChatClient):
     _pace_lock = threading.Lock()
     _next_start = 0.0
     _request_gap = 2.0
@@ -191,6 +192,11 @@ class DeepSeekWebClient(WebChatClient):
                     cls._next_start = now + cls._request_gap
                     return
             time.sleep(min(delay, 5))
+
+
+class DeepSeekWebClient(PacedWebChatClient):
+    _pace_lock = threading.Lock()
+    _next_start = 0.0
 
     def _defer(self, seconds: float) -> None:
         cls = type(self)
@@ -218,10 +224,16 @@ class DeepSeekWebClient(WebChatClient):
         raise DeepSeekWebError("DeepSeek 网页请求失败")
 
 
-class QwenWebClient(WebChatClient):
+class QwenWebClient(PacedWebChatClient):
+    _pace_lock = threading.Lock()
+    _next_start = 0.0
     script_name = "qwen_chat.mjs"
     credential_env = "QWEN_WEB_AUTH_FILE"
     label = "千问网页"
+
+    def _run(self, prompt: str, session_id: str | None, topic_id: str | None):
+        self._wait_turn()
+        return super()._run(prompt, session_id, topic_id)
 
 
 def cleanup_batch_sessions(root: Path, configs) -> list[str]:
@@ -231,7 +243,7 @@ def cleanup_batch_sessions(root: Path, configs) -> list[str]:
         if config.provider not in {"deepseek_web", "qwen_web"} or not config.api_key:
             continue
         client_type = DeepSeekWebClient if config.provider == "deepseek_web" else QwenWebClient
-        for slot in range(WEB_BATCH_SLOTS):
+        for slot in range(WEB_SESSION_CLEANUP_SLOTS):
             path = root / f"{config.provider}_batch_{slot}_session.json"
             if not path.exists():
                 continue

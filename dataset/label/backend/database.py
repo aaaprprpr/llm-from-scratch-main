@@ -13,7 +13,7 @@ from .identity import stable_json
 from .schema import Decision, PrimaryCategory, REVIEW_FLAGS
 
 
-DATABASE_SCHEMA_VERSION = 3
+DATABASE_SCHEMA_VERSION = 4
 
 
 def utc_now() -> str:
@@ -123,6 +123,9 @@ class CurationDatabase:
         if current_version == 2:
             self._apply_migration_3()
             current_version = 3
+        if current_version == 3:
+            self._apply_migration_4()
+            current_version = 4
         if current_version != DATABASE_SCHEMA_VERSION:
             raise RuntimeError(
                 f"Database migration stopped at version {current_version}"
@@ -300,6 +303,41 @@ class CurationDatabase:
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (3, utc_now()),
             )
+
+    def _apply_migration_4(self) -> None:
+        with self.transaction() as connection:
+            connection.execute("""
+                CREATE TABLE review_positions (
+                    queue_id TEXT PRIMARY KEY REFERENCES review_queues(queue_id)
+                        ON DELETE CASCADE,
+                    ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            connection.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (4, utc_now()),
+            )
+
+    def get_review_position(self, queue_id: str) -> int | None:
+        if self.connection.execute(
+            "SELECT 1 FROM review_queues WHERE queue_id = ?", (queue_id,)
+        ).fetchone() is None:
+            raise KeyError(f"Unknown queue_id: {queue_id}")
+        row = self.connection.execute(
+            "SELECT ordinal FROM review_positions WHERE queue_id = ?", (queue_id,)
+        ).fetchone()
+        return int(row["ordinal"]) if row else None
+
+    def set_review_position(self, queue_id: str, ordinal: int) -> None:
+        self.get_queue_item(queue_id, ordinal)
+        with self.transaction() as connection:
+            connection.execute("""
+                INSERT INTO review_positions(queue_id, ordinal, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(queue_id) DO UPDATE SET
+                    ordinal = excluded.ordinal, updated_at = excluded.updated_at
+            """, (queue_id, ordinal, utc_now()))
 
     def record_cleaning_failure(self, queue_id: str, ordinal: int, project_id: str,
                                 doc_id: str, reason: str) -> None:

@@ -38,6 +38,7 @@ type AutoJob = {
   processed?: number;
   attempts?: number;
   source_attempts?: Record<string, number>;
+  source_outcomes?: Record<string, { keep?: number; drop?: number; incomplete?: number }>;
   source_activity?: Record<string, { capacity: number; active: number; completed: number;
     incomplete: number; last_seconds: number | null; rate_per_minute: number }>;
   source_errors?: Record<string, string>;
@@ -376,6 +377,7 @@ export default function SetupWizard({ page, onPageChange, onBusyChange, projects
                 <h3>模型工作情况</h3>
                 <div className="setup-source-list">{job.sources.map((item) => {
                   const activity = job.source_activity?.[item.source];
+                  const outcomes = job.source_outcomes?.[item.source];
                   const error = job.source_errors?.[item.source];
                   const state = error ? "已停用" : job.status === "running" || job.status === "stopping"
                     ? activity?.active ? "处理中" : item.retry_only ? "等待失败条目" : "等待任务" : "未运行";
@@ -388,7 +390,9 @@ export default function SetupWizard({ page, onPageChange, onBusyChange, projects
                       <span>本轮完成 {count(activity?.completed)}</span>
                       <span>本轮未完成 {count(activity?.incomplete)}</span>
                       <span>近一分钟 {activity ? activity.rate_per_minute.toFixed(1) : "—"} 条/分</span>
-                      <span>累计派发 {count(job.source_attempts?.[item.source])}</span>
+                      <span>累计尝试 {count(job.source_attempts?.[item.source])}</span>
+                      {outcomes && <><span>累计完成 {count((outcomes.keep || 0) + (outcomes.drop || 0))}</span>
+                        <span>累计未完成 {count(outcomes.incomplete)}</span></>}
                     </div>
                     {error && <p className="error">{error}</p>}
                   </div>;
@@ -398,7 +402,8 @@ export default function SetupWizard({ page, onPageChange, onBusyChange, projects
                 <p>队列：{queue.queue_name}（{queue.project_name}） · {count(queue.queue_records)} 条 · 已扫描 {count(job.processed)} 条 · 共尝试 {count(job.attempts)} 次</p>
                 <p>输入 {count(job.input_tokens)} tokens · 输出 {count(job.output_tokens)} tokens · 已运行 {duration(job.elapsed_seconds)}</p>
                 {job.sources?.length ? <p>本轮模型：{job.sources.map((item) => `${sourceName[item.source] || item.source}（${item.model}）`).join("、")}</p> : null}
-                {Object.keys(job.source_attempts || {}).length ? <p>模型派发：{Object.entries(job.source_attempts || {}).map(([source, attempts]) => `${source} ${count(attempts)} 条`).join(" · ")}</p> : null}
+                {Object.keys(job.source_attempts || {}).length ? <p>模型日志尝试：{Object.entries(job.source_attempts || {}).map(([source, attempts]) => `${sourceName[source] || source} ${count(attempts)} 次`).join(" · ")}</p> : null}
+                <p>累计尝试按进度日志记录模型结果，包含失败和重试；它不等于完成条数，也不等于实际 HTTP 请求数。</p>
                 {Object.keys(job.source_errors || {}).length ? <p className="error">本轮已停用：{Object.entries(job.source_errors || {}).map(([source, error]) => `${source}（${error}）`).join("；")}</p> : null}
                 {job.web_session_cleanup_errors?.length ? <p className="error">网页会话删除失败：{job.web_session_cleanup_errors.join("；")}</p> : null}
                 <p>总完成数已按队列条目去重；人工确认与批量已处理可能是同一条。暂停会先停止派发，再等待当前模型请求写入。</p>

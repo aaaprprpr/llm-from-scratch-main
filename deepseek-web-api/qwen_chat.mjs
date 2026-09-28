@@ -48,10 +48,11 @@ function readAuth(requireSignature = true) {
   if (!auth.query || !auth.cookies?.tongyi_sso_ticket_hash || requireSignature && !scene?.['eo-clt-actkn']) {
     throw new Error('千问凭据文件无效，请重新导出');
   }
-  if (requireSignature && scene['eo-clt-actkn-dl'] * 1000 <= Date.now()) {
-    throw new Error('千问签名材料已过期，请重新运行 qwen_capture_auth.py');
-  }
   return auth;
+}
+
+function saveAuth(auth) {
+  writeFileSync(AUTH_PATH, `${JSON.stringify(auth, null, 2)}\n`, { mode: 0o600 });
 }
 
 function readState() {
@@ -89,6 +90,53 @@ function cookieHeaders(auth) {
   };
 }
 
+async function refreshSignaturePool(auth) {
+  const scenes = auth.storage.scene_list;
+  const chat = scenes.qwen_chat;
+  const remaining = chat['eo-clt-bacsft']?.length ?? 0;
+  const expiresInMs = (chat['eo-clt-actkn-dl'] ?? 0) * 1000 - Date.now();
+  if (remaining > 20 && expiresInMs > 30 * 60 * 1000) return;
+
+  const base = scenes.qwen_web;
+  const query = new URLSearchParams({
+    businessScene: 'qwen_web',
+    unifyRelateGenerate: 'voice_command,qwen_chat',
+    chid: randomUUID().replaceAll('-', ''),
+  });
+  const url = `https://sec.qianwen.com/security/external/access/refresh?${query}`;
+  try {
+    const response = await fetch(url, {
+      headers: {
+        ...cookieHeaders(auth),
+        'eo-clt-dvidn': base['eo-clt-dvidn'],
+        'eo-clt-actkn': base['eo-clt-actkn'],
+        'eo-clt-sftcnt': '100',
+        'clt-acs-caer': 'vrad',
+        'eo-clt-acs-bx-intss': '2',
+      },
+    });
+    const payload = await response.json();
+    if (!response.ok || payload.status !== 0 || !payload.data?.['eo-clt-bacsft']?.length) {
+      throw new Error(`HTTP ${response.status}, status=${payload.status}, msg=${payload.msg ?? ''}`);
+    }
+    const { unifyRelate, ...baseData } = payload.data;
+    const refreshedChat = unifyRelate?.find((item) => item.businessScene === 'qwen_chat');
+    if (!refreshedChat?.['eo-clt-bacsft']?.length) throw new Error('补充结果缺少 qwen_chat 签名材料');
+    scenes.qwen_web = { ...base, ...baseData };
+    for (const item of unifyRelate ?? []) {
+      if (item.businessScene) scenes[item.businessScene] = { ...scenes[item.businessScene], ...item };
+    }
+    saveAuth(auth);
+    console.error(`千问签名材料已自动补充（${scenes.qwen_chat['eo-clt-bacsft'].length} 项）`);
+  } catch (error) {
+    if (remaining > 0 && expiresInMs > 0) {
+      console.error(`签名材料自动补充失败，先使用剩余 ${remaining} 项：${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    throw new Error(`千问签名材料已用完或过期，自动补充失败：${error instanceof Error ? error.message : String(error)}。请检查网页登录状态，必要时重新运行 qwen_capture_auth.py`);
+  }
+}
+
 async function deleteSession(auth, sessionId) {
   const url = commonUrl(auth, 'chat2-api.qianwen.com', '/api/v1/session/delete');
   const response = await fetch(url, {
@@ -105,20 +153,21 @@ async function signedRequest(auth, state, prompt) {
   // Several batch slots consume signatures from one credential file. Reserve
   // one under a short file lock, then release it before the network request.
   let lock;
-  for (let attempt = 0; attempt < 100; attempt++) {
+  for (let attempt = 0; attempt < 600; attempt++) {
     try { lock = openSync(`${AUTH_PATH}.lock`, 'wx', 0o600); break; }
     catch (error) {
       if (error?.code !== 'EEXIST') throw error;
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      await new Promise((resolve) => setTimeout(resolve, 100));
     }
   }
   if (lock === undefined) throw new Error('千问凭据文件被占用');
   let sac;
   try {
-    const current = readAuth();
+    const current = readAuth(false);
+    await refreshSignaturePool(current);
     sac = current.storage.scene_list.qwen_chat['eo-clt-bacsft']?.pop();
-    if (!sac) throw new Error('千问签名材料已用完，请重新运行 qwen_capture_auth.py');
-    writeFileSync(AUTH_PATH, `${JSON.stringify(current, null, 2)}\n`, { mode: 0o600 });
+    if (!sac) throw new Error('千问签名材料已用完，自动补充未成功');
+    saveAuth(current);
     Object.assign(auth, current);
   } finally {
     closeSync(lock);
@@ -177,20 +226,13 @@ function extractReply(stream) {
   if (errors.length) throw new Error(`千问返回错误：${errors.at(-1).error_msg ?? errors.at(-1).code}`);
   const messages = packets.flatMap((packet) => packet.data?.messages ?? []);
   const replies = messages.filter((item) => item.mime_type === 'multi_load/iframe' && typeof item.content === 'string' && item.content);
-  if (!replies.length) {
-    const shapes = packets.map((packet) => ({
-      keys: Object.keys(packet), data: Object.keys(packet.data ?? {}),
-      mime: (packet.data?.messages ?? []).map((item) => item.mime_type),
-      code: packet.code ?? packet.error_code ?? null,
-    }));
-    throw new Error(`千问回复为空；SSE 结构 ${JSON.stringify(shapes)}`);
-  }
+  if (!replies.length) throw new Error(`千问回复为空；共收到 ${packets.length} 个 SSE 数据包`);
   return replies.at(-1).content;
 }
 
 let state;
 try {
-  const auth = readAuth(!deleteCurrent && !deleteSessionStdin);
+  const auth = readAuth(false);
   if (deleteSessionStdin) {
     const { session_id: sessionId } = JSON.parse(readFileSync(0, 'utf8'));
     if (typeof sessionId !== 'string' || !/^[a-f0-9]{32}$/.test(sessionId)) throw new Error('会话 ID 无效');
@@ -223,6 +265,9 @@ try {
     const { url, body, headers, reqId } = await signedRequest(auth, state, requestPrompt);
     const response = await fetch(url, { method: 'POST', headers, body });
     const stream = await response.text();
+    if (stream.includes('FAIL_SYS_USER_VALIDATE')) {
+      throw new Error(`千问网页应用层拒绝请求（按 HTTP 429 停用本轮来源）：${stream.slice(0, 180)}`);
+    }
     if (!response.ok || !response.headers.get('content-type')?.includes('text/event-stream')) {
       throw new Error(`千问聊天请求失败：HTTP ${response.status}, ${stream.slice(0, 300)}`);
     }

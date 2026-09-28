@@ -74,6 +74,10 @@ class QueueCreateRequest(BaseModel):
     queue_id: str | None = None
 
 
+class ReviewPositionRequest(BaseModel):
+    ordinal: int = Field(ge=0)
+
+
 class DocumentReviewRequest(BaseModel):
     queue_id: str
     ordinal: int = Field(ge=0)

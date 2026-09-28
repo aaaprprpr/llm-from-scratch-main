@@ -102,6 +102,10 @@ class BatchCleaningTests(unittest.TestCase):
                 self.assertEqual(paid.calls, [0])
                 self.assertEqual(manifest["counts"], {"keep": 2})
                 self.assertEqual(manifest["source_activity"]["deepseek_api_retry"]["capacity"], 1)
+                self.assertEqual(manifest["source_outcomes"], {
+                    "web": {"incomplete": 1, "keep": 1},
+                    "deepseek_api_retry": {"keep": 1},
+                })
 
     def test_content_risk_does_not_use_paid_api(self):
         class RiskCleaner:
@@ -265,6 +269,40 @@ class BatchCleaningTests(unittest.TestCase):
                 self.assertEqual(rows[1]["source"], "local")
                 self.assertEqual(rows[1]["status"], "incomplete")
 
+    def test_qwen_validation_rejection_is_retried_without_paid_fallback(self):
+        class Cleaner:
+            def __init__(self, provider):
+                self.config = SimpleNamespace(provider=provider, model=provider)
+                self.calls = 0
+
+            @staticmethod
+            def is_complete(result):
+                return result["decision"] == "keep"
+
+            def clean(self, blocks, *, title, provenance):
+                self.calls += 1
+                if self.config.provider == "qwen_web":
+                    raise LlmCleaningError("千问聊天请求失败：HTTP 200, FAIL_SYS_USER_VALIDATE")
+                return {"decision": "keep", "edited_text": blocks[0]["text"]}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with TestClient(create_app(root)) as client:
+                queue = _make_batch_queue(client, root, ["待清洗正文。"])
+                qwen, local, paid = (Cleaner(source) for source in
+                                     ("qwen_web", "llamacpp", "deepseek"))
+                output = root / "batch"
+                first = clean_queue(database_path=root / "curation.sqlite3", queue_id=queue,
+                                    output_directory=output, cleaner=qwen,
+                                    cleaners={"qwen": qwen}, workers=1)
+                self.assertEqual(first["counts"], {"incomplete": 1})
+                second = clean_queue(database_path=root / "curation.sqlite3", queue_id=queue,
+                                     output_directory=output, cleaner=qwen,
+                                     cleaners={"qwen": qwen, "local": local},
+                                     failure_fallback=paid, workers=1)
+                self.assertEqual(second["counts"], {"keep": 1})
+                self.assertEqual((qwen.calls, local.calls, paid.calls), (2, 1, 0))
+
     def test_prior_failure_goes_directly_to_paid_api_only_once(self):
         class IncompleteCleaner:
             def __init__(self, provider):
@@ -291,8 +329,11 @@ class BatchCleaningTests(unittest.TestCase):
                 clean_queue(**options)
                 clean_queue(**options, failure_fallback=paid)
                 self.assertEqual((web.calls, paid.calls), (1, 1))
-                clean_queue(**options, failure_fallback=paid)
+                third = clean_queue(**options, failure_fallback=paid)
                 self.assertEqual((web.calls, paid.calls), (2, 1))
+                self.assertEqual(third["source_outcomes"], {
+                    "web": {"incomplete": 2}, "deepseek_api_retry": {"incomplete": 1},
+                })
                 rows = [json.loads(line) for line in (output / "progress.jsonl").read_text().splitlines()]
                 self.assertEqual([row["source"] for row in rows],
                                  ["web", "deepseek_api_retry", "web"])
@@ -1000,7 +1041,7 @@ class ParallelBatchTests(unittest.TestCase):
             client.close()
             app.state.dataset_repository.clear()
 
-    def test_exhausted_qwen_signatures_leave_work_for_other_sources(self):
+    def test_qwen_refresh_failure_leaves_work_for_other_sources(self):
         class Cleaner:
             def __init__(self, provider, api_key=""):
                 self.config = SimpleNamespace(provider=provider, model=provider, api_key=api_key)
@@ -1012,6 +1053,8 @@ class ParallelBatchTests(unittest.TestCase):
 
             def clean(self, blocks, *, title, provenance):
                 self.calls += 1
+                if self.config.provider == "qwen_web":
+                    raise LlmCleaningError("签名材料已用完或过期，自动补充失败")
                 return {"decision": "keep", "edited_text": blocks[0]["text"]}
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -1028,16 +1071,15 @@ class ParallelBatchTests(unittest.TestCase):
             client.post(f"/api/projects/{project}/sources", json={
                 "prepare_revision_directory": prepared["revision_directory"]})
             queue = client.post(f"/api/projects/{project}/queues", json={"name": "all"}).json()["queue_id"]
-            auth = root / "auth.json"
-            auth.write_text(json.dumps({"storage": {"scene_list": {"qwen_chat": {"eo-clt-bacsft": []}}}}))
-            qwen, local = Cleaner("qwen_web", str(auth)), Cleaner("llamacpp")
+            qwen, local = Cleaner("qwen_web"), Cleaner("llamacpp")
             result = clean_queue(database_path=root / "curation.sqlite3", queue_id=queue,
                                  output_directory=root / "batch", cleaner=local,
                                  cleaners={"qwen_web": qwen, "local": local}, workers=2)
-            self.assertEqual(qwen.calls, 0)
+            self.assertEqual(qwen.calls, 1)
             self.assertEqual(local.calls, 1)
             self.assertIn("签名材料已用完", result["source_errors"]["qwen_web"])
             self.assertEqual(result["source_activity"]["qwen_web"]["active"], 0)
+            self.assertEqual(result["source_activity"]["qwen_web"]["capacity"], 2)
             client.close()
             app.state.dataset_repository.clear()
 

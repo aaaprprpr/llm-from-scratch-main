@@ -19,6 +19,7 @@ SOURCES = ("deepseek", "qwen_api", "local", "deepseek_web", "qwen_web")
 class ModelSelection:
     single: ModelSource = "deepseek"
     batch: tuple[ModelSource, ...] = ("local",)
+    failure_fallback: bool = True
 
     def __post_init__(self):
         # Existing settings stored one source as a string.
@@ -29,8 +30,9 @@ class ModelSelection:
             raise ValueError("批量模型不能重复")
         object.__setattr__(self, "batch", batch)
 
-    def as_dict(self) -> dict[str, str | list[str]]:
-        return {"single": self.single, "batch": list(self.batch)}
+    def as_dict(self) -> dict[str, str | list[str] | bool]:
+        return {"single": self.single, "batch": list(self.batch),
+                "failure_fallback": self.failure_fallback}
 
 
 class ModelSettings:
