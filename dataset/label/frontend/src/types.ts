@@ -11,8 +11,6 @@ export type LlmCleaningResult = {
   suggestion_id: string;
   model: string;
   decision: "keep" | "drop" | "unsure";
-  quality: number;
-  category: string;
   assessments: Array<{ chunk: number; summary: string }>;
   edited_text: string;
   text_changed: boolean;

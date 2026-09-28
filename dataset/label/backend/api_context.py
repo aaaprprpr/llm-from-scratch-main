@@ -38,8 +38,11 @@ class ApiContext:
         selection = self.model_settings.read()
         self.llm_cleaner = LlmCleaner(self.model_settings.config(selection.single), self.root / "llm_suggestions")
         self.local_model = LocalModelService(self.root)
-        self.batch_jobs = BatchJobManager(self.root, self.database_path,
-                                          self.model_settings.config(selection.batch), self.local_model)
+        self.batch_jobs = BatchJobManager(
+            self.root, self.database_path,
+            {source: self.model_settings.config(source) for source in selection.batch},
+            self.local_model,
+        )
         self._model_lock = threading.Lock()
         self._prepare_progress: dict[str, dict[str, Any]] = {}
         self._prepare_lock = threading.Lock()
@@ -47,8 +50,11 @@ class ApiContext:
     def set_model_selection(self, selection: ModelSelection) -> None:
         with self._model_lock:
             single = LlmCleaner(self.model_settings.config(selection.single), self.root / "llm_suggestions")
-            batch = self.model_settings.config(selection.batch)
-            self.batch_jobs.update_config(batch, lambda: self.model_settings.write(selection))
+            if selection.batch == self.model_settings.read().batch:
+                self.model_settings.write(selection)
+            else:
+                batch = {source: self.model_settings.config(source) for source in selection.batch}
+                self.batch_jobs.update_config(batch, lambda: self.model_settings.write(selection))
             self.llm_cleaner = single
 
     @contextmanager

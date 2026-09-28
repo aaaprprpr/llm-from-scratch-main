@@ -36,7 +36,298 @@ class FakeCleaner:
         return {"decision": "unsure", "edited_text": "仍有垃圾。"}
 
 
+def _make_batch_queue(client, root: Path, texts: list[str]) -> str:
+    source = root / "source.jsonl"
+    source.write_text("".join(json.dumps({"text": text}, ensure_ascii=False) + "\n" for text in texts),
+                      encoding="utf-8")
+    imported = client.post("/api/imports", json={
+        "adapter": "jsonl", "path": str(source), "mapping": {"text_fields": ["text"]},
+    }).json()
+    prepared = client.post("/api/prepares", json={
+        "source_revision_directory": imported["revision_directory"],
+    }).json()
+    project = client.post("/api/projects", json={"name": "fallback"}).json()["project_id"]
+    client.post(f"/api/projects/{project}/sources", json={
+        "prepare_revision_directory": prepared["revision_directory"],
+    })
+    return client.post(f"/api/projects/{project}/queues", json={"name": "all"}).json()["queue_id"]
+
+
 class BatchCleaningTests(unittest.TestCase):
+    def test_non_risk_failure_uses_paid_api_without_sending_fresh_rows_to_it(self):
+        class WebCleaner:
+            config = SimpleNamespace(provider="deepseek_web", model="web")
+
+            def __init__(self):
+                self.calls = []
+
+            @staticmethod
+            def is_complete(result):
+                return result["decision"] != "unsure"
+
+            def clean(self, blocks, *, title, provenance):
+                self.calls.append(provenance["ordinal"])
+                if provenance["ordinal"] == 0:
+                    return {"decision": "unsure", "edited_text": blocks[0]["text"]}
+                return {"decision": "keep", "edited_text": blocks[0]["text"]}
+
+        class PaidCleaner:
+            config = SimpleNamespace(provider="deepseek", model="paid")
+
+            def __init__(self):
+                self.calls = []
+
+            @staticmethod
+            def is_complete(_result):
+                return True
+
+            def clean(self, blocks, *, title, provenance):
+                self.calls.append(provenance["ordinal"])
+                return {"decision": "keep", "edited_text": blocks[0]["text"]}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with TestClient(create_app(root)) as client:
+                queue = _make_batch_queue(client, root, ["第一条正文。", "第二条正文。"])
+                web, paid = WebCleaner(), PaidCleaner()
+                output = root / "batch"
+                manifest = clean_queue(database_path=root / "curation.sqlite3", queue_id=queue,
+                                       output_directory=output, cleaner=web, cleaners={"web": web},
+                                       failure_fallback=paid, workers=1)
+                rows = [json.loads(line) for line in (output / "progress.jsonl").read_text().splitlines()]
+                self.assertEqual([(row["ordinal"], row["status"], row["source"]) for row in rows],
+                                 [(0, "incomplete", "web"), (0, "keep", "deepseek_api_retry"),
+                                  (1, "keep", "web")])
+                self.assertEqual(web.calls, [0, 1])
+                self.assertEqual(paid.calls, [0])
+                self.assertEqual(manifest["counts"], {"keep": 2})
+                self.assertEqual(manifest["source_activity"]["deepseek_api_retry"]["capacity"], 1)
+
+    def test_content_risk_does_not_use_paid_api(self):
+        class RiskCleaner:
+            config = SimpleNamespace(provider="deepseek_web", model="web")
+
+            @staticmethod
+            def is_complete(_result):
+                return False
+
+            def clean(self, blocks, *, title, provenance):
+                if provenance["ordinal"] == 0:
+                    raise LlmCleaningError("Content Exists Risk")
+                return {"decision": "unsure", "edited_text": blocks[0]["text"],
+                        "warnings": ["第 1 块 Content Exists Risk"]}
+
+        class PaidCleaner:
+            config = SimpleNamespace(provider="deepseek", model="paid")
+            calls = 0
+
+            def clean(self, blocks, *, title, provenance):
+                self.calls += 1
+                raise AssertionError("敏感条目不应发送到付费 API")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with TestClient(create_app(root)) as client:
+                queue = _make_batch_queue(client, root, ["第一条正文。", "第二条正文。"])
+                risk, paid = RiskCleaner(), PaidCleaner()
+                output = root / "batch"
+                manifest = clean_queue(database_path=root / "curation.sqlite3", queue_id=queue,
+                                       output_directory=output, cleaner=risk, cleaners={"web": risk},
+                                       failure_fallback=paid, workers=1)
+                rows = [json.loads(line) for line in (output / "progress.jsonl").read_text().splitlines()]
+                self.assertEqual([row["failure_reason"] for row in rows], ["content_risk", "content_risk"])
+                self.assertEqual(paid.calls, 0)
+                self.assertEqual(manifest["counts"], {"incomplete": 2})
+
+    def test_other_selected_model_recovers_without_paid_call(self):
+        class Cleaner:
+            def __init__(self, provider):
+                self.config = SimpleNamespace(provider=provider, model=provider)
+                self.calls = 0
+
+            @staticmethod
+            def is_complete(result):
+                return result["decision"] == "keep"
+
+            def clean(self, blocks, *, title, provenance):
+                self.calls += 1
+                return {"decision": "unsure" if self.config.provider == "deepseek_web" else "keep",
+                        "edited_text": blocks[0]["text"]}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with TestClient(create_app(root)) as client:
+                queue = _make_batch_queue(client, root, ["待清洗正文。"])
+                web, local, paid = (Cleaner(source) for source in
+                                    ("deepseek_web", "llamacpp", "deepseek"))
+                result = clean_queue(database_path=root / "curation.sqlite3", queue_id=queue,
+                                     output_directory=root / "batch", cleaner=web,
+                                     cleaners={"web": web, "local": local},
+                                     failure_fallback=paid, workers=1)
+                self.assertEqual((web.calls, local.calls, paid.calls), (1, 1, 0))
+                self.assertEqual(result["counts"], {"keep": 1})
+
+    def test_non_risk_failure_after_source_reassignment_reaches_paid_api(self):
+        class Cleaner:
+            def __init__(self, provider):
+                self.config = SimpleNamespace(provider=provider, model=provider)
+                self.calls = 0
+
+            @staticmethod
+            def is_complete(result):
+                return result["decision"] == "keep"
+
+            def clean(self, blocks, *, title, provenance):
+                self.calls += 1
+                if self.config.provider == "deepseek_web":
+                    raise LlmCleaningError("HTTP 429")
+                return {"decision": "keep" if self.config.provider == "deepseek" else "unsure",
+                        "edited_text": blocks[0]["text"]}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with TestClient(create_app(root)) as client:
+                queue = _make_batch_queue(client, root, ["待清洗正文。"])
+                web, local, paid = (Cleaner(source) for source in
+                                    ("deepseek_web", "llamacpp", "deepseek"))
+                output = root / "batch"
+                manifest = clean_queue(database_path=root / "curation.sqlite3", queue_id=queue,
+                                       output_directory=output, cleaner=web,
+                                       cleaners={"web": web, "local": local},
+                                       failure_fallback=paid, workers=1)
+                self.assertEqual((web.calls, local.calls, paid.calls), (1, 1, 1))
+                self.assertEqual(manifest["counts"], {"keep": 1})
+
+    def test_second_source_outage_after_document_failure_uses_paid_api(self):
+        class Cleaner:
+            def __init__(self, provider):
+                self.config = SimpleNamespace(provider=provider, model=provider)
+                self.calls = 0
+
+            @staticmethod
+            def is_complete(result):
+                return result["decision"] == "keep"
+
+            def clean(self, blocks, *, title, provenance):
+                self.calls += 1
+                if self.config.provider == "llamacpp":
+                    raise LlmCleaningError("HTTP 429")
+                return {"decision": "keep" if self.config.provider == "deepseek" else "unsure",
+                        "edited_text": blocks[0]["text"]}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with TestClient(create_app(root)) as client:
+                queue = _make_batch_queue(client, root, ["待清洗正文。"])
+                web, local, paid = (Cleaner(source) for source in
+                                    ("deepseek_web", "llamacpp", "deepseek"))
+                output = root / "batch"
+                result = clean_queue(database_path=root / "curation.sqlite3", queue_id=queue,
+                                     output_directory=output, cleaner=web,
+                                     cleaners={"web": web, "local": local},
+                                     failure_fallback=paid, workers=1)
+                self.assertEqual((web.calls, local.calls, paid.calls), (1, 1, 1))
+                self.assertEqual(result["counts"], {"keep": 1})
+                self.assertEqual(result["source_errors"].keys(), {"local"})
+
+    def test_earlier_content_risk_blocks_paid_retry_even_after_other_failure(self):
+        class Cleaner:
+            def __init__(self, provider):
+                self.config = SimpleNamespace(provider=provider, model=provider)
+                self.calls = 0
+
+            @staticmethod
+            def is_complete(_result):
+                return False
+
+            def clean(self, blocks, *, title, provenance):
+                self.calls += 1
+                if self.config.provider == "deepseek_web":
+                    raise LlmCleaningError("Content Exists Risk")
+                return {"decision": "unsure", "edited_text": blocks[0]["text"]}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with TestClient(create_app(root)) as client:
+                queue = _make_batch_queue(client, root, ["待清洗正文。"])
+                web, local, paid = (Cleaner(source) for source in
+                                    ("deepseek_web", "llamacpp", "deepseek"))
+                output = root / "batch"
+                options = dict(database_path=root / "curation.sqlite3", queue_id=queue,
+                               output_directory=output, cleaner=web,
+                               cleaners={"web": web, "local": local},
+                               failure_fallback=paid, workers=1)
+                clean_queue(**options)
+                clean_queue(**options)
+                self.assertEqual(paid.calls, 0)
+                rows = [json.loads(line) for line in (output / "progress.jsonl").read_text().splitlines()]
+                self.assertEqual(rows[0]["failure_reason"], "content_risk")
+                self.assertEqual(rows[1]["source"], "local")
+                self.assertEqual(rows[1]["status"], "incomplete")
+
+    def test_prior_failure_goes_directly_to_paid_api_only_once(self):
+        class IncompleteCleaner:
+            def __init__(self, provider):
+                self.config = SimpleNamespace(provider=provider, model=provider)
+                self.calls = 0
+
+            @staticmethod
+            def is_complete(_result):
+                return False
+
+            def clean(self, blocks, *, title, provenance):
+                self.calls += 1
+                return {"decision": "unsure", "edited_text": blocks[0]["text"]}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with TestClient(create_app(root)) as client:
+                queue = _make_batch_queue(client, root, ["待清洗正文。"])
+                web, paid = IncompleteCleaner("deepseek_web"), IncompleteCleaner("deepseek")
+                output = root / "batch"
+                options = dict(database_path=root / "curation.sqlite3", queue_id=queue,
+                               output_directory=output, cleaner=web, cleaners={"web": web},
+                               workers=1, limit=1)
+                clean_queue(**options)
+                clean_queue(**options, failure_fallback=paid)
+                self.assertEqual((web.calls, paid.calls), (1, 1))
+                clean_queue(**options, failure_fallback=paid)
+                self.assertEqual((web.calls, paid.calls), (2, 1))
+                rows = [json.loads(line) for line in (output / "progress.jsonl").read_text().splitlines()]
+                self.assertEqual([row["source"] for row in rows],
+                                 ["web", "deepseek_api_retry", "web"])
+
+    def test_fresh_only_run_skips_prior_incomplete_documents(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = create_app(root)
+            client = TestClient(app)
+            source = root / "source.jsonl"
+            source.write_text("".join(json.dumps({"text": f"正文 {i}"}, ensure_ascii=False) + "\n"
+                                      for i in range(3)), encoding="utf-8")
+            imported = client.post("/api/imports", json={
+                "adapter": "jsonl", "path": str(source), "mapping": {"text_fields": ["text"]},
+            }).json()
+            prepared = client.post("/api/prepares", json={
+                "source_revision_directory": imported["revision_directory"],
+            }).json()
+            project = client.post("/api/projects", json={"name": "fresh"}).json()["project_id"]
+            client.post(f"/api/projects/{project}/sources", json={
+                "prepare_revision_directory": prepared["revision_directory"],
+            })
+            queue = client.post(f"/api/projects/{project}/queues", json={"name": "all"}).json()["queue_id"]
+            cleaner = FakeCleaner()
+            output = root / "batch"
+            clean_queue(database_path=root / "curation.sqlite3", queue_id=queue,
+                        output_directory=output, cleaner=cleaner, limit=2, workers=1)
+            result = clean_queue(database_path=root / "curation.sqlite3", queue_id=queue,
+                                 output_directory=output, cleaner=cleaner, limit=1,
+                                 workers=1, retry_incomplete=False)
+            self.assertEqual(cleaner.calls, [0, 1, 2])
+            self.assertEqual(result["processed"], 3)
+            self.assertEqual(result["counts"]["incomplete"], 2)
+            client.close()
+
     def test_batch_writes_only_complete_text_and_resumes(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -96,6 +387,59 @@ class BatchCleaningTests(unittest.TestCase):
             self.assertEqual(cleaned, [{"text": "清理后的正文。"}, {"text": "第二条清理后的正文。"}])
             progress = [json.loads(line) for line in (output / "progress.jsonl").read_text().splitlines()]
             self.assertEqual([item["ordinal"] for item in progress], [0, 1, 1])
+            client.close()
+            app.state.dataset_repository.clear()
+
+
+class OutOfOrderResumeTests(unittest.TestCase):
+    def test_resume_fills_holes_without_reprocessing_later_finished_document(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = create_app(root)
+            client = TestClient(app)
+            source = root / "source.jsonl"
+            source.write_text('{"text":"正文 0"}\n{"text":"正文 1"}\n{"text":"正文 2"}\n', encoding="utf-8")
+            imported = client.post("/api/imports", json={"adapter": "jsonl", "path": str(source),
+                "mapping": {"text_fields": ["text"]}}).json()
+            prepared = client.post("/api/prepares", json={
+                "source_revision_directory": imported["revision_directory"]}).json()
+            project = client.post("/api/projects", json={"name": "resume holes"}).json()["project_id"]
+            client.post(f"/api/projects/{project}/sources", json={
+                "prepare_revision_directory": prepared["revision_directory"]})
+            queue = client.post(f"/api/projects/{project}/queues", json={"name": "all"}).json()["queue_id"]
+            doc2 = client.get(f"/api/queues/{queue}/items/2").json()["document"]["doc_id"]
+            output = root / "batch"
+            output.mkdir()
+            saved = (json.dumps({"text": "已完成的第三条"}, ensure_ascii=False) + "\n").encode()
+            (output / "cleaned.jsonl").write_bytes(saved)
+            (output / "progress.jsonl").write_text(json.dumps({
+                "ordinal": 2, "doc_id": doc2, "status": "keep", "cleaned_offset": len(saved),
+            }) + "\n", encoding="utf-8")
+            cleaner = FakeCleaner()
+            cleaner.recover = True
+
+            class PaidCleaner:
+                config = SimpleNamespace(provider="deepseek", model="paid")
+                calls = 0
+
+                def clean(self, blocks, *, title, provenance):
+                    self.calls += 1
+                    raise AssertionError("未处理的进度空洞不应交给付费 API")
+
+            paid = PaidCleaner()
+            result = clean_queue(database_path=root / "curation.sqlite3", queue_id=queue,
+                                 output_directory=output, cleaner=cleaner,
+                                 failure_fallback=paid, workers=1)
+            self.assertEqual(paid.calls, 0)
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["processed"], 3)
+            self.assertEqual(cleaner.calls, [0, 1])
+            progress = [json.loads(line) for line in (output / "progress.jsonl").read_text().splitlines()]
+            self.assertEqual([row["ordinal"] for row in progress], [2, 0, 1])
+            from dataset.label.backend.cleaning_export import export_effective
+            export_effective(root / "curation.sqlite3", queue, output, {})
+            exported = [json.loads(line)["text"] for line in (output / "effective_cleaned.jsonl").read_text().splitlines()]
+            self.assertEqual(exported, ["清理后的正文。", "第二条清理后的正文。", "已完成的第三条"])
             client.close()
             app.state.dataset_repository.clear()
 
@@ -350,6 +694,111 @@ class SharedProgressTests(unittest.TestCase):
             lines = [json.loads(line)["text"] for line in
                      (output / "effective_cleaned.jsonl").read_text().splitlines()]
             self.assertEqual(lines, ["更新的人工正文 0", "人工正文 2"])
+
+            # A save after the exporter snapshots manual decisions must make the
+            # resulting file stale, even if the save precedes file generation.
+            manager = app.state.api_context.batch_jobs
+            original_reviews = manager._manual_reviews
+            def save_during_export(database, selected_queue):
+                snapshot = original_reviews(database, selected_queue)
+                document = documents[0]
+                database.set_document_review(
+                    project_id=project,
+                    review=DocumentReviewInput(
+                        doc_id=document["doc_id"], source_row=0,
+                        content_sha256=document["content_sha256"], decision="keep",
+                        quality=None, primary_category=None, edited_text="并发更新的人工正文 0",
+                    ), expected_revision=1, actor="local-web")
+                return snapshot
+            manager._manual_reviews = save_during_export
+            try:
+                manager.export(queue)
+            finally:
+                manager._manual_reviews = original_reviews
+            self.assertTrue(client.get(f"/api/auto-clean/{queue}").json()["export_stale"])
+            client.close()
+            app.state.dataset_repository.clear()
+
+
+    def test_single_llm_save_wins_while_batch_request_is_in_flight(self):
+        ready = threading.Event()
+        release = threading.Event()
+
+        class BlockingCleaner:
+            config = SimpleNamespace(provider="deepseek", model="fake-batch")
+
+            @staticmethod
+            def is_complete(_result):
+                return True
+
+            def clean(self, _blocks, *, title, provenance):
+                ready.set()
+                if not release.wait(5):
+                    raise TimeoutError("batch test was not released")
+                return {"decision": "keep", "edited_text": "批量正文"}
+
+        class SingleCleaner:
+            config = SimpleNamespace(provider="deepseek", model="fake-single")
+
+            @staticmethod
+            def is_complete(_result):
+                return True
+
+            def clean(self, _blocks, *, title, provenance):
+                return {"decision": "keep", "edited_text": "单条 AI 正文", "removals": [], "edits": []}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = create_app(root)
+            client = TestClient(app)
+            source = root / "source.jsonl"
+            source.write_text(json.dumps({"text": "需要清洗的原始正文。"}, ensure_ascii=False) + "\n", encoding="utf-8")
+            imported = client.post("/api/imports", json={"adapter": "jsonl", "path": str(source),
+                "mapping": {"text_fields": ["text"]}}).json()
+            prepared = client.post("/api/prepares", json={
+                "source_revision_directory": imported["revision_directory"]}).json()
+            project = client.post("/api/projects", json={"name": "overlap"}).json()["project_id"]
+            client.post(f"/api/projects/{project}/sources", json={
+                "prepare_revision_directory": prepared["revision_directory"]})
+            queue = client.post(f"/api/projects/{project}/queues", json={"name": "all"}).json()["queue_id"]
+            manager = app.state.api_context.batch_jobs
+            output = manager._output(queue)
+            outcomes = []
+            def run_batch():
+                try:
+                    outcomes.append(clean_queue(database_path=root / "curation.sqlite3", queue_id=queue,
+                                                 output_directory=output, cleaner=BlockingCleaner(),
+                                                 workers=1, max_requests=1))
+                except BaseException as error:
+                    outcomes.append(error)
+            batch_thread = threading.Thread(target=run_batch)
+            batch_thread.start()
+            try:
+                self.assertTrue(ready.wait(5), "batch request did not start")
+                view = client.get(f"/api/queues/{queue}/items/0").json()
+                app.state.api_context.llm_cleaner = SingleCleaner()
+                response = client.post(f"/api/reviews/documents/{view['document']['doc_id']}/llm-clean",
+                    json={"queue_id": queue, "ordinal": 0, "expected_revision": 0,
+                          "content_sha256": view["document"]["content_sha256"],
+                          "blocks": [{"id": block["block_id"], "text": block["text"],
+                                      "separator_after": block["separator_after"]}
+                                     for block in view["blocks"]]})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertTrue(response.json()["saved"])
+            finally:
+                release.set()
+                batch_thread.join(timeout=5)
+            self.assertFalse(batch_thread.is_alive(), "batch thread did not finish")
+            self.assertEqual(len(outcomes), 1)
+            self.assertIsInstance(outcomes[0], dict)
+            view = client.get(f"/api/queues/{queue}/items/0").json()
+            self.assertEqual(view["batch_clean"]["status"], "keep")
+            self.assertEqual(view["effective_source"], "manual")
+            self.assertEqual(view["materialized_text"], "单条 AI 正文")
+            exported = manager.export(queue)
+            self.assertEqual(exported["exported_records"], 1)
+            self.assertEqual(json.loads((output / "effective_cleaned.jsonl").read_text().strip()),
+                             {"text": "单条 AI 正文"})
             client.close()
             app.state.dataset_repository.clear()
 
@@ -402,10 +851,252 @@ class ParallelBatchTests(unittest.TestCase):
             client.close()
             app.state.dataset_repository.clear()
 
+    def test_incomplete_model_result_gets_one_other_source(self):
+        class IncompleteCleaner:
+            def __init__(self):
+                self.config = SimpleNamespace(provider="deepseek_web", model="web")
+
+            @staticmethod
+            def is_complete(result):
+                return False
+
+            def clean(self, blocks, *, title, provenance):
+                return {"decision": "unsure", "edited_text": blocks[0]["text"]}
+
+        class CompleteCleaner:
+            def __init__(self):
+                self.config = SimpleNamespace(provider="llamacpp", model="local")
+
+            @staticmethod
+            def is_complete(result):
+                return True
+
+            def clean(self, blocks, *, title, provenance):
+                return {"decision": "keep", "edited_text": blocks[0]["text"]}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            client = TestClient(create_app(root))
+            source = root / "source.jsonl"
+            source.write_text('{"text":"待清洗正文。"}\n', encoding="utf-8")
+            imported = client.post("/api/imports", json={"adapter": "jsonl", "path": str(source),
+                "mapping": {"text_fields": ["text"]}}).json()
+            prepared = client.post("/api/prepares", json={
+                "source_revision_directory": imported["revision_directory"]}).json()
+            project = client.post("/api/projects", json={"name": "fallback"}).json()["project_id"]
+            client.post(f"/api/projects/{project}/sources", json={
+                "prepare_revision_directory": prepared["revision_directory"]})
+            queue = client.post(f"/api/projects/{project}/queues", json={"name": "all"}).json()["queue_id"]
+            bad, good = IncompleteCleaner(), CompleteCleaner()
+            output = root / "batch"
+            manifest = clean_queue(database_path=root / "curation.sqlite3", queue_id=queue,
+                                   output_directory=output, cleaner=bad,
+                                   cleaners={"bad": bad, "good": good}, workers=1, limit=1)
+            rows = [json.loads(line) for line in (output / "progress.jsonl").read_text().splitlines()]
+            self.assertEqual([(row["ordinal"], row["status"], row["source"]) for row in rows],
+                             [(0, "incomplete", "bad"), (0, "keep", "good")])
+            self.assertEqual(manifest["status"], "completed")
+            self.assertEqual(manifest["source_attempts"], {"bad": 1, "good": 1})
+            self.assertEqual(manifest["source_activity"]["bad"]["incomplete"], 1)
+            self.assertEqual(manifest["source_activity"]["good"]["completed"], 1)
+            client.close()
+
+    def test_waiting_retry_does_not_idle_fast_source(self):
+        local_finished = threading.Event()
+
+        class FastIncompleteCleaner:
+            config = SimpleNamespace(provider="deepseek_web", model="web")
+            before_local_finished = 0
+
+            @staticmethod
+            def is_complete(result):
+                return False
+
+            def clean(self, blocks, *, title, provenance):
+                if not local_finished.is_set():
+                    self.before_local_finished += 1
+                return {"decision": "unsure", "edited_text": blocks[0]["text"]}
+
+        class SlowCompleteCleaner:
+            config = SimpleNamespace(provider="llamacpp", model="local")
+
+            @staticmethod
+            def is_complete(result):
+                return True
+
+            def clean(self, blocks, *, title, provenance):
+                time.sleep(0.15)
+                local_finished.set()
+                return {"decision": "keep", "edited_text": blocks[0]["text"]}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = create_app(root)
+            client = TestClient(app)
+            source = root / "source.jsonl"
+            source.write_text("".join(json.dumps({"text": f"正文 {i}"}, ensure_ascii=False) + "\n"
+                                      for i in range(8)), encoding="utf-8")
+            imported = client.post("/api/imports", json={"adapter": "jsonl", "path": str(source),
+                "mapping": {"text_fields": ["text"]}}).json()
+            prepared = client.post("/api/prepares", json={
+                "source_revision_directory": imported["revision_directory"]}).json()
+            project = client.post("/api/projects", json={"name": "retry scheduling"}).json()["project_id"]
+            client.post(f"/api/projects/{project}/sources", json={
+                "prepare_revision_directory": prepared["revision_directory"]})
+            queue = client.post(f"/api/projects/{project}/queues", json={"name": "all"}).json()["queue_id"]
+            fast, slow = FastIncompleteCleaner(), SlowCompleteCleaner()
+            result = clean_queue(database_path=root / "curation.sqlite3", queue_id=queue,
+                                 output_directory=root / "batch", cleaner=slow,
+                                 cleaners={"web": fast, "local": slow}, workers=3)
+            self.assertGreater(fast.before_local_finished, 2)
+            self.assertEqual(result["source_activity"]["web"]["capacity"], 2)
+            self.assertEqual(result["status"], "completed")
+            client.close()
+            app.state.dataset_repository.clear()
+
+    def test_rate_limited_source_is_disabled_and_document_reassigned(self):
+        class RateLimitedCleaner:
+            def __init__(self):
+                self.config = SimpleNamespace(provider="deepseek", model="limited")
+
+            def clean(self, blocks, *, title, provenance):
+                raise LlmCleaningError("模型接口返回 HTTP 429")
+
+        class HealthyCleaner:
+            def __init__(self):
+                self.config = SimpleNamespace(provider="llamacpp", model="healthy")
+
+            @staticmethod
+            def is_complete(result):
+                return True
+
+            def clean(self, blocks, *, title, provenance):
+                return {"decision": "keep", "edited_text": blocks[0]["text"]}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = create_app(root)
+            client = TestClient(app)
+            source = root / "source.jsonl"
+            source.write_text('{"text":"第一条。"}\n{"text":"第二条。"}\n', encoding="utf-8")
+            imported = client.post("/api/imports", json={"adapter": "jsonl", "path": str(source),
+                "mapping": {"text_fields": ["text"]}}).json()
+            prepared = client.post("/api/prepares", json={
+                "source_revision_directory": imported["revision_directory"]}).json()
+            project = client.post("/api/projects", json={"name": "fallback"}).json()["project_id"]
+            client.post(f"/api/projects/{project}/sources", json={
+                "prepare_revision_directory": prepared["revision_directory"]})
+            queue = client.post(f"/api/projects/{project}/queues", json={"name": "all"}).json()["queue_id"]
+            limited, healthy = RateLimitedCleaner(), HealthyCleaner()
+            output = root / "batch"
+            manifest = clean_queue(database_path=root / "curation.sqlite3", queue_id=queue,
+                                   output_directory=output, cleaner=limited,
+                                   cleaners={"limited": limited, "healthy": healthy}, workers=2)
+            self.assertEqual(manifest["status"], "completed")
+            self.assertIn("limited", manifest["source_errors"])
+            rows = [json.loads(line) for line in (output / "progress.jsonl").read_text().splitlines()]
+            self.assertEqual(sorted(row["ordinal"] for row in rows), [0, 1])
+            self.assertEqual({row["source"] for row in rows}, {"healthy"})
+            client.close()
+            app.state.dataset_repository.clear()
+
+    def test_exhausted_qwen_signatures_leave_work_for_other_sources(self):
+        class Cleaner:
+            def __init__(self, provider, api_key=""):
+                self.config = SimpleNamespace(provider=provider, model=provider, api_key=api_key)
+                self.calls = 0
+
+            @staticmethod
+            def is_complete(result):
+                return True
+
+            def clean(self, blocks, *, title, provenance):
+                self.calls += 1
+                return {"decision": "keep", "edited_text": blocks[0]["text"]}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = create_app(root)
+            client = TestClient(app)
+            source = root / "source.jsonl"
+            source.write_text('{"text":"正文。"}\n', encoding="utf-8")
+            imported = client.post("/api/imports", json={"adapter": "jsonl", "path": str(source),
+                "mapping": {"text_fields": ["text"]}}).json()
+            prepared = client.post("/api/prepares", json={
+                "source_revision_directory": imported["revision_directory"]}).json()
+            project = client.post("/api/projects", json={"name": "qwen exhausted"}).json()["project_id"]
+            client.post(f"/api/projects/{project}/sources", json={
+                "prepare_revision_directory": prepared["revision_directory"]})
+            queue = client.post(f"/api/projects/{project}/queues", json={"name": "all"}).json()["queue_id"]
+            auth = root / "auth.json"
+            auth.write_text(json.dumps({"storage": {"scene_list": {"qwen_chat": {"eo-clt-bacsft": []}}}}))
+            qwen, local = Cleaner("qwen_web", str(auth)), Cleaner("llamacpp")
+            result = clean_queue(database_path=root / "curation.sqlite3", queue_id=queue,
+                                 output_directory=root / "batch", cleaner=local,
+                                 cleaners={"qwen_web": qwen, "local": local}, workers=2)
+            self.assertEqual(qwen.calls, 0)
+            self.assertEqual(local.calls, 1)
+            self.assertIn("签名材料已用完", result["source_errors"]["qwen_web"])
+            self.assertEqual(result["source_activity"]["qwen_web"]["active"], 0)
+            client.close()
+            app.state.dataset_repository.clear()
+
+    def test_multiple_sources_share_queue_and_fast_source_takes_more_work(self):
+        class LaneCleaner:
+            def __init__(self, provider, delay):
+                self.config = SimpleNamespace(provider=provider, model=provider)
+                self.delay = delay
+                self.calls = []
+
+            @staticmethod
+            def is_complete(result):
+                return True
+
+            def clean(self, blocks, *, title, provenance):
+                time.sleep(self.delay)
+                self.calls.append(provenance["ordinal"])
+                return {"decision": "keep", "edited_text": blocks[0]["text"]}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = create_app(root)
+            client = TestClient(app)
+            source = root / "source.jsonl"
+            source.write_text("".join(json.dumps({"text": f"正文 {i}"}, ensure_ascii=False) + "\n"
+                                      for i in range(10)), encoding="utf-8")
+            imported = client.post("/api/imports", json={"adapter": "jsonl", "path": str(source),
+                "mapping": {"text_fields": ["text"]}}).json()
+            prepared = client.post("/api/prepares", json={
+                "source_revision_directory": imported["revision_directory"]}).json()
+            project = client.post("/api/projects", json={"name": "mixed"}).json()["project_id"]
+            client.post(f"/api/projects/{project}/sources", json={
+                "prepare_revision_directory": prepared["revision_directory"]})
+            queue = client.post(f"/api/projects/{project}/queues", json={"name": "all"}).json()["queue_id"]
+            fast = LaneCleaner("deepseek", 0.005)
+            slow = LaneCleaner("llamacpp", 0.06)
+            output = root / "batch"
+            manifest = clean_queue(database_path=root / "curation.sqlite3", queue_id=queue,
+                                   output_directory=output, cleaner=fast,
+                                   cleaners={"fast": fast, "slow": slow}, workers=3)
+            self.assertEqual(manifest["counts"], {"keep": 10})
+            self.assertGreater(len(fast.calls), len(slow.calls))
+            self.assertGreater(len(slow.calls), 0)
+            self.assertEqual(sum(manifest["source_attempts"].values()), 10)
+            self.assertEqual(sum(item["completed"] for item in manifest["source_activity"].values()), 10)
+            self.assertTrue(all(item["active"] == 0 for item in manifest["source_activity"].values()))
+            self.assertEqual(manifest["source_activity"]["fast"]["capacity"], 6)
+            self.assertEqual(manifest["source_activity"]["slow"]["capacity"], 1)
+            progress = [json.loads(line) for line in (output / "progress.jsonl").read_text().splitlines()]
+            self.assertEqual(sorted(row["ordinal"] for row in progress), list(range(10)))
+            self.assertEqual({row["source"] for row in progress}, {"fast", "slow"})
+            self.assertEqual(len(json.loads((output / "job.json").read_text())["model_history"]), 2)
+            client.close()
+            app.state.dataset_repository.clear()
+
     def test_parallel_requests_commit_in_ordinal_order_and_resume(self):
         class SlowCleaner:
             def __init__(self):
-                self.config = SimpleNamespace(provider="llamacpp", model="parallel-fake")
+                self.config = SimpleNamespace(provider="deepseek", model="parallel-fake")
                 self.lock = threading.Lock()
                 self.active = 0
                 self.peak = 0
@@ -452,9 +1143,14 @@ class ParallelBatchTests(unittest.TestCase):
             self.assertEqual(second["status"], "completed")
             self.assertEqual(second["counts"], {"keep": 5})
             lines = [json.loads(line)["text"] for line in (output / "cleaned.jsonl").read_text().splitlines()]
-            self.assertEqual(lines, [f"清洗 {i}" for i in range(5)])
+            self.assertEqual(sorted(lines), [f"清洗 {i}" for i in range(5)])
             progress = [json.loads(line) for line in (output / "progress.jsonl").read_text().splitlines()]
-            self.assertEqual([row["ordinal"] for row in progress], list(range(5)))
+            self.assertEqual(sorted(row["ordinal"] for row in progress), list(range(5)))
+            self.assertNotEqual(progress[0]["ordinal"], 0)
+            from dataset.label.backend.cleaning_export import export_effective
+            export_effective(root / "curation.sqlite3", queue, output, {})
+            effective = [json.loads(line)["text"] for line in (output / "effective_cleaned.jsonl").read_text().splitlines()]
+            self.assertEqual(effective, [f"清洗 {i}" for i in range(5)])
             self.assertTrue(all(row["elapsed_seconds"] >= 0 for row in progress))
             client.close()
             app.state.dataset_repository.clear()

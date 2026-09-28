@@ -4,6 +4,7 @@ import type { DiffView } from "./components/DraftDiff";
 import ReviewInspector from "./components/ReviewInspector";
 import ReviewSidebar from "./components/ReviewSidebar";
 import SettingsPage from "./components/SettingsPage";
+import type { SetupPage } from "./SetupWizard";
 import { useReviewWorkspace } from "./hooks/useReviewWorkspace";
 import { useInspectorResize } from "./hooks/useInspectorResize";
 import { decisionLabels } from "./reviewState";
@@ -11,6 +12,8 @@ import { decisionLabels } from "./reviewState";
 function App() {
   const [diffView, setDiffView] = useState<DiffView>("diff");
   const [showSettings, setShowSettings] = useState(false);
+  const [setupPage, setSetupPage] = useState<SetupPage>("downloads");
+  const [setupBusy, setSetupBusy] = useState(false);
   const review = useReviewWorkspace(showSettings);
   const inspector = useInspectorResize();
 
@@ -19,13 +22,14 @@ function App() {
       <div className={`workspace ${review.showSetup || showSettings ? "setup-mode" : ""} ${inspector.resizing ? "is-resizing" : ""}`} style={inspector.style}>
         <ReviewSidebar
           showSetup={review.showSetup}
+          setupPage={setupPage}
           showSettings={showSettings}
           textDirty={review.textDirty}
           status={review.status}
           hasDocument={review.document !== null}
           activeDecision={review.activeDecision}
           decisionLabel={`${review.activeDecisionOrigin}${decisionLabels[review.activeDecision]}`}
-          busy={review.busy}
+          busy={review.busy || setupBusy}
           projects={review.projects}
           projectId={review.projectId}
           selectedQueue={review.selectedQueue}
@@ -35,6 +39,7 @@ function App() {
           pageInput={review.pageInput}
           statusRefresh={`${review.cleanProgress?.attempts ?? 0}:${review.cleanProgress?.manual_completed ?? 0}:${review.cleanProgress?.manual_llm_saved ?? 0}:${review.document?.document_review?.revision ?? 0}:${review.status}`}
           onShowSetupChange={(value) => { setShowSettings(false); review.setShowSetup(value); }}
+          onSetupPageChange={(page) => { setShowSettings(false); setSetupPage(page); review.setShowSetup(true); }}
           onShowSettingsChange={(value) => { setShowSettings(value); if (value) review.setShowSetup(false); }}
           onProjectChange={review.changeProject}
           onPageInputChange={review.setPageInput}
@@ -44,6 +49,7 @@ function App() {
 
         {showSettings ? <SettingsPage /> : <DocumentWorkspace
           showSetup={review.showSetup}
+          setupPage={setupPage}
           projects={review.projects}
           document={review.document}
           draftBlocks={review.draftBlocks}
@@ -55,7 +61,9 @@ function App() {
           busy={review.busy}
           activeBlockId={review.activeBlockId}
           onFinishSetup={review.finishSetup}
-          onShowSetup={() => review.setShowSetup(true)}
+          onSetupPageChange={setSetupPage}
+          onSetupBusyChange={setSetupBusy}
+          onShowSetup={() => { setSetupPage("downloads"); review.setShowSetup(true); }}
           onActiveBlockChange={review.setActiveBlockId}
           onBlocksChange={review.updateDraftBlocks}
         />}
@@ -64,14 +72,8 @@ function App() {
         {!review.showSetup && !showSettings && <ReviewInspector
           document={review.document}
           editorText={review.editorText}
-          quality={review.quality}
-          category={review.category}
-          notes={review.notes}
           diffView={diffView}
           onDiffViewChange={setDiffView}
-          onQualityChange={review.setQuality}
-          onCategoryChange={review.setCategory}
-          onNotesChange={review.setNotes}
         />}
       </div>
     </div>

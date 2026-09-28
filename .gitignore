@@ -14,6 +14,10 @@ env/
 .env
 .env.*
 !.env.example
+.qwen-web-auth.json
+.qwen-web-auth.json.lock
+.deepseek-session.json
+.qwen-session.json
 
 # IDE
 .vscode/

@@ -1,9 +1,10 @@
 import BlockEditor, { type EditAction, type EditableBlock } from "../BlockEditor";
-import SetupWizard from "../SetupWizard";
+import SetupWizard, { type SetupPage } from "../SetupWizard";
 import type { LlmCleaningResult, Project, QueueDocument } from "../types";
 
 type Props = {
   showSetup: boolean;
+  setupPage: SetupPage;
   projects: Project[];
   document: QueueDocument | null;
   draftBlocks: EditableBlock[];
@@ -15,6 +16,8 @@ type Props = {
   onLlmClean: () => void;
   activeBlockId: string | null;
   onFinishSetup: (projectId: string, queueId: string) => Promise<void>;
+  onSetupPageChange: (page: SetupPage) => void;
+  onSetupBusyChange: (busy: boolean) => void;
   onShowSetup: () => void;
   onActiveBlockChange: (blockId: string) => void;
   onBlocksChange: (blocks: EditableBlock[], action: EditAction) => void;
@@ -22,6 +25,7 @@ type Props = {
 
 export default function DocumentWorkspace({
   showSetup,
+  setupPage,
   projects,
   document,
   draftBlocks,
@@ -33,6 +37,8 @@ export default function DocumentWorkspace({
   onLlmClean,
   activeBlockId,
   onFinishSetup,
+  onSetupPageChange,
+  onSetupBusyChange,
   onShowSetup,
   onActiveBlockChange,
   onBlocksChange,
@@ -41,6 +47,9 @@ export default function DocumentWorkspace({
     <main className="document-panel panel">
       {showSetup ? (
         <SetupWizard
+          page={setupPage}
+          onPageChange={onSetupPageChange}
+          onBusyChange={onSetupBusyChange}
           projects={projects}
           onComplete={onFinishSetup}
         />

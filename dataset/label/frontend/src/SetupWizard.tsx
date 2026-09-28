@@ -37,10 +37,16 @@ type AutoJob = {
   status?: "running" | "stopping" | "paused" | "interrupted" | "completed" | "failed" | "needs_retry" | "partial";
   processed?: number;
   attempts?: number;
+  source_attempts?: Record<string, number>;
+  source_activity?: Record<string, { capacity: number; active: number; completed: number;
+    incomplete: number; last_seconds: number | null; rate_per_minute: number }>;
+  source_errors?: Record<string, string>;
+  sources?: Array<{ source: string; model: string; retry_only?: boolean }>;
   completed?: number;
   remaining?: number;
   counts?: { keep?: number; drop?: number; incomplete?: number };
   batch_counts?: { keep?: number; drop?: number; incomplete?: number };
+  web_session_cleanup_errors?: string[];
   manual_completed?: number;
   manual_llm_saved?: number;
   manual_unsure?: number;
@@ -71,8 +77,16 @@ type AutoQueue = {
 const count = (value?: number) => (value ?? 0).toLocaleString();
 const duration = (seconds?: number | null) => seconds == null ? "—" : `${Math.floor(seconds / 3600)}时${Math.floor(seconds % 3600 / 60)}分`;
 const statusName: Record<string, string> = { running: "运行中", stopping: "暂停中", paused: "已暂停", interrupted: "服务中断，可续跑", completed: "已完成", failed: "失败", needs_retry: "有未完成条目", partial: "部分完成" };
+const sourceName: Record<string, string> = { deepseek: "DeepSeek API", qwen_api: "千问 API",
+  local: "本地 Qwen", deepseek_web: "DeepSeek 网页", qwen_web: "千问网页",
+  deepseek_api_retry: "DeepSeek API · 失败重试" };
+
+export type SetupPage = "downloads" | "imported" | "batch";
 
 type Props = {
+  page: SetupPage;
+  onPageChange: (page: SetupPage) => void;
+  onBusyChange: (busy: boolean) => void;
   projects: Project[];
   onComplete: (projectId: string, queueId: string) => Promise<void> | void;
 };
@@ -81,8 +95,7 @@ function pathName(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) || path;
 }
 
-export default function SetupWizard({ projects, onComplete }: Props) {
-  const [mode, setMode] = useState<"downloads" | "imported">("downloads");
+export default function SetupWizard({ page, onPageChange, onBusyChange, projects, onComplete }: Props) {
   const [downloads, setDownloads] = useState<DownloadSource[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [catalog, setCatalog] = useState<CatalogSource[]>([]);
@@ -93,6 +106,8 @@ export default function SetupWizard({ projects, onComplete }: Props) {
   const [projectId, setProjectId] = useState("");
   const [newProjectName, setNewProjectName] = useState("");
   const [busy, setBusy] = useState(false);
+  useEffect(() => { onBusyChange(busy); }, [busy, onBusyChange]);
+  useEffect(() => () => onBusyChange(false), [onBusyChange]);
   const [prepareProgress, setPrepareProgress] = useState<{ processed: number; total: number; stage: string } | null>(null);
   const [message, setMessage] = useState("");
   const selected = downloads.find((source) => source.source_id === selectedId);
@@ -119,12 +134,12 @@ export default function SetupWizard({ projects, onComplete }: Props) {
   }, []);
 
   useEffect(() => {
-    if (mode !== "imported") return;
+    if (page !== "batch") return;
     const timer = window.setInterval(() => {
       void refreshAutoQueues().catch(() => {});
     }, 2000);
     return () => window.clearInterval(timer);
-  }, [mode]);
+  }, [page]);
 
   const clearPrepared = () => {
     setPrepareDirectory("");
@@ -175,7 +190,7 @@ export default function SetupWizard({ projects, onComplete }: Props) {
       setPrepareRecords(prepared.manifest.output_records);
       setSelectedName(selected.source_id);
       await refreshSources();
-      setMode("imported");
+      onPageChange("imported");
       setPrepareProgress(null);
       setMessage(`已导入 ${prepared.manifest.output_records.toLocaleString()} 条。`);
     } catch (error) {
@@ -283,16 +298,10 @@ export default function SetupWizard({ projects, onComplete }: Props) {
 
   return <section className="setup-wizard">
     <div className="setup-toolbar">
-      <h2>导入数据</h2>
-      <div className="setup-mode-tabs" role="group" aria-label="数据来源">
-        <button type="button" className={mode === "downloads" ? "active" : ""} disabled={busy}
-          onClick={() => { setMode("downloads"); clearPrepared(); setMessage(""); }}>下载目录</button>
-        <button type="button" className={mode === "imported" ? "active" : ""} disabled={busy}
-          onClick={() => { setMode("imported"); clearPrepared(); setMessage(""); }}>已导入 ({catalog.length})</button>
-      </div>
+      <h2>{page === "downloads" ? "导入数据" : page === "imported" ? `已导入 (${catalog.length})` : "批量清洗"}</h2>
     </div>
 
-    {mode === "downloads" ? <>
+    {page === "downloads" ? <>
       <div className="setup-download-list">
         {downloads.map((source) => <button type="button" key={source.source_id}
           className={`setup-download-item ${selectedId === source.source_id ? "selected" : ""}`}
@@ -307,8 +316,38 @@ export default function SetupWizard({ projects, onComplete }: Props) {
         <button type="button" className="primary" disabled={busy || !selected?.ready}
           onClick={() => void importSelected()}>导入{selected ? ` ${selected.source_id}` : "数据"}</button>
       </div>
-    </> : <div className="setup-catalog">
+    </> : page === "imported" ? <div className="setup-catalog">
       {catalog.map((source) => {
+        const simplified = source.prepares.filter((item) => item.manifest.config.simplify_chinese);
+        const queue = queueFor(source);
+        return <article className="setup-catalog-item" key={source.manifest.source_revision}>
+          <div className="setup-catalog-info"><strong>{pathName(source.manifest.original_location)}</strong>
+            <span>原始 {count(source.manifest.record_count)} 条 · {simplified.length ? `简体副本 ${count(simplified.at(-1)?.manifest.output_records)} 条` : "尚无简体副本"}
+              {simplified.length > 0 && <> · 繁简变更 {count(simplified.at(-1)?.manifest.changed_records)} 条</>}</span>
+          </div>
+          <div className="setup-catalog-actions">
+            {!simplified.length && <button type="button" className="secondary" disabled={busy}
+              onClick={() => void prepareExisting(source)}>生成简体副本</button>}
+            {!queue && simplified.map((item) => <button type="button" key={item.manifest.prepare_revision}
+              className="secondary" disabled={busy} onClick={() => {
+                setPrepareDirectory(item.revision_directory);
+                setPrepareRecords(item.manifest.output_records);
+                setSelectedName(pathName(source.manifest.original_location));
+                setMessage("");
+                onPageChange("batch");
+              }}>用于批量清洗</button>)}
+            {queue && <>
+              <button type="button" className="secondary" disabled={busy}
+                onClick={() => void onComplete(queue.project_id, queue.queue_id)}>逐条查看</button>
+              <button type="button" className="secondary" disabled={busy}
+                onClick={() => onPageChange("batch")}>查看批量进度</button>
+            </>}
+          </div>
+        </article>;
+      })}
+      {!catalog.length && <p className="setup-empty">还没有已导入的数据。</p>}
+    </div> : <div className="setup-catalog">
+      {catalog.filter((source) => source.prepares.some((item) => item.manifest.config.simplify_chinese)).map((source) => {
         const simplified = source.prepares.filter((item) => item.manifest.config.simplify_chinese);
         const queue = queueFor(source);
         const job = queue?.job || {};
@@ -330,12 +369,38 @@ export default function SetupWizard({ projects, onComplete }: Props) {
                 <span>未完成 {count(job.counts?.incomplete)}</span><span>待处理 {count(job.remaining ?? total)}</span>
                 <span>人工确认 {count(job.manual_completed)}</span><span>单条 LLM 保存 {count(job.manual_llm_saved)}</span>
                 <span>人工待定 {count(job.manual_unsure)}</span><span>批量已处理 {count((job.batch_counts?.keep || 0) + (job.batch_counts?.drop || 0) + (job.batch_counts?.incomplete || 0))}</span>
-                <span>批量速度 {count(Math.round(job.rate_per_minute || 0))} 条/分</span>
+                <span>批量完成速度 {count(Math.round(job.rate_per_minute || 0))} 条/分</span>
                 <span>预计剩余 {duration(job.eta_seconds)}</span><span>API 请求 {count(job.requests)}</span>
               </div>
+              {!!job.sources?.length && <section className="setup-source-status" aria-label="各模型来源工作情况">
+                <h3>模型工作情况</h3>
+                <div className="setup-source-list">{job.sources.map((item) => {
+                  const activity = job.source_activity?.[item.source];
+                  const error = job.source_errors?.[item.source];
+                  const state = error ? "已停用" : job.status === "running" || job.status === "stopping"
+                    ? activity?.active ? "处理中" : item.retry_only ? "等待失败条目" : "等待任务" : "未运行";
+                  return <div className="setup-source-item" key={item.source}>
+                    <div className="setup-source-heading"><strong>{sourceName[item.source] || item.source}</strong>
+                      <span className={error ? "error" : ""}>{state}</span></div>
+                    <small>{item.model}</small>
+                    <div className="setup-source-metrics">
+                      <span>活跃 {activity ? `${activity.active}/${activity.capacity}` : "—"}</span>
+                      <span>本轮完成 {count(activity?.completed)}</span>
+                      <span>本轮未完成 {count(activity?.incomplete)}</span>
+                      <span>近一分钟 {activity ? activity.rate_per_minute.toFixed(1) : "—"} 条/分</span>
+                      <span>累计派发 {count(job.source_attempts?.[item.source])}</span>
+                    </div>
+                    {error && <p className="error">{error}</p>}
+                  </div>;
+                })}</div>
+              </section>}
               <details><summary>更多统计与输出</summary>
                 <p>队列：{queue.queue_name}（{queue.project_name}） · {count(queue.queue_records)} 条 · 已扫描 {count(job.processed)} 条 · 共尝试 {count(job.attempts)} 次</p>
                 <p>输入 {count(job.input_tokens)} tokens · 输出 {count(job.output_tokens)} tokens · 已运行 {duration(job.elapsed_seconds)}</p>
+                {job.sources?.length ? <p>本轮模型：{job.sources.map((item) => `${sourceName[item.source] || item.source}（${item.model}）`).join("、")}</p> : null}
+                {Object.keys(job.source_attempts || {}).length ? <p>模型派发：{Object.entries(job.source_attempts || {}).map(([source, attempts]) => `${source} ${count(attempts)} 条`).join(" · ")}</p> : null}
+                {Object.keys(job.source_errors || {}).length ? <p className="error">本轮已停用：{Object.entries(job.source_errors || {}).map(([source, error]) => `${source}（${error}）`).join("；")}</p> : null}
+                {job.web_session_cleanup_errors?.length ? <p className="error">网页会话删除失败：{job.web_session_cleanup_errors.join("；")}</p> : null}
                 <p>总完成数已按队列条目去重；人工确认与批量已处理可能是同一条。暂停会先停止派发，再等待当前模型请求写入。</p>
                 <p>合并语料：{job.export ? `${count(job.export.exported_records)} 条${job.export_stale ? " · 有新修改，需重新生成" : " · 已更新"}` : "尚未生成"}。人工结果优先，保存在服务端的 batch_cleaned/{queue.queue_id}/ 目录。</p>
                 {job.error && <p className="error">{job.error}</p>}
@@ -353,8 +418,6 @@ export default function SetupWizard({ projects, onComplete }: Props) {
               }}>{prepareDirectory === item.revision_directory ? "已选" : "选用"}</button>)}
             {queue && <button type="button" className="secondary" disabled={busy}
               onClick={() => void onComplete(queue.project_id, queue.queue_id)}>逐条查看</button>}
-            {!simplified.length && <button type="button" className="secondary" disabled={busy}
-              onClick={() => void prepareExisting(source)}>生成简体副本</button>}
             {queue && <button type="button" className="secondary" disabled={busy}
               onClick={() => void exportAuto(queue.queue_id)}>{job.export ? "重新生成合并语料" : "生成合并语料"}</button>}
             {queue && simplified.length > 0 && (active
@@ -365,7 +428,8 @@ export default function SetupWizard({ projects, onComplete }: Props) {
           </div>
         </article>;
       })}
-      {!catalog.length && <p className="setup-empty">还没有已导入的数据。</p>}
+      {!catalog.some((source) => source.prepares.some((item) => item.manifest.config.simplify_chinese)) &&
+        <p className="setup-empty">还没有可清洗的简体副本，请先在已导入页面准备数据。</p>}
     </div>}
 
     {message && <div className={`setup-message ${message.includes("失败") ? "error" : ""}`} role="status" aria-live="polite">
@@ -376,7 +440,7 @@ export default function SetupWizard({ projects, onComplete }: Props) {
       <progress value={prepareProgress.total ? prepareProgress.processed : undefined} max={prepareProgress.total || 1} />
     </div>}
 
-    {prepareDirectory && !autoQueues.some((queue) => queue.prepared_directory === prepareDirectory) && <div className="setup-launch">
+    {page === "batch" && prepareDirectory && !autoQueues.some((queue) => queue.prepared_directory === prepareDirectory) && <div className="setup-launch">
       <div className="setup-ready-dataset"><strong>{selectedName}</strong><span>{prepareRecords?.toLocaleString() ?? "—"} 条 · 简体副本已就绪</span></div>
       <div className="setup-project-row">
         <label>项目<select value={projectId} disabled={busy} onChange={(event) => setProjectId(event.target.value)}>

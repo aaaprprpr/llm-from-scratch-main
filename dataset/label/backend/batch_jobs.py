@@ -6,24 +6,26 @@ import threading
 from heapq import merge
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
 from .batch_clean import clean_queue, output_path
 from .cleaning_export import export_effective
-from .cleaning_progress import CleaningProgressIndex
+from .cleaning_progress import CleaningProgressIndex, write_snapshot
 from .llm_cleaning import LlmCleaner
 from .local_model import LocalModelService
+from .model_settings import ModelSettings
 from .database import CurationDatabase
 from .documents import DatasetRepository
 from .llm_cleaning import CleaningConfig
 
 
 class BatchJobManager:
-    def __init__(self, root: Path, database_path: Path, config: CleaningConfig,
+    def __init__(self, root: Path, database_path: Path,
+                 configs: Mapping[str, CleaningConfig] | CleaningConfig,
                  local_model: LocalModelService | None = None):
         self.root = root
         self.database_path = database_path
-        self.config = config
+        self.configs = (dict(configs) if isinstance(configs, Mapping) else {"default": configs})
         self.local_model = local_model
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -33,12 +35,17 @@ class BatchJobManager:
         self._repository = DatasetRepository()
         self._manual_cache: dict[str, tuple[int, dict[int, dict]]] = {}
 
-    def update_config(self, config: CleaningConfig, persist: Callable[[], None]) -> None:
+    @property
+    def config(self) -> CleaningConfig:
+        return next(iter(self.configs.values()))
+
+    def update_config(self, configs: Mapping[str, CleaningConfig] | CleaningConfig,
+                      persist: Callable[[], None]) -> None:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 raise RuntimeError("批量清洗运行中，请先暂停再切换模型")
             persist()
-            self.config = config
+            self.configs = (dict(configs) if isinstance(configs, Mapping) else {"default": configs})
 
     def _output(self, queue_id: str) -> Path:
         return output_path(self.root, queue_id, self.config)
@@ -268,7 +275,7 @@ class BatchJobManager:
         return rows
 
     def start(self, queue_id: str, *, workers: int | None = None, max_requests: int | None = None,
-              limit: int | None = None) -> dict:
+              limit: int | None = None, retry_incomplete: bool = True) -> dict:
         with CurationDatabase(self.database_path) as database:
             database.get_queue(queue_id)
         if workers is not None and not 1 <= workers <= 16:
@@ -277,6 +284,9 @@ class BatchJobManager:
             raise ValueError("API 并发需为 1～24")
         if limit is not None and limit < 1:
             raise ValueError("本次处理条数必须大于零")
+        for config in self.configs.values():
+            if config.provider in {"deepseek", "dashscope", "deepseek_web", "qwen_web"} and not config.api_key:
+                raise ValueError(f"{config.provider} 凭据未配置")
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 raise RuntimeError("已有自动清洗任务运行中，请先暂停")
@@ -284,22 +294,42 @@ class BatchJobManager:
             self._error = None
             self._stop = threading.Event()
             stop = self._stop
-            config = self.config
+            configs = self.configs.copy()
             output = self._output(queue_id)
 
             def run():
                 try:
-                    if config.provider == "llamacpp" and self.local_model is not None:
+                    if any(config.provider == "llamacpp" for config in configs.values()) and self.local_model is not None:
                         self.local_model.wait_ready()
-                    cleaner = LlmCleaner(config, self.root / "llm_suggestions")
+                    cleaners = {source: LlmCleaner(config, self.root / "llm_suggestions")
+                                for source, config in configs.items()}
+                    paid = ModelSettings(self.root).config("deepseek")
+                    failure_fallback = (LlmCleaner(paid, self.root / "llm_suggestions")
+                                        if paid.provider == "deepseek" and paid.api_key else None)
                     result = clean_queue(database_path=self.database_path, queue_id=queue_id,
-                                         output_directory=output, limit=limit, cleaner=cleaner,
-                                         workers=workers, max_requests=max_requests, stop_event=stop)
+                                         output_directory=output, limit=limit,
+                                         cleaner=next(iter(cleaners.values())), cleaners=cleaners,
+                                         failure_fallback=failure_fallback,
+                                         workers=workers, max_requests=max_requests, stop_event=stop,
+                                         retry_incomplete=retry_incomplete)
                     if result["complete"]:
                         self.export(queue_id)
                 except Exception as exc:
                     with self._lock:
                         self._error = str(exc)
+                finally:
+                    # Batch web sessions belong to this run; the interactive
+                    # single-document chat is separate.
+                    from .deepseek_web import cleanup_batch_sessions
+                    errors = cleanup_batch_sessions(self.root, configs)
+                    manifest_path = output / "manifest.json"
+                    if manifest_path.exists():
+                        try:
+                            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                            manifest["web_session_cleanup_errors"] = errors
+                            write_snapshot(manifest_path, manifest)
+                        except (OSError, ValueError):
+                            pass
 
             self._thread = threading.Thread(target=run, name=f"auto-clean-{queue_id}", daemon=True)
             self._thread.start()
@@ -308,9 +338,14 @@ class BatchJobManager:
     def export(self, queue_id: str, output_directory: Path | None = None) -> dict:
         with CurationDatabase(self.database_path) as database:
             queue = database.get_queue(queue_id)
+            # Bind the export to the revision observed before collecting manual
+            # decisions. A concurrent save then marks this output stale instead
+            # of falsely reporting that it contains the newest review.
+            manual_revision = database.get_project(queue["project_id"])["current_revision"]
             manual = self._manual_reviews(database, queue)
         return export_effective(self.database_path, queue_id,
-                                output_directory or self._output(queue_id), manual)
+                                output_directory or self._output(queue_id), manual,
+                                manual_revision=manual_revision)
 
     def stop(self, queue_id: str) -> dict:
         with self._lock:

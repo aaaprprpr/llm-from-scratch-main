@@ -20,7 +20,7 @@ BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 def completion(**changes):
     assessment = {
-        "decision": "keep", "quality": 2, "category": "encyclopedia",
+        "decision": "keep",
         "removals": [], "edits": [], "joins": [], "summary": "保留正文，删除广告。",
     }
     assessment.update(changes)
@@ -236,8 +236,6 @@ class RemoteLlmCleaningTests(unittest.TestCase):
 
     def test_remote_still_rejects_invalid_schema_and_unsafe_source_edits(self):
         for response in [
-            completion(quality="2"),
-            completion(category="unsupported"),
             completion(unexpected="not allowed"),
             completion(removals=[{"unit_id": 9, "reason": "advertisement"}]),
             completion(decision="drop"),

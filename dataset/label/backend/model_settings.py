@@ -11,21 +11,26 @@ from dotenv import dotenv_values
 
 from .llm_cleaning import CleaningConfig
 
-ModelSource = Literal["deepseek", "qwen_api", "local"]
-SOURCES = ("deepseek", "qwen_api", "local")
+ModelSource = Literal["deepseek", "qwen_api", "local", "deepseek_web", "qwen_web"]
+SOURCES = ("deepseek", "qwen_api", "local", "deepseek_web", "qwen_web")
 
 
 @dataclass(frozen=True)
 class ModelSelection:
     single: ModelSource = "deepseek"
-    batch: ModelSource = "local"
+    batch: tuple[ModelSource, ...] = ("local",)
 
     def __post_init__(self):
-        if self.single not in SOURCES or self.batch not in SOURCES:
-            raise ValueError("未知的 LLM 来源")
+        # Existing settings stored one source as a string.
+        batch = (self.batch,) if isinstance(self.batch, str) else tuple(self.batch)
+        if self.single not in SOURCES or not batch or any(source not in SOURCES for source in batch):
+            raise ValueError("未知的 LLM 来源或未选择批量模型")
+        if len(batch) != len(set(batch)):
+            raise ValueError("批量模型不能重复")
+        object.__setattr__(self, "batch", batch)
 
-    def as_dict(self) -> dict[str, str]:
-        return {"single": self.single, "batch": self.batch}
+    def as_dict(self) -> dict[str, str | list[str]]:
+        return {"single": self.single, "batch": list(self.batch)}
 
 
 class ModelSettings:
@@ -57,6 +62,27 @@ class ModelSettings:
                 max_attempts_per_chunk=2, max_parallel_chunks=1,
             )
         env = {**dotenv_values(self.project_root / ".env"), **os.environ}
+        if source == "deepseek_web":
+            return replace(
+                base, provider="deepseek_web", base_url="https://chat.deepseek.com",
+                model="deepseek-web-default", api_key=(env.get("DEEPSEEK_WEB_TOKEN") or "").strip(),
+                risk_fallback=None, context_tokens=131072, max_output_tokens=8192,
+                timeout_seconds=300, max_chunk_characters=16000,
+                max_units_per_chunk=512, max_attempts_per_chunk=2, max_parallel_chunks=1,
+            )
+        if source == "qwen_web":
+            auth = Path((env.get("QWEN_WEB_AUTH_FILE") or "").strip())
+            if not auth.is_absolute():
+                auth = self.project_root / auth
+                if not auth.is_file():
+                    auth = self.project_root / "deepseek-web-api" / auth.name
+            return replace(
+                base, provider="qwen_web", base_url="https://chat2.qianwen.com",
+                model="Qwen-web", api_key=str(auth) if auth.is_file() else "",
+                risk_fallback=None, context_tokens=32768, max_output_tokens=4096,
+                timeout_seconds=300, max_chunk_characters=8000,
+                max_units_per_chunk=256, max_attempts_per_chunk=2, max_parallel_chunks=1,
+            )
         return replace(
             base, provider="dashscope",
             base_url=(env.get("DASHSCOPE_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1").strip(),

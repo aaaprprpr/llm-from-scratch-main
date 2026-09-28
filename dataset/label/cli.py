@@ -207,24 +207,34 @@ def command_llm_clean_batch(args: argparse.Namespace) -> None:
     root = Path(args.data_root or os.environ.get("LABEL_DATA_ROOT", "dataset/label/data"))
     from .backend.model_settings import ModelSettings
     settings = ModelSettings(root)
-    config = settings.config(settings.read().batch)
+    configs = {source: settings.config(source) for source in settings.read().batch}
+    config = next(iter(configs.values()))
     output = Path(args.output_directory) if args.output_directory else output_path(root, args.queue_id, config)
-    cleaner = LlmCleaner(config, root / "llm_suggestions")
+    cleaners = {source: LlmCleaner(item, root / "llm_suggestions") for source, item in configs.items()}
+    paid = settings.config("deepseek")
+    failure_fallback = (LlmCleaner(paid, root / "llm_suggestions")
+                        if paid.provider == "deepseek" and paid.api_key else None)
+    from .backend.deepseek_web import cleanup_batch_sessions
     from .backend.local_model import LocalModelService
-    local_model = LocalModelService(root) if config.provider == "llamacpp" else None
+    local_model = LocalModelService(root) if any(item.provider == "llamacpp" for item in configs.values()) else None
+    cleanup_errors = []
     try:
         if local_model is not None:
             local_model.wait_ready()
         result = clean_queue(
             database_path=root / "curation.sqlite3", queue_id=args.queue_id,
-            output_directory=output, limit=args.limit, cleaner=cleaner,
+            output_directory=output, limit=args.limit,
+            cleaner=next(iter(cleaners.values())), cleaners=cleaners,
+            failure_fallback=failure_fallback,
             workers=args.workers, max_requests=args.max_requests,
         )
     finally:
+        cleanup_errors = cleanup_batch_sessions(root, configs)
         if local_model is not None:
             local_model.close()
+    result["web_session_cleanup_errors"] = cleanup_errors
     result["effective_export"] = BatchJobManager(
-        root, root / "curation.sqlite3", config
+        root, root / "curation.sqlite3", configs
     ).export(args.queue_id, output)
     _print_json(result)
 

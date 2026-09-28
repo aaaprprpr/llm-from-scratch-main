@@ -1,7 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import type { TextDiff } from "../textDiff";
 
 export type DiffView = "diff" | "original" | "draft";
+// Compact blank lines in the preview independently of editable block boundaries.
+const blockSeparator = /\n[ \t]*\n(?:[ \t]*\n)*/;
+function compactPreview(text: string) {
+  return text.split(blockSeparator).map((part, index) => <Fragment key={index}>
+    {index > 0 && <span className="preview-block-gap" aria-hidden="true" />}
+    {part}
+  </Fragment>);
+}
 type Props = { original: string; draft: string; mode: DiffView; onModeChange: (mode: DiffView) => void };
 
 export default function DraftDiff({ original, draft, mode, onModeChange }: Props) {
@@ -42,15 +50,15 @@ export default function DraftDiff({ original, draft, mode, onModeChange }: Props
       <p className="diff-status" aria-live="polite">{same ? "与简体原文一致" : result ? `−${result.removed} 字符 / +${result.added} 字符${result.coarse ? " · 大范围改动按行展示" : ""}` : failed ? "差异计算失败，可切换原文与拼接结果查看" : "正在更新删改对照…"}</p>
     </>}
     <pre className="diff-text" aria-label={mode === "original" ? "简体原文" : mode === "draft" ? "当前拼接结果" : "删改差异"}>
-      {mode === "original" ? original : mode === "draft" ? draft : same ? original : result ? result.parts.map((part, index) => {
+      {mode === "original" ? compactPreview(original) : mode === "draft" ? compactPreview(draft) : same ? compactPreview(original) : result ? result.parts.map((part, index) => {
         const label = part.kind === "removed" ? "删除 / 移出" : "插入 / 移入";
         const content = part.kind !== "equal" && !part.value.trim()
           ? part.value.replace(/ /g, "·").replace(/\t/g, "⇥").replace(/\r/g, "␍").replace(/\n/g, "↵\n")
           : part.value;
-        return part.kind === "equal" ? <span key={index}>{content}</span>
+        return part.kind === "equal" ? <span key={index}>{compactPreview(content)}</span>
           : part.kind === "removed" ? <del className="diff-removed" key={index} title={part.move ? `移出片段 ${part.move}` : label}>{content}</del>
           : <ins className="diff-added" key={index} title={part.move ? `移入片段 ${part.move}` : label}>{content}</ins>;
-      }) : original}
+      }) : compactPreview(original)}
     </pre>
   </section>;
 }

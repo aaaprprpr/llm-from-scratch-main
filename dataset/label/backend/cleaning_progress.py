@@ -166,7 +166,7 @@ class CleaningProgressIndex:
     def summary(self) -> tuple[Counter, int, int]:
         counts = Counter({row["status"]: row["n"] for row in self.db.execute(
             "SELECT status, COUNT(*) AS n FROM results GROUP BY status")})
-        scanned = self.db.execute("SELECT COALESCE(MAX(ordinal), -1) + 1 FROM results").fetchone()[0]
+        scanned = self.db.execute("SELECT COUNT(*) FROM results").fetchone()[0]
         attempts = self.db.execute("SELECT attempts FROM cursor WHERE id=1").fetchone()[0]
         return counts, scanned, attempts
 

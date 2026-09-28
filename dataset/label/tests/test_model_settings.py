@@ -22,28 +22,72 @@ class ModelSettingsTests(unittest.TestCase):
             client = TestClient(app)
             initial = client.get("/api/settings/models")
             self.assertEqual(initial.status_code, 200)
-            self.assertEqual((initial.json()["single"], initial.json()["batch"]), ("deepseek", "local"))
-            saved = client.put("/api/settings/models", json={"single": "qwen_api", "batch": "local"})
+            self.assertEqual((initial.json()["single"], initial.json()["batch"]), ("deepseek", ["local"]))
+            saved = client.put("/api/settings/models", json={"single": "qwen_api", "batch": ["local"]})
             self.assertEqual(saved.status_code, 200, saved.text)
             self.assertEqual(app.state.api_context.llm_cleaner.config.provider, "dashscope")
             self.assertEqual(app.state.api_context.batch_jobs.config.provider, "llamacpp")
             self.assertEqual(ModelSettings(root).read(), ModelSelection("qwen_api", "local"))
             self.assertEqual(create_app(root).state.api_context.llm_cleaner.config.provider, "dashscope")
             self.assertNotIn("api_key", saved.text)
-            self.assertEqual(client.put("/api/settings/models", json={"single": "invalid", "batch": "local"}).status_code, 422)
+            self.assertEqual(client.put("/api/settings/models", json={"single": "invalid", "batch": ["local"]}).status_code, 422)
             client.close()
 
-    def test_cannot_switch_batch_model_while_job_is_active(self):
+    def test_legacy_single_batch_setting_migrates_and_multiselect_persists(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "model_settings.json"
+            path.write_text('{"single":"deepseek","batch":"local"}', encoding="utf-8")
+            settings = ModelSettings(root)
+            self.assertEqual(settings.read().batch, ("local",))
+            with TestClient(create_app(root)) as client:
+                saved = client.put("/api/settings/models", json={
+                    "single": "deepseek", "batch": ["deepseek_web", "local"],
+                })
+                self.assertEqual(saved.status_code, 200, saved.text)
+                self.assertEqual(saved.json()["batch"], ["deepseek_web", "local"])
+                context = client.app.state.api_context
+                self.assertEqual(set(context.batch_jobs.configs), {"deepseek_web", "local"})
+                invalid = client.put("/api/settings/models", json={
+                    "single": "deepseek", "batch": [],
+                })
+                self.assertEqual(invalid.status_code, 422)
+            self.assertEqual(settings.read().batch, ("deepseek_web", "local"))
+
+    def test_web_source_is_selectable_for_single_and_batch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with TestClient(create_app(root)) as client:
+                saved = client.put("/api/settings/models", json={
+                    "single": "deepseek_web", "batch": ["deepseek_web"],
+                })
+                self.assertEqual(saved.status_code, 200, saved.text)
+                self.assertEqual(saved.json()["available"]["deepseek_web"]["model"], "deepseek-web-default")
+                context = client.app.state.api_context
+                self.assertEqual(context.llm_cleaner.config.provider, "deepseek_web")
+                self.assertEqual(context.batch_jobs.config.provider, "deepseek_web")
+                self.assertNotIn("api_key", saved.text)
+            self.assertEqual(ModelSettings(root).read(), ModelSelection("deepseek_web", "deepseek_web"))
+
+    def test_single_model_can_change_while_batch_model_is_locked(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             app = create_app(root)
             manager = app.state.api_context.batch_jobs
             active = SimpleNamespace(is_alive=lambda: True)
-            with patch.object(manager, "_thread", active):
-                result = TestClient(app).put("/api/settings/models", json={"single": "local", "batch": "qwen_api"})
-            self.assertEqual(result.status_code, 409)
-            self.assertFalse((root / "model_settings.json").exists())
-            self.assertEqual(app.state.api_context.llm_cleaner.config.provider, "deepseek")
+            with (patch.object(manager, "_thread", active),
+                  patch.object(app.state.api_context.local_model, "ensure_running") as start_local,
+                  TestClient(app) as client):
+                single = client.put("/api/settings/models", json={"single": "qwen_api", "batch": ["local"]})
+                self.assertEqual(single.status_code, 200, single.text)
+                start_local.assert_not_called()
+                self.assertEqual(single.json()["batch"], ["local"])
+                self.assertEqual(app.state.api_context.llm_cleaner.config.provider, "dashscope")
+                self.assertEqual(manager.config.provider, "llamacpp")
+                batch = client.put("/api/settings/models", json={"single": "qwen_api", "batch": ["deepseek"]})
+                self.assertEqual(batch.status_code, 409)
+            self.assertEqual(ModelSettings(root).read(), ModelSelection("qwen_api", "local"))
+            self.assertEqual(manager.config.provider, "llamacpp")
 
     def test_existing_progress_path_survives_model_change(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -99,6 +143,25 @@ class ModelSettingsTests(unittest.TestCase):
             self.assertEqual([row["model"] for row in rows], [deepseek.config.model, "qwen-local"])
             self.assertEqual(len(json.loads((output / "job.json").read_text())["model_history"]), 2)
             client.close()
+
+    def test_cli_batch_uses_all_selected_sources(self):
+        from argparse import Namespace
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from dataset.label.cli import command_llm_clean_batch
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings = ModelSettings(root)
+            settings.write(ModelSelection("deepseek", ("deepseek_web", "qwen_api")))
+            args = Namespace(data_root=str(root), output_directory=None, queue_id="sample",
+                             limit=2, workers=2, max_requests=2)
+            with patch("dataset.label.cli.clean_queue", return_value={"processed": 2}) as run, \
+                 patch("dataset.label.backend.deepseek_web.cleanup_batch_sessions", return_value=[]) as cleanup, \
+                 patch("dataset.label.backend.batch_jobs.BatchJobManager.export", return_value={}), \
+                 redirect_stdout(StringIO()):
+                command_llm_clean_batch(args)
+            self.assertEqual(set(run.call_args.kwargs["cleaners"]), {"deepseek_web", "qwen_api"})
+            self.assertEqual(set(cleanup.call_args.args[1]), {"deepseek_web", "qwen_api"})
 
     def test_tool_startup_checks_local_model_once(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -214,8 +214,8 @@ class ApiTests(unittest.TestCase):
             }
             cleaning_url = f"/api/reviews/documents/{document.json()['document']['doc_id']}/llm-clean"
             with patch.object(app.state.api_context.llm_cleaner, "clean", return_value={
-                "suggestion_id": "test", "decision": "keep", "quality": 2,
-                "category": "encyclopedia", "edited_text": "清理后的正文",
+                "suggestion_id": "test", "decision": "keep",
+                "edited_text": "清理后的正文",
                 "assessments": [{"chunk": 1, "decision": "keep"}],
             }) as cleaner:
                 cleaned = client.post(cleaning_url, json=cleaning_request)
@@ -249,6 +249,9 @@ class ApiTests(unittest.TestCase):
                     "ordinal": 0,
                     "expected_revision": 1,
                     "decision": "keep",
+                    "quality": 3,
+                    "primary_category": "encyclopedia",
+                    "notes": "旧审核备注",
                     "edited_text": "人工修改正文",
                 },
             )
@@ -265,7 +268,7 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(refreshed_queue["state_counts"]["done"], 1)
             self.assertEqual(refreshed_queue["state_counts"]["pending"], 1)
             with patch.object(app.state.api_context.llm_cleaner, "clean", return_value={
-                "decision": "drop", "quality": 0, "category": "other", "edited_text": "",
+                "decision": "drop", "edited_text": "",
                 "assessments": [{"chunk": 1, "decision": "drop"}],
             }):
                 dropped = client.post(cleaning_url, json={**cleaning_request, "expected_revision": 2})
@@ -273,6 +276,9 @@ class ApiTests(unittest.TestCase):
             self.assertTrue(dropped.json()["saved"])
             after_drop = client.get(f"/api/queues/{queue.json()['queue_id']}/items/0").json()
             self.assertEqual(after_drop["document_review"]["decision"], "drop")
+            self.assertEqual(after_drop["document_review"]["quality"], 3)
+            self.assertEqual(after_drop["document_review"]["primary_category"], "encyclopedia")
+            self.assertEqual(after_drop["document_review"]["notes"], "旧审核备注")
             self.assertEqual(after_drop["materialized_text"], "")
             second = client.get(f"/api/queues/{queue.json()['queue_id']}/items/1").json()
             second_id = second["document"]["doc_id"]

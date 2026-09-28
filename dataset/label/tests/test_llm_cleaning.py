@@ -11,7 +11,7 @@ from dataset.label.backend.llm_cleaning import CleaningConfig, LlmCleaner, LlmCl
 
 def completion(removals=(), decision="keep", finish_reason="stop", edits=(), joins=()):
     assessment = {
-        "decision": decision, "quality": 2, "category": "encyclopedia",
+        "decision": decision,
         "removals": [{"unit_id": index, "reason": "advertisement"} for index in removals],
         "edits": list(edits), "joins": list(joins),
         "summary": "保留正文，删除广告。",
@@ -43,12 +43,16 @@ class LlmCleaningTests(unittest.TestCase):
                 patch.object(self.cleaner, "_request", side_effect=request):
             return self.cleaner.clean(blocks, title="测试", provenance={"doc_id": "original"})
 
-    def test_response_parser_ignores_only_echoed_review_focus(self):
+    def test_response_parser_ignores_legacy_metadata_but_rejects_other_extras(self):
         response = completion([1])
         assessment = json.loads(response["choices"][0]["message"]["content"])
         assessment["review_focus"] = [{"unit_id": 1, "text": "广告"}]
+        assessment["quality"] = 3
+        assessment["category"] = "encyclopedia"
         parsed = self.cleaner._parse_assessment(json.dumps(assessment, ensure_ascii=False))
         self.assertEqual([item.unit_id for item in parsed.removals], [1])
+        self.assertNotIn("quality", type(parsed).model_fields)
+        self.assertNotIn("category", type(parsed).model_fields)
         assessment["unexpected_field"] = True
         with self.assertRaises(ValueError):
             self.cleaner._parse_assessment(json.dumps(assessment, ensure_ascii=False))
@@ -111,7 +115,7 @@ class LlmCleaningTests(unittest.TestCase):
         self.assertEqual(len(split_units(blocks)), 2)
         result = self.run_clean(blocks, [completion([0, 1], decision="keep")])
         self.assertEqual(result["decision"], "drop")
-        self.assertEqual(result["quality"], 0)
+        self.assertNotIn("quality", result)
         self.assertEqual(result["edited_text"], "")
         self.assertEqual(result["assessments"][0]["decision"], "drop")
         self.assertEqual(result["retry_count"], 0)

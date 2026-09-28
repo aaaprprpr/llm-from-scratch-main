@@ -26,9 +26,6 @@ export function useReviewWorkspace(showSettings = false) {
   const [draftBlocks, setDraftBlocks] = useState<EditableBlock[]>([]);
   const [editorText, setEditorText] = useState("");
   const [textDirty, setTextDirty] = useState(false);
-  const [quality, setQuality] = useState<number | null>(null);
-  const [category, setCategory] = useState("");
-  const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [llmCleaning, setLlmCleaning] = useState(false);
   const [llmResult, setLlmResult] = useState<LlmCleaningResult | null>(null);
@@ -59,9 +56,6 @@ export function useReviewWorkspace(showSettings = false) {
   const activeDecision = document?.effective_source === "batch" && (batchDecision === "keep" || batchDecision === "drop")
     ? batchDecision : document?.document_review?.decision ?? "unreviewed";
   const activeDecisionOrigin = document?.effective_source === "batch" ? "批量 LLM · " : "";
-  const metadataDirty = quality !== (document?.document_review?.quality ?? null)
-    || category !== (document?.document_review?.primary_category ?? "")
-    || notes !== (document?.document_review?.notes ?? "");
 
   const refreshCleanProgress = useCallback(async () => {
     if (!queueId) { setCleanProgress(null); return; }
@@ -146,10 +140,6 @@ export function useReviewWorkspace(showSettings = false) {
           queue.queue_id === value.queue.queue_id ? value.queue : queue
         ),
       } : current);
-      const review = value.document_review;
-      setQuality(review?.quality ?? null);
-      setCategory(review?.primary_category ?? "");
-      setNotes(review?.notes ?? "");
       setStatus(`已加载第 ${ordinal + 1} 条`);
     } catch (error) {
       if (version !== documentVersion.current) return;
@@ -169,10 +159,10 @@ export function useReviewWorkspace(showSettings = false) {
   }, [ordinal]);
 
   useEffect(() => {
-    if (!document || busy || textDirty || metadataDirty || document.item.ordinal !== ordinal) return;
+    if (!document || busy || textDirty || document.item.ordinal !== ordinal) return;
     if (document.document_review?.decision === "keep" || document.document_review?.decision === "drop") return;
     if (document.document_review?.edited_text != null) return;
-    const hasNewResult = document.batch_clean === null && (cleanProgress?.processed ?? 0) > ordinal;
+    const hasNewResult = document.batch_clean === null && (cleanProgress?.attempts ?? 0) > 0;
     const mayHaveRetried = document.batch_clean?.status === "incomplete";
     const refreshKey = `${queueId}:${ordinal}:${cleanProgress?.attempts ?? 0}`;
     if ((hasNewResult || mayHaveRetried) && lastBatchRefresh.current !== refreshKey) {
@@ -180,7 +170,7 @@ export function useReviewWorkspace(showSettings = false) {
       void loadDocument();
     }
   }, [busy, cleanProgress?.attempts, cleanProgress?.processed, document, loadDocument,
-      metadataDirty, ordinal, queueId, textDirty]);
+      ordinal, queueId, textDirty]);
 
   useEffect(() => {
     if (!queueId || totalItems <= 0) return;
@@ -218,10 +208,10 @@ export function useReviewWorkspace(showSettings = false) {
           ordinal,
           expected_revision: document.document_review?.revision ?? 0,
           decision,
-          quality,
-          primary_category: category || null,
+          quality: document.document_review?.quality ?? null,
+          primary_category: document.document_review?.primary_category ?? null,
           flags: document.document_review?.flags ?? [],
-          notes,
+          notes: document.document_review?.notes ?? "",
           edited_text: decision === "drop" ? null : editorText,
         }),
       });
@@ -240,14 +230,11 @@ export function useReviewWorkspace(showSettings = false) {
     }
   }, [
     busy,
-    category,
     document,
     editorText,
     go,
     loadDocument,
-    notes,
     ordinal,
-    quality,
     queueId,
     refreshCleanProgress,
     totalItems,
@@ -347,7 +334,7 @@ export function useReviewWorkspace(showSettings = false) {
   }, [applyDraftBlocks, busy, draftBlocks]);
 
   const saveAndGo = useCallback((destination: number) => {
-    const unchanged = !textDirty && !metadataDirty;
+    const unchanged = !textDirty;
     if (unchanged) {
       go(destination);
       return;
@@ -355,7 +342,7 @@ export function useReviewWorkspace(showSettings = false) {
     const decision = textDirty ? (editorText.trim() ? "keep" : "drop")
       : activeDecision === "unreviewed" ? "unsure" : activeDecision;
     void saveDocument(decision, destination);
-  }, [activeDecision, editorText, go, metadataDirty, saveDocument, textDirty]);
+  }, [activeDecision, editorText, go, saveDocument, textDirty]);
 
   const commitPageInput = useCallback(() => {
     if (busy || llmInFlight.current) return;
@@ -373,6 +360,17 @@ export function useReviewWorkspace(showSettings = false) {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (showSetup || showSettings) return;
+      // Save the current document on plain Up, even when a control has focus.
+      if (event.key === "ArrowUp"
+        && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+        && !event.isComposing) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (!event.repeat && !busy && !llmInFlight.current) {
+          void saveDocument("keep", ordinal);
+        }
+        return;
+      }
       // Reserve plain left/right for document navigation before focused controls handle them.
       if ((event.key === "ArrowLeft" || event.key === "ArrowRight")
         && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
@@ -406,15 +404,10 @@ export function useReviewWorkspace(showSettings = false) {
         return;
       }
       if (typing) return;
-      if (/^[0-3]$/.test(event.key)) setQuality(Number(event.key));
       if (event.key.toLowerCase() === "x" && activeBlockId) {
         updateDraftBlocks(draftBlocks.map((block) =>
           block.id === activeBlockId ? { ...block, deleted: true } : block
         ));
-      }
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        void saveDocument("keep");
       }
     };
     window.addEventListener("keydown", onKeyDown, true);
@@ -449,9 +442,6 @@ export function useReviewWorkspace(showSettings = false) {
     draftBlocks,
     editorText,
     textDirty,
-    quality,
-    category,
-    notes,
     busy,
     llmCleaning,
     llmResult,
@@ -464,9 +454,6 @@ export function useReviewWorkspace(showSettings = false) {
     activeDecision,
     activeDecisionOrigin,
     setPageInput,
-    setQuality,
-    setCategory,
-    setNotes,
     setActiveBlockId,
     setShowSetup,
     finishSetup,

@@ -1,8 +1,10 @@
 import type { Project, Queue } from "../types";
+import type { SetupPage } from "../SetupWizard";
 import QueueStatusList from "./QueueStatusList";
 
 type Props = {
   showSetup: boolean;
+  setupPage: SetupPage;
   showSettings: boolean;
   textDirty: boolean;
   status: string;
@@ -20,6 +22,7 @@ type Props = {
   pageInput: string;
   statusRefresh: string;
   onShowSetupChange: (showSetup: boolean) => void;
+  onSetupPageChange: (page: SetupPage) => void;
   onShowSettingsChange: (showSettings: boolean) => void;
   onProjectChange: (projectId: string) => void;
   onPageInputChange: (value: string) => void;
@@ -29,6 +32,7 @@ type Props = {
 
 export default function ReviewSidebar({
   showSetup,
+  setupPage,
   showSettings,
   textDirty,
   status,
@@ -45,6 +49,7 @@ export default function ReviewSidebar({
   pageInput,
   statusRefresh,
   onShowSetupChange,
+  onSetupPageChange,
   onShowSettingsChange,
   onProjectChange,
   onPageInputChange,
@@ -60,7 +65,9 @@ export default function ReviewSidebar({
     <aside className="sidebar panel">
       <nav className="sidebar-nav">
         <button className={!showSetup && !showSettings ? "active" : ""} onClick={() => { onShowSettingsChange(false); onShowSetupChange(false); }} disabled={busy}>清洗</button>
-        <button className={showSetup ? "active" : ""} onClick={() => onShowSetupChange(true)} disabled={textDirty || busy} title={textDirty ? "请先保存或撤销当前正文修改，再进入导入页" : undefined}>导入数据</button>
+        <button className={showSetup && setupPage === "downloads" ? "active" : ""} onClick={() => onSetupPageChange("downloads")} disabled={textDirty || busy} title={textDirty ? "请先保存或撤销当前正文修改" : undefined}>导入数据</button>
+        <button className={showSetup && setupPage === "imported" ? "active" : ""} onClick={() => onSetupPageChange("imported")} disabled={textDirty || busy} title={textDirty ? "请先保存或撤销当前正文修改" : undefined}>已导入</button>
+        <button className={showSetup && setupPage === "batch" ? "active" : ""} onClick={() => onSetupPageChange("batch")} disabled={textDirty || busy} title={textDirty ? "请先保存或撤销当前正文修改" : undefined}>批量清洗</button>
         <button className={showSettings ? "active" : ""} onClick={() => onShowSettingsChange(true)} disabled={busy}>设置</button>
       </nav>
       {(status.includes("失败") || status.startsWith("无法")) && <p className="sidebar-error">{status}</p>}
@@ -115,7 +122,7 @@ export default function ReviewSidebar({
           <button onClick={() => onNavigate(ordinal + 1)} disabled={ordinal + 1 >= totalItems || busy}>→</button>
         </div>
         <p className="shortcut-help">
-          ↑ 完成并保留 · ← 上一条 · → 下一条<br />
+          ↑ 保存本条并保留 · ← 上一条 · → 下一条<br />
           左右键在输入框和编辑区也翻页<br />
           Ctrl D 丢弃整条<br />
           Ctrl Z 撤销 · Ctrl Y 重做<br />

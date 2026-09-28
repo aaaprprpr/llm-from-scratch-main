@@ -168,6 +168,19 @@ class BlockParserTests(unittest.TestCase):
         self.assertEqual(blocks[0].parser_version, BLOCK_PARSER_VERSION)
         self.assertEqual(blocks[0].end_cp, 3)
 
+    def test_single_newlines_are_blocks_and_preserve_spacing(self):
+        text = "第一行\n第二行\n\n第三行"
+        blocks = parse_blocks(text, "doc-1")
+        self.assertEqual([block.text for block in blocks], ["第一行", "第二行", "第三行"])
+        self.assertEqual([block.separator_after for block in blocks], ["\n", "\n\n", ""])
+        self.assertEqual(render_blocks(text, blocks), text)
+        self.assertEqual(render_blocks(text, blocks, {blocks[1].block_id}), "第一行\n第三行")
+
+        windows_text = "第一行\r\n第二行"
+        windows_blocks = parse_blocks(windows_text, "doc-2")
+        self.assertEqual([block.text for block in windows_blocks], ["第一行", "第二行"])
+        self.assertEqual(render_blocks(windows_text, windows_blocks), windows_text)
+
     def test_unknown_block_is_rejected(self):
         text = "一\n\n二"
         blocks = parse_blocks(text, "doc-1")

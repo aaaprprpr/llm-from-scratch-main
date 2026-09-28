@@ -34,7 +34,7 @@ type Props = {
 const selectionHighlightName = "curation-text-selection";
 
 function splitTextWithSeparators(text: string): Array<{ text: string; separatorAfter: string }> {
-  const separator = /\n[ \t]*\n(?:[ \t]*\n)*/g;
+  const separator = /\r?\n(?:[ \t]*\r?\n)*/g;
   const parts: Array<{ text: string; separatorAfter: string }> = [];
   let cursor = 0;
   for (const match of text.matchAll(separator)) {
@@ -64,7 +64,8 @@ export function serializeEditableBlocks(blocks: EditableBlock[]) {
     (block, index) => !block.deleted && (block.sourceOrdinal === null || block.sourceOrdinal === index),
   );
   return kept.map((block, index) => ({ id: block.id, text: block.text,
-    separator_after: untouchedOrder ? block.separatorAfter : index < kept.length - 1 ? "\n\n" : "" }));
+    separator_after: untouchedOrder ? block.separatorAfter
+      : index < kept.length - 1 ? (block.separatorAfter || "\n") : "" }));
 }
 
 export function renderEditableBlocks(blocks: EditableBlock[]): string {

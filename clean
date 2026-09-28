@@ -20,4 +20,4 @@ then
 fi
 
 echo "打开清洗台：$url"
-exec ./.venv/bin/python -m uvicorn dataset.label.backend.api:create_app --factory --host 127.0.0.1 --port 8000
+exec ./.venv/bin/python -m uvicorn dataset.label.backend.api:create_app --factory --host "${CLEAN_HOST:-0.0.0.0}" --port 8000

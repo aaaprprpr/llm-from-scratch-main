@@ -4,19 +4,6 @@ import {
 } from "./BlockEditor";
 import type { Queue, QueueDocument } from "./types";
 
-export const categories = [
-  { value: "encyclopedia", label: "百科" },
-  { value: "news", label: "新闻" },
-  { value: "marketing", label: "营销" },
-  { value: "fiction", label: "文学作品" },
-  { value: "forum_or_social", label: "论坛或社交内容" },
-  { value: "qa_or_instruction", label: "问答或指令" },
-  { value: "academic_or_technical", label: "学术或技术" },
-  { value: "code", label: "代码" },
-  { value: "reference_or_table", label: "资料或表格" },
-  { value: "other", label: "其他" },
-];
-
 export const decisionLabels: Record<string, string> = {
   unreviewed: "未处理",
   keep: "保留",

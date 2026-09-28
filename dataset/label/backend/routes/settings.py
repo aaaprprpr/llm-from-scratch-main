@@ -10,7 +10,7 @@ from ..model_settings import ModelSelection, ModelSource
 
 class ModelSettingsRequest(BaseModel):
     single: ModelSource
-    batch: ModelSource
+    batch: ModelSource | list[ModelSource]
 
 
 def build_router(context: ApiContext) -> APIRouter:
@@ -31,8 +31,10 @@ def build_router(context: ApiContext) -> APIRouter:
     def update_models(request: ModelSettingsRequest):
         try:
             selection = ModelSelection(single=request.single, batch=request.batch)
+            previous = context.model_settings.read()
             context.set_model_selection(selection)
-            if "local" in selection.as_dict().values():
+            if ((selection.single == "local" and previous.single != "local")
+                    or (selection.batch != previous.batch and "local" in selection.batch)):
                 context.local_model.ensure_running()
             return current()
         except RuntimeError as exc:

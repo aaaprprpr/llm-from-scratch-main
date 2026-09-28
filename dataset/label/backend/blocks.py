@@ -7,8 +7,8 @@ from typing import Collection
 from .identity import make_block_id, sha256_text
 
 
-BLOCK_PARSER_VERSION = "blank_line_v1"
-_BLOCK_SEPARATOR = re.compile(r"\n[ \t]*\n(?:[ \t]*\n)*")
+BLOCK_PARSER_VERSION = "line_break_v1"
+_BLOCK_SEPARATOR = re.compile(r"\r?\n(?:[ \t]*\r?\n)*")
 
 
 @dataclass(frozen=True)
@@ -111,5 +111,8 @@ def render_blocks(
             raise RuntimeError("block parser failed lossless reconstruction")
         return reconstructed
 
-    kept = [block.text for block in blocks if block.block_id not in dropped]
-    return "\n\n".join(kept).strip()
+    kept = [block for block in blocks if block.block_id not in dropped]
+    return "".join(
+        block.text + (block.separator_after if index < len(kept) - 1 else "")
+        for index, block in enumerate(kept)
+    ).strip()

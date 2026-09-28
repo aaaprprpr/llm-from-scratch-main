@@ -14,7 +14,7 @@ from .database import CurationDatabase
 
 
 def export_effective(database_path: Path, queue_id: str, output: Path,
-                     manual: dict[int, dict]) -> dict:
+                     manual: dict[int, dict], *, manual_revision: int | None = None) -> dict:
     output.mkdir(parents=True, exist_ok=True)
     with (output / ".export.lock").open("a+b") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -22,7 +22,8 @@ def export_effective(database_path: Path, queue_id: str, output: Path,
             queue = database.get_queue(queue_id)
             index.sync()
             reader = QueueTextReader(database, queue)
-            project_revision = database.get_project(queue["project_id"])["current_revision"]
+            project_revision = (manual_revision if manual_revision is not None else
+                                database.get_project(queue["project_id"])["current_revision"])
             manual_ordinals = sorted(ordinal for ordinal, item in manual.items()
                                      if item["decision"] in {"keep", "drop"})
             rows = index.db.execute(
