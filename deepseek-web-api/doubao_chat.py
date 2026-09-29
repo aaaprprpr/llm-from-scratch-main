@@ -97,10 +97,10 @@ def build_body(prompt, state):
     body['option']['unique_key'] = str(uuid.uuid4())
     body['option']['need_create_conversation'] = state is None
     body['option']['recovery_option']['req_create_time_sec'] = now // 1000
-    body['option']['need_deep_think'] = 0
-    body['option']['model_config']['model_item_key'] = '0'  # 网页“豆包 快速”
+    body['option']['need_deep_think'] = 1
+    body['option']['model_config']['model_item_key'] = '0'  # 沿用抓包的模型键；思考模式由下方开关控制。
     body['option']['connector_info_list'] = []
-    body['ext']['use_deep_think'] = '0'
+    body['ext']['use_deep_think'] = '1'
     return body
 
 
@@ -110,9 +110,12 @@ def chat(auth, prompt, state, *, structured=False, on_created=None):
     answer = []
     event = None
     data_lines = []
+    event_counts = {}
 
     def handle():
         nonlocal event, data_lines
+        if event:
+            event_counts[event] = event_counts.get(event, 0) + 1
         if not data_lines:
             event = None
             return
@@ -154,8 +157,13 @@ def chat(auth, prompt, state, *, structured=False, on_created=None):
                 if not structured:
                     print(part, end='', flush=True)
                 answer.append(part)
-        elif event in ('SSE_ERROR', 'ERROR'):
-            raise RuntimeError(f'豆包回复错误：{json.dumps(value, ensure_ascii=False)[:200]}')
+        elif event in ('SSE_ERROR', 'STREAM_ERROR', 'ERROR'):
+            # The extra field can contain verification material; report only
+            # the stable code and message needed to stop this source.
+            raise RuntimeError(
+                f'豆包回复错误：code={value.get("error_code")}，'
+                f'message={str(value.get("error_msg", ""))[:120]}'
+            )
         event, data_lines = None, []
 
     with call(auth, '/chat/completion', body, stream=True) as response:
@@ -178,7 +186,10 @@ def chat(auth, prompt, state, *, structured=False, on_created=None):
     if answer and not structured:
         print(flush=True)
     if not result['conversation_id'] or not answer:
-        raise RuntimeError('豆包响应缺少会话 ID 或回复正文')
+        raise RuntimeError(
+            f'豆包响应缺少会话 ID 或回复正文：会话ID缺失={not bool(result["conversation_id"])}，'
+            f'正文缺失={not bool(answer)}，SSE事件={event_counts}'
+        )
     return result, ''.join(answer)
 
 

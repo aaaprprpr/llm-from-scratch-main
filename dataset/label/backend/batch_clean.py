@@ -18,7 +18,9 @@ from .blocks import parse_blocks
 from .database import CurationDatabase
 from .documents import QueueTextReader
 from .deepseek_web import (QWEN_WEB_BATCH_SLOTS, DEEPSEEK_WEB_BATCH_SLOTS,
-                           KIMI_WEB_BATCH_SLOTS, DOUBAO_WEB_BATCH_SLOTS)
+                           KIMI_WEB_BATCH_SLOTS, DOUBAO_WEB_BATCH_SLOTS,
+                           CHATGLM_WEB_BATCH_SLOTS, SPARK_WEB_BATCH_SLOTS,
+                           WENXIN_WEB_BATCH_SLOTS, YUANBAO_WEB_BATCH_SLOTS)
 from .cleaning_progress import CleaningProgressIndex, write_snapshot
 from .llm_cleaning import CleaningConfig, LlmCleaner, LlmCleaningError, PROMPT_VERSION
 
@@ -158,10 +160,14 @@ def _process(ordinal: int, value: dict, queue_id: str, cleaner: LlmCleaner) -> d
             if ("HTTP 401" in str(exc) or "HTTP 403" in str(exc) or "HTTP 429" in str(exc)
                     or "签名材料已过期" in str(exc) or "签名材料已用完" in str(exc)
                     or "缺少千问凭据" in str(exc)
-                    or "豆包没有返回 SSE 聊天流" in str(exc)):
+                    or "豆包没有返回 SSE 聊天流" in str(exc)
+                    or "user is muted" in str(exc)
+                    or "rate_limit_reached" in str(exc)
+                    or "rate limited" in str(exc).lower()):
                 raise
             record["error"] = str(exc)[:300]
-            record["failure_reason"] = "content_risk" if "Content Exists Risk" in str(exc) else "error"
+            record["failure_reason"] = ("content_risk" if CleaningProgressIndex.is_content_risk(str(exc))
+                                        else "error")
     record["output_characters"] = len(record["text"] or "")
     record["elapsed_seconds"] = round(time.monotonic() - started, 3)
     return record
@@ -201,7 +207,11 @@ def clean_queue(
     web_slots = {"deepseek_web": DEEPSEEK_WEB_BATCH_SLOTS,
                  "qwen_web": QWEN_WEB_BATCH_SLOTS,
                  "kimi_web": KIMI_WEB_BATCH_SLOTS,
-                 "doubao_web": DOUBAO_WEB_BATCH_SLOTS}
+                 "doubao_web": DOUBAO_WEB_BATCH_SLOTS,
+                 "chatglm_web": CHATGLM_WEB_BATCH_SLOTS,
+                 "spark_web": SPARK_WEB_BATCH_SLOTS,
+                 "wenxin_web": WENXIN_WEB_BATCH_SLOTS,
+                 "yuanbao_web": YUANBAO_WEB_BATCH_SLOTS}
     capacities = {source: (1 if source in retry_only or selected.config.provider == "llamacpp"
                            else web_slots.get(selected.config.provider, 6))
                   for source, selected in sources.items()}
@@ -386,7 +396,8 @@ def clean_queue(
                         last_snapshot = time.monotonic()
 
                 budget = limit if limit is not None else total + len(incomplete)
-                selected_incomplete = list(islice(incomplete, budget)) if retry_incomplete else []
+                selected_incomplete = list(islice((ordinal for ordinal in incomplete if ordinal not in risk_seen),
+                                                  budget)) if retry_incomplete else []
                 new_ordinals = range(next_ordinal, min(total, next_ordinal + max(0, budget - len(selected_incomplete))))
                 snapshot("running")
                 try:
@@ -401,6 +412,7 @@ def clean_queue(
                                            and ordinal not in source_rejected}
                         retried: set[int] = set(failed_ordinals - source_rejected)
                         nonrisk_failed: set[int] = set()
+                        repeated_errors: dict[str, tuple[str, int]] = {}
                         available_slots = {source: deque(range(capacity))
                                            for source, capacity in capacities.items()}
                         source_turn = deque(primary_sources)
@@ -466,6 +478,16 @@ def clean_queue(
                                 try:
                                     record = future.result()
                                     pending_records.append(record)
+                                    if (record["status"] == "incomplete" and record.get("error")
+                                            and record.get("failure_reason") != "content_risk"):
+                                        signature = re.sub(r"^第 \d+/\d+ 块[：:]\s*", "", record["error"])
+                                        previous_error, previous_count = repeated_errors.get(source, ("", 0))
+                                        count = previous_count + 1 if signature == previous_error else 1
+                                        repeated_errors[source] = (signature, count)
+                                        if count >= 3:
+                                            source_errors[source] = f"连续 {count} 条相同错误：{signature[:150]}"
+                                    else:
+                                        repeated_errors.pop(source, None)
                                     if record["status"] == "incomplete" and not stop_event.is_set():
                                         if record.get("failure_reason") == "content_risk":
                                             risk_seen.add(ordinal)
@@ -473,9 +495,9 @@ def clean_queue(
                                             nonrisk_failed.add(ordinal)
                                         if source == fallback_source:
                                             paid_attempted.add(ordinal)
-                                        other = (ordinal not in retried and any(
-                                            item != source and item not in source_errors
-                                            for item in primary_sources))
+                                        other = (ordinal not in retried and ordinal not in risk_seen
+                                                 and any(item != source and item not in source_errors
+                                                         for item in primary_sources))
                                         paid = (fallback_source if not other and ordinal not in risk_seen
                                                 and ordinal not in source_rejected
                                                 and fallback_source != source and ordinal not in paid_attempted

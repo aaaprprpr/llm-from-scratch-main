@@ -104,14 +104,21 @@ class CleaningProgressIndex:
         self._backfill_failure_reasons(progress)
 
     @staticmethod
+    def is_content_risk(error: str) -> bool:
+        return any(marker in error.lower() for marker in (
+            "content exists risk", "audit_zs_internal_error", "安审拒绝",
+            "input_sensitive", "input data may contain inappropriate content",
+        ))
+
+    @staticmethod
     def failure_reason(item: dict) -> str | None:
         if item["status"] != "incomplete":
             return None
+        error = item.get("error", "")
+        if CleaningProgressIndex.is_content_risk(error):
+            return "content_risk"
         if item.get("failure_reason"):
             return item["failure_reason"]
-        error = item.get("error", "")
-        if "Content Exists Risk" in error:
-            return "content_risk"
         if "HTTP 400" in error:
             return "rejected"
         return "error" if error else "uncertain"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import tempfile
 import time
 import unittest
@@ -9,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
-from dataset.label.backend.deepseek_web import QwenWebClient, DeepSeekWebHttpError, WebChatClient
+from dataset.label.backend.deepseek_web import QwenWebClient, KimiWebClient, DeepSeekWebHttpError, WebChatClient
 
 
 class QwenWebTests(unittest.TestCase):
@@ -127,6 +128,67 @@ globalThis.fetch = async (url, options) => {
                 list(pool.map(lambda client: client._run("test", None, None), clients))
         self.assertEqual(len(started), 2)
         self.assertGreaterEqual(started[1] - started[0], 0.04)
+
+    def test_cooldown_starts_after_previous_response_finishes(self):
+        marks = []
+
+        def fake_run(_client, _prompt, _session_id, _topic_id):
+            marks.append(("start", time.monotonic()))
+            time.sleep(0.02)
+            marks.append(("end", time.monotonic()))
+            return {"choices": []}, "session", None
+
+        client = QwenWebClient("auth", 20)
+        with (patch.object(WebChatClient, "_run", fake_run),
+              patch.object(QwenWebClient, "_next_start", 0.0),
+              patch.object(QwenWebClient, "_request_gap", 0.05)):
+            client._run("first", None, None)
+            client._run("second", None, None)
+        self.assertGreaterEqual(marks[2][1] - marks[1][1], 0.04)
+
+    def test_single_and_batch_sessions_of_one_source_never_overlap(self):
+        active = peak = 0
+        lock = threading.Lock()
+
+        def fake_run(_client, _prompt, _session_id, _topic_id):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.02)
+            with lock:
+                active -= 1
+            return {"choices": [{"finish_reason": "stop", "message": {"content": "OK"}}]}, "session", None
+
+        clients = [QwenWebClient("auth", 20), QwenWebClient("auth", 20)]
+        with patch.object(WebChatClient, "_run", fake_run):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                list(pool.map(lambda client: client.complete([{"role": "user", "content": "正文"}]), clients))
+        self.assertEqual(peak, 1)
+
+    def test_different_web_sources_have_independent_timers(self):
+        qwen = QwenWebClient("auth", 20)
+        kimi = KimiWebClient("auth", 20)
+        with (patch.object(QwenWebClient, "_request_gap", 100.0),
+              patch.object(QwenWebClient, "_next_start", 0.0),
+              patch.object(KimiWebClient, "_request_gap", 100.0),
+              patch.object(KimiWebClient, "_next_start", 0.0),
+              patch("dataset.label.backend.deepseek_web.time.sleep",
+                    side_effect=AssertionError("unrelated site waited"))):
+            qwen._wait_turn()
+            kimi._wait_turn()
+            self.assertGreater(QwenWebClient._next_start, time.monotonic())
+            self.assertGreater(KimiWebClient._next_start, time.monotonic())
+
+    def test_rate_limit_doubles_only_affected_source_gap(self):
+        qwen = QwenWebClient("auth", 20)
+        original_kimi = KimiWebClient._request_gap
+        with (patch.object(QwenWebClient, "_request_gap", 60.0),
+              patch.object(QwenWebClient, "_next_start", 0.0),
+              patch.object(QwenWebClient, "_successes", 0)):
+            qwen._mark_rate_limited()
+            self.assertEqual(QwenWebClient._request_gap, 120.0)
+            self.assertEqual(KimiWebClient._request_gap, original_kimi)
 
     def test_web_style_json_fence_is_accepted(self):
         from dataset.label.backend.llm_cleaning import LlmCleaner

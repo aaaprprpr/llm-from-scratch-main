@@ -19,6 +19,15 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 class AdditionalWebTests(unittest.TestCase):
+    def setUp(self):
+        for target, name, value in (
+            (KimiWebClient, "_request_gap", 0.0),
+            (KimiWebClient, "_next_start", 0.0),
+        ):
+            active = patch.object(target, name, value)
+            active.start()
+            self.addCleanup(active.stop)
+
     def test_kimi_structured_request_reuses_one_chat_and_deletes_it(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -78,7 +87,8 @@ globalThis.fetch = async (url, options) => {
             calls.append((path, body))
             if path.startswith('/im/'):
                 return Response(b'{"status_code":0}', 'application/json')
-            self.assertFalse(body['option']['need_deep_think'])
+            self.assertEqual(body['option']['need_deep_think'], 1)
+            self.assertEqual(body['ext']['use_deep_think'], '1')
             self.assertFalse(body['option']['connector_info_list'])
             ack = 'event: SSE_ACK\ndata: {"ack_client_meta":{"conversation_id":"12345","section_id":"67"}}\n\n'
             msg = 'event: STREAM_MSG_NOTIFY\ndata: {"meta":{"index_in_conv":2},"content":{"content_block":[{"content":{"text_block":{"text":"{\\"decision\\":\\"keep\\"}"}}}]}}\n\n'
@@ -103,6 +113,26 @@ globalThis.fetch = async (url, options) => {
         self.assertEqual(calls[-1][0], '/im/conversation/batch_del_user_conv')
         self.assertEqual(DoubaoWebClient('auth', 10)._command_argv('--json-stdin')[0], sys.executable)
 
+    def test_doubao_stream_rate_limit_reports_code_without_verification_data(self):
+        spec = importlib.util.spec_from_file_location('doubao_rate_test', ROOT / 'deepseek-web-api/doubao_chat.py')
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        class Response(io.BytesIO):
+            headers = {'content-type': 'text/event-stream'}
+            status = 200
+
+        packet = {'error_code': 710022004, 'error_msg': 'rate limited',
+                  'extra': {'decision': 'verification-secret'}}
+        stream = ('event: STREAM_ERROR\ndata: ' + json.dumps(packet) + '\n\n').encode()
+        with patch.object(module, 'call', return_value=Response(stream)):
+            with self.assertRaises(RuntimeError) as raised:
+                module.chat({}, '测试', None, structured=True)
+        self.assertIn('rate limited', str(raised.exception))
+        self.assertIn('710022004', str(raised.exception))
+        self.assertNotIn('verification-secret', str(raised.exception))
+
     def test_web_client_saves_updated_conversation_cursor(self):
         with tempfile.TemporaryDirectory() as temporary:
             state = Path(temporary) / 'doubao-state.json'
@@ -126,11 +156,19 @@ globalThis.fetch = async (url, options) => {
             root = Path(temporary)
             web = root / 'deepseek-web-api'
             web.mkdir()
-            for name in ('.kimi-web-auth.json', '.doubao-web-auth.json'):
+            sources = {
+                'kimi_web': '.kimi-web-auth.json',
+                'doubao_web': '.doubao-web-auth.json',
+                'chatglm_web': '.chatglm-web-auth.json',
+                'spark_web': '.spark-web-auth.json',
+                'wenxin_web': '.wenxin-web-auth.json',
+                'yuanbao_web': '.yuanbao-web-auth.json',
+            }
+            for name in sources.values():
                 (web / name).write_text('{}')
             settings = ModelSettings(root)
             settings.project_root = root
-            for source in ('kimi_web', 'doubao_web'):
+            for source in sources:
                 config = settings.config(source)
                 self.assertEqual(config.provider, source)
                 self.assertTrue(config.api_key)

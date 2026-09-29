@@ -234,7 +234,7 @@ class BatchCleaningTests(unittest.TestCase):
                 self.assertEqual(result["counts"], {"keep": 1})
                 self.assertEqual(result["source_errors"].keys(), {"local"})
 
-    def test_earlier_content_risk_blocks_paid_retry_even_after_other_failure(self):
+    def test_content_risk_stays_for_manual_review_without_forwarding(self):
         class Cleaner:
             def __init__(self, provider):
                 self.config = SimpleNamespace(provider=provider, model=provider)
@@ -263,11 +263,10 @@ class BatchCleaningTests(unittest.TestCase):
                                failure_fallback=paid, workers=1)
                 clean_queue(**options)
                 clean_queue(**options)
-                self.assertEqual(paid.calls, 0)
+                self.assertEqual((web.calls, local.calls, paid.calls), (1, 0, 0))
                 rows = [json.loads(line) for line in (output / "progress.jsonl").read_text().splitlines()]
+                self.assertEqual(len(rows), 1)
                 self.assertEqual(rows[0]["failure_reason"], "content_risk")
-                self.assertEqual(rows[1]["source"], "local")
-                self.assertEqual(rows[1]["status"], "incomplete")
 
     def test_qwen_validation_rejection_is_retried_without_paid_fallback(self):
         class Cleaner:
@@ -496,12 +495,14 @@ class ProgressIndexFailureTests(unittest.TestCase):
                 {"ordinal": 1, "doc_id": "risk", "status": "incomplete", "cleaned_offset": 0,
                  "error": "Content Exists Risk"},
                 {"ordinal": 2, "doc_id": "uncertain", "status": "incomplete", "cleaned_offset": 0},
+                {"ordinal": 3, "doc_id": "glm-risk", "status": "incomplete", "cleaned_offset": 0,
+                 "error": "智谱聊天失败：{'intervene_type': 'input_sensitive', 'risk_level': 'REJECT'}"},
             ]
             progress.write_text("".join(json.dumps(row) + "\n" for row in rows))
             with CleaningProgressIndex(output) as index:
                 index.sync()
-                self.assertEqual([index.details([i])[i]["failure_reason"] for i in range(3)],
-                                 ["rejected", "content_risk", "uncertain"])
+                self.assertEqual([index.details([i])[i]["failure_reason"] for i in range(4)],
+                                 ["rejected", "content_risk", "uncertain", "content_risk"])
 
 
 class SharedProgressTests(unittest.TestCase):
@@ -1001,7 +1002,7 @@ class ParallelBatchTests(unittest.TestCase):
                                  output_directory=root / "batch", cleaner=slow,
                                  cleaners={"web": fast, "local": slow}, workers=3)
             self.assertGreater(fast.before_local_finished, 2)
-            self.assertEqual(result["source_activity"]["web"]["capacity"], 2)
+            self.assertEqual(result["source_activity"]["web"]["capacity"], 1)
             self.assertEqual(result["status"], "completed")
             client.close()
             app.state.dataset_repository.clear()
@@ -1049,6 +1050,50 @@ class ParallelBatchTests(unittest.TestCase):
             rows = [json.loads(line) for line in (output / "progress.jsonl").read_text().splitlines()]
             self.assertEqual(sorted(row["ordinal"] for row in rows), [0, 1])
             self.assertEqual({row["source"] for row in rows}, {"healthy"})
+            client.close()
+            app.state.dataset_repository.clear()
+
+    def test_repeated_identical_source_errors_open_circuit(self):
+        class BrokenCleaner:
+            config = SimpleNamespace(provider="doubao_web", model="broken")
+            calls = 0
+
+            def clean(self, blocks, *, title, provenance):
+                self.calls += 1
+                raise LlmCleaningError("网页返回空正文")
+
+        class HealthyCleaner:
+            config = SimpleNamespace(provider="llamacpp", model="healthy")
+
+            @staticmethod
+            def is_complete(result):
+                return True
+
+            def clean(self, blocks, *, title, provenance):
+                return {"decision": "keep", "edited_text": blocks[0]["text"]}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = create_app(root)
+            client = TestClient(app)
+            source = root / "source.jsonl"
+            source.write_text("".join(json.dumps({"text": f"正文 {i}"}, ensure_ascii=False) + "\n"
+                                      for i in range(12)), encoding="utf-8")
+            imported = client.post("/api/imports", json={"adapter": "jsonl", "path": str(source),
+                "mapping": {"text_fields": ["text"]}}).json()
+            prepared = client.post("/api/prepares", json={
+                "source_revision_directory": imported["revision_directory"]}).json()
+            project = client.post("/api/projects", json={"name": "repeated errors"}).json()["project_id"]
+            client.post(f"/api/projects/{project}/sources", json={
+                "prepare_revision_directory": prepared["revision_directory"]})
+            queue = client.post(f"/api/projects/{project}/queues", json={"name": "all"}).json()["queue_id"]
+            bad, good = BrokenCleaner(), HealthyCleaner()
+            manifest = clean_queue(database_path=root / "curation.sqlite3", queue_id=queue,
+                                   output_directory=root / "batch", cleaner=good,
+                                   cleaners={"bad": bad, "good": good}, workers=2)
+            self.assertEqual(bad.calls, 3)
+            self.assertIn("连续 3 条相同错误", manifest["source_errors"]["bad"])
+            self.assertEqual(manifest["status"], "completed")
             client.close()
             app.state.dataset_repository.clear()
 

@@ -16,3 +16,11 @@
 .kimi-session.json
 .doubao-continue-network.json
 .kimi-minimal-auth.json
+.chatglm-web-auth.json
+.spark-web-auth.json
+.wenxin-web-auth.json
+.yuanbao-web-auth.json
+.chatglm-session.json
+.spark-session.json
+.wenxin-session.json
+.yuanbao-session.json

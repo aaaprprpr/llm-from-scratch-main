@@ -14,11 +14,24 @@ from functools import lru_cache
 from pathlib import Path
 
 
-DEEPSEEK_WEB_BATCH_SLOTS = 2  # The web service reports a parallel chat limit above this.
+DEEPSEEK_WEB_BATCH_SLOTS = 1  # Start conservatively; account-level feedback controls pacing.
 QWEN_WEB_BATCH_SLOTS = 1
 KIMI_WEB_BATCH_SLOTS = 1
 DOUBAO_WEB_BATCH_SLOTS = 1
+CHATGLM_WEB_BATCH_SLOTS = 1
+SPARK_WEB_BATCH_SLOTS = 1
+WENXIN_WEB_BATCH_SLOTS = 1
+YUANBAO_WEB_BATCH_SLOTS = 1
 WEB_SESSION_CLEANUP_SLOTS = 6  # Also remove sessions from older six-slot Qwen runs.
+WEB_AUTH_SOURCES = {
+    "qwen_web": ("QWEN_WEB_AUTH_FILE", ".qwen-web-auth.json", "https://chat2.qianwen.com", "Qwen-web"),
+    "kimi_web": ("KIMI_WEB_AUTH_FILE", ".kimi-web-auth.json", "https://www.kimi.com", "Kimi-web"),
+    "doubao_web": ("DOUBAO_WEB_AUTH_FILE", ".doubao-web-auth.json", "https://www.doubao.com", "Doubao-web"),
+    "chatglm_web": ("CHATGLM_WEB_AUTH_FILE", ".chatglm-web-auth.json", "https://chatglm.cn", "GLM-Flash-web"),
+    "spark_web": ("SPARK_WEB_AUTH_FILE", ".spark-web-auth.json", "https://spark.xfyun.cn", "Spark-Fast-web"),
+    "wenxin_web": ("WENXIN_WEB_AUTH_FILE", ".wenxin-web-auth.json", "https://wenxin.baidu.com", "Wenxin-Fast-web"),
+    "yuanbao_web": ("YUANBAO_WEB_AUTH_FILE", ".yuanbao-web-auth.json", "https://yuanbao.tencent.com", "Yuanbao-Fast-web"),
+}
 
 
 class DeepSeekWebError(RuntimeError):
@@ -185,9 +198,50 @@ class WebChatClient:
 
 
 class PacedWebChatClient(WebChatClient):
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls._provider_lock = threading.Lock()
+
+    def complete(self, messages: list[dict]) -> dict:
+        # Interactive and batch clients have separate session files, but one
+        # website account must have only one in-flight chat across both.
+        with type(self)._provider_lock:
+            return super().complete(messages)
+
+    def delete(self) -> bool:
+        with type(self)._provider_lock:
+            return super().delete()
+
     _pace_lock = threading.Lock()
     _next_start = 0.0
-    _request_gap = 2.0
+    _request_gap = 15.0
+    _min_gap = 15.0
+    _max_gap = 300.0
+    _successes = 0
+
+    def _mark_rate_limited(self) -> None:
+        cls = type(self)
+        with cls._pace_lock:
+            if cls._request_gap <= 0:  # Unit tests may disable the clock.
+                return
+            cls._request_gap = min(cls._max_gap, max(cls._min_gap, cls._request_gap * 2))
+            cls._next_start = max(cls._next_start, time.monotonic() + cls._request_gap)
+            cls._successes = 0
+
+    def _mark_success(self) -> None:
+        cls = type(self)
+        with cls._pace_lock:
+            if cls._request_gap <= 0:
+                return
+            cls._successes += 1
+            if cls._successes >= 12:
+                cls._request_gap = max(cls._min_gap, cls._request_gap * 0.9)
+                cls._successes = 0
+
+    def _finish_turn(self) -> None:
+        cls = type(self)
+        with cls._pace_lock:
+            cls._next_start = max(cls._next_start, time.monotonic() + cls._request_gap)
 
     def _wait_turn(self) -> None:
         cls = type(self)
@@ -204,6 +258,9 @@ class PacedWebChatClient(WebChatClient):
 class DeepSeekWebClient(PacedWebChatClient):
     _pace_lock = threading.Lock()
     _next_start = 0.0
+    _request_gap = 20.0
+    _min_gap = 20.0
+    _successes = 0
 
     def _defer(self, seconds: float) -> None:
         cls = type(self)
@@ -214,13 +271,19 @@ class DeepSeekWebClient(PacedWebChatClient):
         for attempt in range(2):
             self._wait_turn()
             try:
-                return super()._run(prompt, session_id, topic_id)
+                result = super()._run(prompt, session_id, topic_id)
+                self._mark_success()
+                return result
             except DeepSeekWebError as exc:
                 message = str(exc)
+                if "user is muted" in message:
+                    raise
                 if "parallel_chat_limit" in message:
+                    self._mark_rate_limited()
                     self._defer(4)
                 elif ("rate_limit_reached" in message
                       or isinstance(exc, DeepSeekWebHttpError) and exc.status == 429):
+                    self._mark_rate_limited()
                     self._defer(15)
                 else:
                     raise
@@ -228,29 +291,67 @@ class DeepSeekWebClient(PacedWebChatClient):
                     raise
                 session_id = self._session_id or session_id
                 topic_id = self._topic_id or topic_id
+            finally:
+                self._finish_turn()
         raise DeepSeekWebError("DeepSeek 网页请求失败")
 
 
 class QwenWebClient(PacedWebChatClient):
     _pace_lock = threading.Lock()
     _next_start = 0.0
-    _request_gap = 30.0
+    _request_gap = 20.0
+    _min_gap = 20.0
+    _successes = 0
     script_name = "qwen_chat.mjs"
     credential_env = "QWEN_WEB_AUTH_FILE"
     label = "千问网页"
 
     def _run(self, prompt: str, session_id: str | None, topic_id: str | None):
         self._wait_turn()
-        return super()._run(prompt, session_id, topic_id)
+        try:
+            result = super()._run(prompt, session_id, topic_id)
+        except DeepSeekWebHttpError as exc:
+            if exc.status == 429:
+                self._mark_rate_limited()
+            raise
+        else:
+            self._mark_success()
+            return result
+        finally:
+            self._finish_turn()
 
 
-class KimiWebClient(WebChatClient):
+class KimiWebClient(PacedWebChatClient):
+    _pace_lock = threading.Lock()
+    _next_start = 0.0
+    _request_gap = 15.0
+    _min_gap = 15.0
+    _successes = 0
     script_name = "kimi_chat.mjs"
     credential_env = "KIMI_WEB_AUTH_FILE"
     label = "Kimi 网页"
 
+    def _run(self, prompt: str, session_id: str | None, topic_id: str | None):
+        self._wait_turn()
+        try:
+            result = super()._run(prompt, session_id, topic_id)
+        except DeepSeekWebHttpError as exc:
+            if exc.status == 429:
+                self._mark_rate_limited()
+            raise
+        else:
+            self._mark_success()
+            return result
+        finally:
+            self._finish_turn()
 
-class DoubaoWebClient(WebChatClient):
+
+class DoubaoWebClient(PacedWebChatClient):
+    _pace_lock = threading.Lock()
+    _next_start = 0.0
+    _request_gap = 15.0
+    _min_gap = 15.0
+    _successes = 0
     script_name = "doubao_chat.py"
     credential_env = "DOUBAO_WEB_AUTH_FILE"
     label = "豆包网页"
@@ -258,12 +359,88 @@ class DoubaoWebClient(WebChatClient):
     def _command_argv(self, mode: str) -> list[str]:
         return [sys.executable, str(self.script), mode]
 
+    def _run(self, prompt: str, session_id: str | None, topic_id: str | None):
+        self._wait_turn()
+        try:
+            result = super()._run(prompt, session_id, topic_id)
+        except DeepSeekWebError as exc:
+            if ("没有返回 SSE 聊天流" in str(exc)
+                    or "rate limited" in str(exc).lower()
+                    or isinstance(exc, DeepSeekWebHttpError) and exc.status == 429):
+                self._mark_rate_limited()
+            raise
+        else:
+            self._mark_success()
+            return result
+        finally:
+            self._finish_turn()
+
+
+class PythonWebChatClient(PacedWebChatClient):
+    script_name = "python_web_bridge.py"
+    provider_name = ""
+    _request_gap = 15.0
+    _min_gap = 15.0
+
+    def _command_argv(self, mode: str) -> list[str]:
+        return [sys.executable, str(self.script), self.provider_name, mode]
+
+    def _run(self, prompt: str, session_id: str | None, topic_id: str | None):
+        self._wait_turn()
+        try:
+            result = super()._run(prompt, session_id, topic_id)
+        except DeepSeekWebHttpError as exc:
+            if exc.status == 429:
+                self._mark_rate_limited()
+            raise
+        else:
+            self._mark_success()
+            return result
+        finally:
+            self._finish_turn()
+
+
+class ChatglmWebClient(PythonWebChatClient):
+    _pace_lock = threading.Lock()
+    _next_start = 0.0
+    provider_name = "chatglm_web"
+    credential_env = "CHATGLM_WEB_AUTH_FILE"
+    label = "智谱清言网页"
+
+
+class SparkWebClient(PythonWebChatClient):
+    _pace_lock = threading.Lock()
+    _next_start = 0.0
+    provider_name = "spark_web"
+    credential_env = "SPARK_WEB_AUTH_FILE"
+    label = "讯飞星火网页"
+
+
+class WenxinWebClient(PythonWebChatClient):
+    _pace_lock = threading.Lock()
+    _next_start = 0.0
+    provider_name = "wenxin_web"
+    credential_env = "WENXIN_WEB_AUTH_FILE"
+    label = "文心网页"
+
+
+class YuanbaoWebClient(PythonWebChatClient):
+    _pace_lock = threading.Lock()
+    _next_start = 0.0
+    provider_name = "yuanbao_web"
+    credential_env = "YUANBAO_WEB_AUTH_FILE"
+    label = "腾讯元宝网页"
+
 
 WEB_CLIENTS = {
     "deepseek_web": DeepSeekWebClient,
     "qwen_web": QwenWebClient,
     "kimi_web": KimiWebClient,
     "doubao_web": DoubaoWebClient,
+    "chatglm_web": ChatglmWebClient,
+    "spark_web": SparkWebClient,
+    "wenxin_web": WenxinWebClient,
+    "yuanbao_web": YuanbaoWebClient,
 }
 
 

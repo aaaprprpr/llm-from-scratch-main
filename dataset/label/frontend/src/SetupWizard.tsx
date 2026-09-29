@@ -81,6 +81,7 @@ const statusName: Record<string, string> = { running: "运行中", stopping: "�
 const sourceName: Record<string, string> = { deepseek: "DeepSeek API", qwen_api: "千问 API",
   local: "本地 Qwen", deepseek_web: "DeepSeek 网页", qwen_web: "千问网页",
   kimi_web: "Kimi 网页", doubao_web: "豆包网页",
+  chatglm_web: "智谱清言网页", spark_web: "讯飞星火网页", wenxin_web: "文心网页", yuanbao_web: "腾讯元宝网页",
   deepseek_api_retry: "DeepSeek API · 失败重试" };
 
 export type SetupPage = "downloads" | "imported" | "batch";

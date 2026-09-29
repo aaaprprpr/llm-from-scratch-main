@@ -19,6 +19,15 @@ from dataset.label.backend.llm_cleaning import CleaningConfig, LlmCleaner, LlmCl
 
 
 class DeepSeekWebTests(unittest.TestCase):
+    def setUp(self):
+        for target, name, value in (
+            (DeepSeekWebClient, "_request_gap", 0.0),
+            (DeepSeekWebClient, "_next_start", 0.0),
+        ):
+            active = patch.object(target, name, value)
+            active.start()
+            self.addCleanup(active.stop)
+
     def test_supplied_node_example_disables_thinking_and_search(self):
         script = Path(__file__).resolve().parents[3] / "deepseek-web-api" / "web_chat_once.mjs"
         pow_module = script.with_name("pow23.mjs").as_uri()

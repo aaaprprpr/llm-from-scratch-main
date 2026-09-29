@@ -10,9 +10,10 @@ from typing import Literal
 from dotenv import dotenv_values
 
 from .llm_cleaning import CleaningConfig
+from .deepseek_web import WEB_AUTH_SOURCES
 
-ModelSource = Literal["deepseek", "qwen_api", "local", "deepseek_web", "qwen_web", "kimi_web", "doubao_web"]
-SOURCES = ("deepseek", "qwen_api", "local", "deepseek_web", "qwen_web", "kimi_web", "doubao_web")
+ModelSource = Literal["deepseek", "qwen_api", "local", "deepseek_web", "qwen_web", "kimi_web", "doubao_web", "chatglm_web", "spark_web", "wenxin_web", "yuanbao_web"]
+SOURCES = ("deepseek", "qwen_api", "local", "deepseek_web", *WEB_AUTH_SOURCES)
 
 
 @dataclass(frozen=True)
@@ -79,13 +80,8 @@ class ModelSettings:
                 timeout_seconds=300, max_chunk_characters=16000,
                 max_units_per_chunk=512, max_attempts_per_chunk=2, max_parallel_chunks=1,
             )
-        if source in {"qwen_web", "kimi_web", "doubao_web"}:
-            web_options = {
-                "qwen_web": ("QWEN_WEB_AUTH_FILE", ".qwen-web-auth.json", "https://chat2.qianwen.com", "Qwen-web"),
-                "kimi_web": ("KIMI_WEB_AUTH_FILE", ".kimi-web-auth.json", "https://www.kimi.com", "Kimi-web"),
-                "doubao_web": ("DOUBAO_WEB_AUTH_FILE", ".doubao-web-auth.json", "https://www.doubao.com", "Doubao-web"),
-            }
-            variable, filename, base_url, model = web_options[source]
+        if source in WEB_AUTH_SOURCES:
+            variable, filename, base_url, model = WEB_AUTH_SOURCES[source]
             return replace(
                 base, provider=source, base_url=base_url, model=model,
                 api_key=self._web_auth_file(env, variable, filename),
