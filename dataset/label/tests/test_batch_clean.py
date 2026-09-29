@@ -627,6 +627,17 @@ class SharedProgressTests(unittest.TestCase):
         self.assertEqual(result["status"], "incomplete")
         self.assertEqual(cleaner.calls, [1])
 
+    def test_doubao_non_sse_response_stops_source(self):
+        class RejectedCleaner:
+            def clean(self, blocks, *, title, provenance):
+                raise LlmCleaningError("豆包网页请求失败：豆包没有返回 SSE 聊天流：HTTP 200，Content-Type text/plain，响应为空")
+
+        with self.assertRaisesRegex(LlmCleaningError, "豆包没有返回 SSE"):
+            _process(0, {
+                "document": {"doc_id": "rejected"}, "materialized_text": "正文",
+                "document_review": None, "provenance": {"title": None},
+            }, "queue", RejectedCleaner())
+
     def test_confirmed_keep_without_edit_skips_model(self):
         cleaner = FakeCleaner()
         result = _process(0, {
@@ -1079,7 +1090,7 @@ class ParallelBatchTests(unittest.TestCase):
             self.assertEqual(local.calls, 1)
             self.assertIn("签名材料已用完", result["source_errors"]["qwen_web"])
             self.assertEqual(result["source_activity"]["qwen_web"]["active"], 0)
-            self.assertEqual(result["source_activity"]["qwen_web"]["capacity"], 2)
+            self.assertEqual(result["source_activity"]["qwen_web"]["capacity"], 1)
             client.close()
             app.state.dataset_repository.clear()
 

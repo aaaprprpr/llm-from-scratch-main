@@ -11,8 +11,8 @@ from dotenv import dotenv_values
 
 from .llm_cleaning import CleaningConfig
 
-ModelSource = Literal["deepseek", "qwen_api", "local", "deepseek_web", "qwen_web"]
-SOURCES = ("deepseek", "qwen_api", "local", "deepseek_web", "qwen_web")
+ModelSource = Literal["deepseek", "qwen_api", "local", "deepseek_web", "qwen_web", "kimi_web", "doubao_web"]
+SOURCES = ("deepseek", "qwen_api", "local", "deepseek_web", "qwen_web", "kimi_web", "doubao_web")
 
 
 @dataclass(frozen=True)
@@ -50,6 +50,13 @@ class ModelSettings:
         temporary.write_text(json.dumps(selection.as_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         temporary.replace(self.path)
 
+    def _web_auth_file(self, env: dict, variable: str, default_name: str) -> str:
+        requested = Path((env.get(variable) or default_name).strip()).expanduser()
+        candidates = ([requested] if requested.is_absolute() else
+                      [self.project_root / requested,
+                       self.project_root / "deepseek-web-api" / requested.name])
+        return str(next((path for path in candidates if path.is_file()), ""))
+
     def config(self, source: ModelSource) -> CleaningConfig:
         if source not in SOURCES:
             raise ValueError("未知的 LLM 来源")
@@ -72,15 +79,16 @@ class ModelSettings:
                 timeout_seconds=300, max_chunk_characters=16000,
                 max_units_per_chunk=512, max_attempts_per_chunk=2, max_parallel_chunks=1,
             )
-        if source == "qwen_web":
-            auth = Path((env.get("QWEN_WEB_AUTH_FILE") or "").strip())
-            if not auth.is_absolute():
-                auth = self.project_root / auth
-                if not auth.is_file():
-                    auth = self.project_root / "deepseek-web-api" / auth.name
+        if source in {"qwen_web", "kimi_web", "doubao_web"}:
+            web_options = {
+                "qwen_web": ("QWEN_WEB_AUTH_FILE", ".qwen-web-auth.json", "https://chat2.qianwen.com", "Qwen-web"),
+                "kimi_web": ("KIMI_WEB_AUTH_FILE", ".kimi-web-auth.json", "https://www.kimi.com", "Kimi-web"),
+                "doubao_web": ("DOUBAO_WEB_AUTH_FILE", ".doubao-web-auth.json", "https://www.doubao.com", "Doubao-web"),
+            }
+            variable, filename, base_url, model = web_options[source]
             return replace(
-                base, provider="qwen_web", base_url="https://chat2.qianwen.com",
-                model="Qwen-web", api_key=str(auth) if auth.is_file() else "",
+                base, provider=source, base_url=base_url, model=model,
+                api_key=self._web_auth_file(env, variable, filename),
                 risk_fallback=None, context_tokens=32768, max_output_tokens=4096,
                 timeout_seconds=300, max_chunk_characters=8000,
                 max_units_per_chunk=256, max_attempts_per_chunk=2, max_parallel_chunks=1,

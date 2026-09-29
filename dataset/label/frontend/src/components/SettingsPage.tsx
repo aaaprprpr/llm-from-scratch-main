@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { requestJson } from "../api";
 
-type Source = "deepseek" | "qwen_api" | "local" | "deepseek_web" | "qwen_web";
+type Source = "deepseek" | "qwen_api" | "local" | "deepseek_web" | "qwen_web" | "kimi_web" | "doubao_web";
 type Choice = { single: Source; batch: Source[]; failure_fallback: boolean };
 type Settings = Choice & {
   available: Record<Source, { model: string; configured: boolean }>;
@@ -12,6 +12,8 @@ const choices: { value: Source; label: string }[] = [
   { value: "deepseek", label: "DeepSeek API" },
   { value: "deepseek_web", label: "DeepSeek 网页" },
   { value: "qwen_web", label: "千问网页" },
+  { value: "kimi_web", label: "Kimi 网页" },
+  { value: "doubao_web", label: "豆包网页" },
   { value: "qwen_api", label: "Qwen API" },
   { value: "local", label: "本地 Qwen 27B" },
 ];
@@ -132,8 +134,9 @@ export default function SettingsPage() {
             <span>{item.value === "local" ? settings.local_model.detail :
               item.value === "deepseek_web"
                 ? settings.available[item.value]?.configured ? "网页登录令牌已配置" : "未配置 DEEPSEEK_WEB_TOKEN"
-                : item.value === "qwen_web"
-                  ? settings.available[item.value]?.configured ? "网页凭据已配置" : "未找到 QWEN_WEB_AUTH_FILE"
+                : item.value === "qwen_web" || item.value === "kimi_web" || item.value === "doubao_web"
+                  ? settings.available[item.value]?.configured ? "网页凭据已配置"
+                    : `未找到 ${{ qwen_web: "QWEN_WEB_AUTH_FILE", kimi_web: "KIMI_WEB_AUTH_FILE", doubao_web: "DOUBAO_WEB_AUTH_FILE" }[item.value]}`
                   : settings.available[item.value]?.configured ? "API Key 已配置" : "未配置 API Key"}</span>
           </div>)}
           <p className="muted">本地服务在打开清洗台时自动检测并启动；模型首次加载需要稍等。切换批量模型需先暂停运行中的任务。</p>

@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from functools import lru_cache
@@ -14,7 +15,9 @@ from pathlib import Path
 
 
 DEEPSEEK_WEB_BATCH_SLOTS = 2  # The web service reports a parallel chat limit above this.
-QWEN_WEB_BATCH_SLOTS = 2
+QWEN_WEB_BATCH_SLOTS = 1
+KIMI_WEB_BATCH_SLOTS = 1
+DOUBAO_WEB_BATCH_SLOTS = 1
 WEB_SESSION_CLEANUP_SLOTS = 6  # Also remove sessions from older six-slot Qwen runs.
 
 
@@ -104,10 +107,13 @@ class WebChatClient:
             self._topic_id = topic_id
             self._save_session(session_id, topic_id)
 
+    def _command_argv(self, mode: str) -> list[str]:
+        return [_node_executable(), str(self.script), mode]
+
     def _command(self, mode: str, payload: dict):
         try:
             result = subprocess.run(
-                [_node_executable(), str(self.script), mode],
+                self._command_argv(mode),
                 input=json.dumps(payload, ensure_ascii=False),
                 text=True, capture_output=True, timeout=self.timeout,
                 env={**os.environ, self.credential_env: self.token}, check=False,
@@ -155,7 +161,8 @@ class WebChatClient:
                     return response
                 session_id, topic_id = self._session_id, self._topic_id
                 try:
-                    response, _, _ = self._run(prompt, session_id, topic_id)
+                    response, self._session_id, self._topic_id = self._run(prompt, session_id, topic_id)
+                    self._save_session(self._session_id, self._topic_id)
                     return response
                 except DeepSeekWebSessionError:
                     if attempt:
@@ -227,6 +234,7 @@ class DeepSeekWebClient(PacedWebChatClient):
 class QwenWebClient(PacedWebChatClient):
     _pace_lock = threading.Lock()
     _next_start = 0.0
+    _request_gap = 30.0
     script_name = "qwen_chat.mjs"
     credential_env = "QWEN_WEB_AUTH_FILE"
     label = "千问网页"
@@ -236,13 +244,36 @@ class QwenWebClient(PacedWebChatClient):
         return super()._run(prompt, session_id, topic_id)
 
 
+class KimiWebClient(WebChatClient):
+    script_name = "kimi_chat.mjs"
+    credential_env = "KIMI_WEB_AUTH_FILE"
+    label = "Kimi 网页"
+
+
+class DoubaoWebClient(WebChatClient):
+    script_name = "doubao_chat.py"
+    credential_env = "DOUBAO_WEB_AUTH_FILE"
+    label = "豆包网页"
+
+    def _command_argv(self, mode: str) -> list[str]:
+        return [sys.executable, str(self.script), mode]
+
+
+WEB_CLIENTS = {
+    "deepseek_web": DeepSeekWebClient,
+    "qwen_web": QwenWebClient,
+    "kimi_web": KimiWebClient,
+    "doubao_web": DoubaoWebClient,
+}
+
+
 def cleanup_batch_sessions(root: Path, configs) -> list[str]:
     """Delete every fixed web session for the completed batch run."""
     errors = []
     for config in configs.values():
-        if config.provider not in {"deepseek_web", "qwen_web"} or not config.api_key:
+        if config.provider not in WEB_CLIENTS or not config.api_key:
             continue
-        client_type = DeepSeekWebClient if config.provider == "deepseek_web" else QwenWebClient
+        client_type = WEB_CLIENTS[config.provider]
         for slot in range(WEB_SESSION_CLEANUP_SLOTS):
             path = root / f"{config.provider}_batch_{slot}_session.json"
             if not path.exists():

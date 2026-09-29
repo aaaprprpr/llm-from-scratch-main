@@ -1,0 +1,77 @@
+{
+  "message": {
+    "inputMethod": "chat_search",
+    "isRebuild": false,
+    "content": {
+      "query": "",
+      "agentInfo": {
+        "agent_id": [
+          ""
+        ],
+        "params": "{\"agt_rk\":1,\"agt_sess_cnt\":1}"
+      },
+      "agentInfoList": [],
+      "qtype": 0
+    },
+    "searchInfo": {
+      "srcid": "",
+      "order": "",
+      "tplname": "",
+      "dqaKey": "",
+      "re_rank": "1",
+      "ori_lid": "",
+      "sa": "bkb",
+      "enter_type": "wenxin_site",
+      "chatParams": {
+        "setype": "csaitab",
+        "chat_samples": "WISE_NEW_CSAITAB",
+        "chat_token": "",
+        "scene": ""
+      },
+      "isPrivateChat": false,
+      "usedModel": {
+        "modelName": "smartMode",
+        "modelFunction": {
+          "deepSearch": "0",
+          "thinkMode": "0"
+        },
+        "showModelName": "smartMode"
+      },
+      "landingPageSwitch": "",
+      "landingPage": "aitab",
+      "ecomFrom": "",
+      "hasLocPermission": "",
+      "isInnovate": 2,
+      "applid": "",
+      "a_lid": "",
+      "capsuleSelectMode": "fast",
+      "showMindMap": false,
+      "deepDecisionInfo": {
+        "isDeepDecision": 0
+      }
+    },
+    "from": "",
+    "source": "pc_csaitab",
+    "query": [
+      {
+        "type": "TEXT",
+        "data": {
+          "text": {
+            "query": "",
+            "extData": "{}",
+            "text_type": ""
+          }
+        }
+      }
+    ],
+    "anti_ext": {
+      "inputT": null,
+      "ck1": 134,
+      "ck9": 600,
+      "ck10": 316
+    }
+  },
+  "sa": "bkb",
+  "setype": "csaitab",
+  "rank": 1
+}

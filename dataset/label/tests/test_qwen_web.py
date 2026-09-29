@@ -13,6 +13,14 @@ from dataset.label.backend.deepseek_web import QwenWebClient, DeepSeekWebHttpErr
 
 
 class QwenWebTests(unittest.TestCase):
+    def setUp(self):
+        # Pacing is verified separately; request-format tests should not wait 30 seconds.
+        self.pace = patch.object(QwenWebClient, "_request_gap", 0.0)
+        self.next_start = patch.object(QwenWebClient, "_next_start", 0.0)
+        self.pace.start()
+        self.next_start.start()
+        self.addCleanup(self.pace.stop)
+        self.addCleanup(self.next_start.stop)
     def test_fixed_session_independent_documents_and_delete(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

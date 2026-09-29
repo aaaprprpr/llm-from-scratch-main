@@ -17,7 +17,8 @@ from pathlib import Path
 from .blocks import parse_blocks
 from .database import CurationDatabase
 from .documents import QueueTextReader
-from .deepseek_web import QWEN_WEB_BATCH_SLOTS, DEEPSEEK_WEB_BATCH_SLOTS
+from .deepseek_web import (QWEN_WEB_BATCH_SLOTS, DEEPSEEK_WEB_BATCH_SLOTS,
+                           KIMI_WEB_BATCH_SLOTS, DOUBAO_WEB_BATCH_SLOTS)
 from .cleaning_progress import CleaningProgressIndex, write_snapshot
 from .llm_cleaning import CleaningConfig, LlmCleaner, LlmCleaningError, PROMPT_VERSION
 
@@ -156,7 +157,8 @@ def _process(ordinal: int, value: dict, queue_id: str, cleaner: LlmCleaner) -> d
         except (LlmCleaningError, ValueError) as exc:
             if ("HTTP 401" in str(exc) or "HTTP 403" in str(exc) or "HTTP 429" in str(exc)
                     or "签名材料已过期" in str(exc) or "签名材料已用完" in str(exc)
-                    or "缺少千问凭据" in str(exc)):
+                    or "缺少千问凭据" in str(exc)
+                    or "豆包没有返回 SSE 聊天流" in str(exc)):
                 raise
             record["error"] = str(exc)[:300]
             record["failure_reason"] = "content_risk" if "Content Exists Risk" in str(exc) else "error"
@@ -196,9 +198,12 @@ def clean_queue(
     # A model gets another document whenever one of its slots finishes. Faster
     # sources naturally process more rows; a slow local model never queues up a
     # fixed fraction of the corpus and blocks all remote workers.
-    capacities = {source: (1 if source in retry_only or selected.config.provider == "llamacpp" else
-                           DEEPSEEK_WEB_BATCH_SLOTS if selected.config.provider == "deepseek_web" else
-                           QWEN_WEB_BATCH_SLOTS if selected.config.provider == "qwen_web" else 6)
+    web_slots = {"deepseek_web": DEEPSEEK_WEB_BATCH_SLOTS,
+                 "qwen_web": QWEN_WEB_BATCH_SLOTS,
+                 "kimi_web": KIMI_WEB_BATCH_SLOTS,
+                 "doubao_web": DOUBAO_WEB_BATCH_SLOTS}
+    capacities = {source: (1 if source in retry_only or selected.config.provider == "llamacpp"
+                           else web_slots.get(selected.config.provider, 6))
                   for source, selected in sources.items()}
     total_capacity = sum(capacities.values())
     workers = min(workers if workers is not None else min(total_capacity, 16), total_capacity)

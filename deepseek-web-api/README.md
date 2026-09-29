@@ -1,4 +1,4 @@
-# DeepSeek 与千问网页聊天请求笔记
+# 网页聊天请求笔记
 
 记录时间：2026-09-28。两套请求都来自已登录网页的网络请求，属于**网页内部接口**，服务方可能调整字段、签名或风控。聊天脚本 [web_chat_once.mjs](web_chat_once.mjs) 与 [qwen_chat.mjs](qwen_chat.mjs) 在 Node.js 18+ 中运行，不需要安装 npm 包。
 
@@ -178,7 +178,7 @@ python .\qwen_capture_auth.py 53267
 node .\qwen_chat.mjs '请只回复 OK'
 ```
 
-导出脚本通过本机 Chrome DevTools Protocol 读取登录 Cookie、网页 `localStorage` 中的 `qwen_chat` 签名材料以及公共查询参数，写入 `.qwen-web-auth.json`，终端只打印项目数量。`.env` 中的 `QWEN_WEB_AUTH_FILE` 指向该文件；默认路径也就是项目根目录的 `.qwen-web-auth.json`。Cookie、`ut` 和签名材料均属于网页登录凭据，不要分享或提交文件。签名材料余量低或将过期时，聊天脚本会自动补充；两个批量槽共用凭据文件锁，并按至少 2 秒的间隔启动请求。补充也失败时，检查网页登录状态并重新导出。
+导出脚本通过本机 Chrome DevTools Protocol 读取登录 Cookie、网页 `localStorage` 中的 `qwen_chat` 签名材料以及公共查询参数，写入 `.qwen-web-auth.json`，终端只打印项目数量。`.env` 中的 `QWEN_WEB_AUTH_FILE` 指向该文件；默认路径也就是项目根目录的 `.qwen-web-auth.json`。Cookie、`ut` 和签名材料均属于网页登录凭据，不要分享或提交文件。签名材料余量低或将过期时，聊天脚本会自动补充；清洗台的千问网页批量来源使用一个会话槽，并按至少 30 秒的间隔启动请求；凭据文件仍由文件锁保护。补充也失败时，检查网页登录状态并重新导出。
 
 ### 发消息
 
@@ -219,3 +219,9 @@ X-XSRF-TOKEN: <XSRF-TOKEN Cookie 的值>
 ### 版本限制
 
 这套网页接口和签名材料会跟随千问网页升级。若出现固定拒答、SSE 为空、401/403 或签名材料过期，先重新运行导出脚本；仍失败时，对照浏览器最新的 `/api/v2/chat` 请求更新字段。需要稳定长期集成时，使用[阿里云百炼正式 API](https://help.aliyun.com/zh/model-studio/first-api-call-to-qwen)。
+
+## Kimi 与豆包网页适配
+
+新增的 `kimi_capture_auth.py`、`doubao_capture_auth.py` 从已登录浏览器导出各自凭据。清洗台通过根目录 `.env` 中的 `KIMI_WEB_AUTH_FILE` 和 `DOUBAO_WEB_AUTH_FILE` 找到凭据文件；未填写时查找本目录下的 `.kimi-web-auth.json` 和 `.doubao-web-auth.json`。豆包还使用本目录的 `doubao_request_template.json`。凭据文件和会话文件由 `.gitignore` 忽略。
+
+`kimi_chat.mjs` 和 `doubao_chat.py` 既能命令行聊天，也接受 `--json-stdin` 的 `{ "prompt": "...", "session_id": null, "topic_id": null }`，输出带 `session_id`、`topic_id`（豆包）和 `content` 的 JSON；`--delete-session-stdin` 接受 `{ "session_id": "..." }`。清洗台利用这两个模式固定复用每个批量槽的会话，暂停、完成或失败时删除批量会话。两者都关闭思考和联网工具；网页内部接口、凭据及模型参数可能随页面更新。

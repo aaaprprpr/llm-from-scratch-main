@@ -80,6 +80,7 @@ const duration = (seconds?: number | null) => seconds == null ? "—" : `${Math.
 const statusName: Record<string, string> = { running: "运行中", stopping: "暂停中", paused: "已暂停", interrupted: "服务中断，可续跑", completed: "已完成", failed: "失败", needs_retry: "有未完成条目", partial: "部分完成" };
 const sourceName: Record<string, string> = { deepseek: "DeepSeek API", qwen_api: "千问 API",
   local: "本地 Qwen", deepseek_web: "DeepSeek 网页", qwen_web: "千问网页",
+  kimi_web: "Kimi 网页", doubao_web: "豆包网页",
   deepseek_api_retry: "DeepSeek API · 失败重试" };
 
 export type SetupPage = "downloads" | "imported" | "batch";

@@ -285,7 +285,7 @@ class BatchJobManager:
         if limit is not None and limit < 1:
             raise ValueError("本次处理条数必须大于零")
         for config in self.configs.values():
-            if config.provider in {"deepseek", "dashscope", "deepseek_web", "qwen_web"} and not config.api_key:
+            if config.provider in {"deepseek", "dashscope", "deepseek_web", "qwen_web", "kimi_web", "doubao_web"} and not config.api_key:
                 raise ValueError(f"{config.provider} 凭据未配置")
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
