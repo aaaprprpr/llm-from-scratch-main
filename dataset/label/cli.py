@@ -15,7 +15,7 @@ from .backend.database import (
 )
 from .backend.documents import DocumentService
 from .backend.import_service import ImportService
-from .backend.llm_cleaning import CleaningConfig, LlmCleaner
+from .backend.llm_cleaning import CleaningConfig, LlmCleaner, create_cleaner
 from .backend.importers import ADAPTERS, SourceSpec, get_adapter
 from .backend.materialize import MATERIALIZE_VERSION, MaterializeService
 from .backend.prepare import PrepareConfig, PrepareService
@@ -210,7 +210,7 @@ def command_llm_clean_batch(args: argparse.Namespace) -> None:
     configs = {source: settings.config(source) for source in settings.read().batch}
     config = next(iter(configs.values()))
     output = Path(args.output_directory) if args.output_directory else output_path(root, args.queue_id, config)
-    cleaners = {source: LlmCleaner(item, root / "llm_suggestions") for source, item in configs.items()}
+    cleaners = {source: create_cleaner(item, root / "llm_suggestions") for source, item in configs.items()}
     failure_fallback = None
     if settings.read().failure_fallback:
         paid = settings.config("deepseek")

@@ -11,7 +11,7 @@ from typing import Callable, Mapping
 from .batch_clean import clean_queue, output_path
 from .cleaning_export import export_effective
 from .cleaning_progress import CleaningProgressIndex, write_snapshot
-from .llm_cleaning import LlmCleaner
+from .llm_cleaning import LlmCleaner, create_cleaner
 from .local_model import LocalModelService
 from .model_settings import ModelSettings
 from .database import CurationDatabase
@@ -203,7 +203,7 @@ class BatchJobManager:
                 elif batch and batch["status"] == "incomplete":
                     reason = batch["failure_reason"]
                     state = ("risk" if reason == "content_risk" else "rejected" if reason == "rejected"
-                             else "failed" if reason == "error" else "review")
+                             else "failed" if reason in {"error", "document_limit"} else "review")
                     decision = None
                 elif review:
                     state, decision = "review", None
@@ -301,7 +301,7 @@ class BatchJobManager:
                 try:
                     if any(config.provider == "llamacpp" for config in configs.values()) and self.local_model is not None:
                         self.local_model.wait_ready()
-                    cleaners = {source: LlmCleaner(config, self.root / "llm_suggestions")
+                    cleaners = {source: create_cleaner(config, self.root / "llm_suggestions")
                                 for source, config in configs.items()}
                     settings = ModelSettings(self.root)
                     failure_fallback = None

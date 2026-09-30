@@ -13,7 +13,7 @@ from fastapi import HTTPException
 from .batch_jobs import BatchJobManager
 from .database import CurationDatabase, RevisionConflictError, UndoConflictError
 from .documents import DatasetRepository
-from .llm_cleaning import LlmCleaner, LlmCleaningError
+from .llm_cleaning import LlmCleaningError, create_cleaner
 from .local_model import LocalModelService
 from .model_settings import ModelSelection, ModelSettings
 
@@ -36,7 +36,7 @@ class ApiContext:
         self.repository = DatasetRepository()
         self.model_settings = ModelSettings(self.root)
         selection = self.model_settings.read()
-        self.llm_cleaner = LlmCleaner(self.model_settings.config(selection.single), self.root / "llm_suggestions")
+        self.llm_cleaner = create_cleaner(self.model_settings.config(selection.single), self.root / "llm_suggestions")
         self.local_model = LocalModelService(self.root)
         self.batch_jobs = BatchJobManager(
             self.root, self.database_path,
@@ -49,7 +49,7 @@ class ApiContext:
 
     def set_model_selection(self, selection: ModelSelection) -> None:
         with self._model_lock:
-            single = LlmCleaner(self.model_settings.config(selection.single), self.root / "llm_suggestions")
+            single = create_cleaner(self.model_settings.config(selection.single), self.root / "llm_suggestions")
             if selection.batch == self.model_settings.read().batch:
                 self.model_settings.write(selection)
             else:

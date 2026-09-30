@@ -79,7 +79,7 @@ const count = (value?: number) => (value ?? 0).toLocaleString();
 const duration = (seconds?: number | null) => seconds == null ? "—" : `${Math.floor(seconds / 3600)}时${Math.floor(seconds % 3600 / 60)}分`;
 const statusName: Record<string, string> = { running: "运行中", stopping: "暂停中", paused: "已暂停", interrupted: "服务中断，可续跑", completed: "已完成", failed: "失败", needs_retry: "有未完成条目", partial: "部分完成" };
 const sourceName: Record<string, string> = { deepseek: "DeepSeek API", qwen_api: "千问 API",
-  local: "本地 Qwen", deepseek_web: "DeepSeek 网页", qwen_web: "千问网页",
+  local: "本地 Qwen", laya: "Laya 本地分类", deepseek_web: "DeepSeek 网页", qwen_web: "千问网页",
   kimi_web: "Kimi 网页", doubao_web: "豆包网页",
   chatglm_web: "智谱清言网页", spark_web: "讯飞星火网页", wenxin_web: "文心网页", yuanbao_web: "腾讯元宝网页",
   deepseek_api_retry: "DeepSeek API · 失败重试" };

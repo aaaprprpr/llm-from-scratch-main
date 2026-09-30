@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { requestJson } from "../api";
 
-type Source = "deepseek" | "qwen_api" | "local" | "deepseek_web" | "qwen_web" | "kimi_web" | "doubao_web" | "chatglm_web" | "spark_web" | "wenxin_web" | "yuanbao_web";
+type Source = "deepseek" | "qwen_api" | "local" | "deepseek_web" | "qwen_web" | "kimi_web" | "doubao_web" | "chatglm_web" | "spark_web" | "wenxin_web" | "yuanbao_web" | "laya";
 type Choice = { single: Source; batch: Source[]; failure_fallback: boolean };
 type Settings = Choice & {
   available: Record<Source, { model: string; configured: boolean }>;
@@ -20,6 +20,7 @@ const choices: { value: Source; label: string }[] = [
   { value: "yuanbao_web", label: "腾讯元宝网页" },
   { value: "qwen_api", label: "Qwen API" },
   { value: "local", label: "本地 Qwen 27B" },
+  { value: "laya", label: "Laya 本地分类（微调实验）" },
 ];
 
 export default function SettingsPage() {
@@ -136,6 +137,7 @@ export default function SettingsPage() {
             <strong>{item.label}</strong>
             <span>{settings.available[item.value]?.model ?? "重启清洗台后可用"}</span>
             <span>{item.value === "local" ? settings.local_model.detail :
+              item.value === "laya" ? "已针对维基语料微调；其他数据源请先小样本验证" :
               item.value === "deepseek_web"
                 ? settings.available[item.value]?.configured ? "网页登录令牌已配置" : "未配置 DEEPSEEK_WEB_TOKEN"
                 : item.value === "qwen_web" || item.value === "kimi_web" || item.value === "doubao_web" || item.value === "chatglm_web" || item.value === "spark_web" || item.value === "wenxin_web" || item.value === "yuanbao_web"
@@ -143,7 +145,7 @@ export default function SettingsPage() {
                     : `未找到 ${{ qwen_web: "QWEN_WEB_AUTH_FILE", kimi_web: "KIMI_WEB_AUTH_FILE", doubao_web: "DOUBAO_WEB_AUTH_FILE", chatglm_web: "CHATGLM_WEB_AUTH_FILE", spark_web: "SPARK_WEB_AUTH_FILE", wenxin_web: "WENXIN_WEB_AUTH_FILE", yuanbao_web: "YUANBAO_WEB_AUTH_FILE" }[item.value]}`
                   : settings.available[item.value]?.configured ? "API Key 已配置" : "未配置 API Key"}</span>
           </div>)}
-          <p className="muted">本地服务在打开清洗台时自动检测并启动；模型首次加载需要稍等。切换批量模型需先暂停运行中的任务。</p>
+          <p className="muted">本地模型仅在实际清洗时加载。Laya 按换行块做保留/删除分类，目前仅在维基语料上验证，请先人工抽查。切换批量模型需先暂停运行中的任务。</p>
         </div>
       </> : <p className="muted">正在读取设置…</p>}
       {message && <p className={message.startsWith("保存失败") || message.startsWith("读取设置失败") || message.startsWith("当前清洗台") ? "settings-message error" : "settings-message"}>{message}</p>}

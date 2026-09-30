@@ -12,8 +12,8 @@ from dotenv import dotenv_values
 from .llm_cleaning import CleaningConfig
 from .deepseek_web import WEB_AUTH_SOURCES
 
-ModelSource = Literal["deepseek", "qwen_api", "local", "deepseek_web", "qwen_web", "kimi_web", "doubao_web", "chatglm_web", "spark_web", "wenxin_web", "yuanbao_web"]
-SOURCES = ("deepseek", "qwen_api", "local", "deepseek_web", *WEB_AUTH_SOURCES)
+ModelSource = Literal["deepseek", "qwen_api", "local", "deepseek_web", "qwen_web", "kimi_web", "doubao_web", "chatglm_web", "spark_web", "wenxin_web", "yuanbao_web", "laya"]
+SOURCES = ("deepseek", "qwen_api", "local", "laya", "deepseek_web", *WEB_AUTH_SOURCES)
 
 
 @dataclass(frozen=True)
@@ -64,11 +64,18 @@ class ModelSettings:
         base = CleaningConfig.from_file()
         if source == "deepseek":
             return base
+        if source == "laya":
+            return replace(
+                base, provider="laya", base_url="local://laya", model="laya-wiki-cleaning-v1",
+                api_key="", risk_fallback=None, context_tokens=8192, max_output_tokens=128,
+                max_chunk_characters=8000, max_units_per_chunk=64, max_parallel_chunks=1,
+            )
         if source == "local":
             return replace(
                 base, provider="llamacpp", base_url="http://127.0.0.1:8080", model="qwen-local",
                 api_key="", risk_fallback=None, context_tokens=32768, max_output_tokens=4096,
-                timeout_seconds=600, max_chunk_characters=2000, max_units_per_chunk=128,
+                timeout_seconds=600, max_document_characters=100000,
+                max_chunk_characters=2000, max_units_per_chunk=128,
                 max_attempts_per_chunk=2, max_parallel_chunks=1,
             )
         env = {**dotenv_values(self.project_root / ".env"), **os.environ}
@@ -77,7 +84,8 @@ class ModelSettings:
                 base, provider="deepseek_web", base_url="https://chat.deepseek.com",
                 model="deepseek-web-default", api_key=(env.get("DEEPSEEK_WEB_TOKEN") or "").strip(),
                 risk_fallback=None, context_tokens=131072, max_output_tokens=8192,
-                timeout_seconds=300, max_chunk_characters=16000,
+                timeout_seconds=300, max_document_characters=100000,
+                max_chunk_characters=16000,
                 max_units_per_chunk=512, max_attempts_per_chunk=2, max_parallel_chunks=1,
             )
         if source in WEB_AUTH_SOURCES:
@@ -86,7 +94,8 @@ class ModelSettings:
                 base, provider=source, base_url=base_url, model=model,
                 api_key=self._web_auth_file(env, variable, filename),
                 risk_fallback=None, context_tokens=32768, max_output_tokens=4096,
-                timeout_seconds=300, max_chunk_characters=8000,
+                timeout_seconds=300, max_document_characters=100000,
+                max_chunk_characters=8000,
                 max_units_per_chunk=256, max_attempts_per_chunk=2, max_parallel_chunks=1,
             )
         return replace(
@@ -94,6 +103,7 @@ class ModelSettings:
             base_url=(env.get("DASHSCOPE_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1").strip(),
             model=(env.get("DEFAULT_MODEL") or "qwen-plus").strip(),
             api_key=(env.get("DASHSCOPE_API_KEY") or "").strip(), risk_fallback=None,
+            max_document_characters=100000, max_chunk_characters=100000,
         )
 
     def available(self) -> dict[str, dict[str, str | bool]]:
@@ -101,5 +111,7 @@ class ModelSettings:
         for source in SOURCES:
             config = self.config(source)
             available[source] = {"model": config.model,
-                                 "configured": source == "local" or bool(config.api_key)}
+                                 "configured": (source == "local" or (source == "laya" and
+                                                (self.project_root / "dataset/label/models/laya_wiki_cleaning_v1/model.safetensors").is_file())
+                                                or bool(config.api_key))}
         return available

@@ -1,0 +1,487 @@
+{
+  "reviewer": "Codex",
+  "review_date": "2026-09-30",
+  "selection": "30 per DeepSeek Web class, one block per held-out document, SHA256(audit:doc_id:block_index)",
+  "items": [
+    {
+      "doc_id": "aa92fc4603db31ea8a45ec86b445e3af",
+      "block_index": 3,
+      "text_sha256": "244683d0dcd332919ac14df87436012b4e2d4636526538b2e02e60b178fe920f",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "088157a27df81250539f4dee9ef33c39",
+      "block_index": 18,
+      "text_sha256": "9477ae91cf19254aac5565faf5d61eed9e5672637b20e12a8b82a0d58072ec6c",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "fbe9b315c343ae30b8b61f99bdf15101",
+      "block_index": 7,
+      "text_sha256": "31e9ca53624ed79aa57d0661c40509569e17f7110f9b62a37d39e0e588a1ce0f",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "33b70d3222654fa9f369dcb27823b96d",
+      "block_index": 11,
+      "text_sha256": "0ac8e5c31e474d7326108a32ace512798e83b758814fa40b83ae962db7c21bb8",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "2f6749f9953bed2f4d2eed23c58c68c5",
+      "block_index": 5,
+      "text_sha256": "3b69bdca916c59846b0fcfd836951da0b52bce9005e7cf8051c35040fe88682a",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "423f06c72ee6f5bf7a8059f24d3a0a04",
+      "block_index": 94,
+      "text_sha256": "31ab9d1c9eba73c7cea1fba2e60caf920785fb5864f18f28db6ec932c5027c0f",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "5eb5215bf4e42925fb67a2ab17ecac76",
+      "block_index": 45,
+      "text_sha256": "e7612e7803afbad0849c6c048692112e220c8b5df1159bd2ba84c8e1a96ce6d4",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "a6f6dadfef29e8c0aecfa6ba1268e1e3",
+      "block_index": 124,
+      "text_sha256": "6158495f30c6c9c9cca5b9540e4f6a525f1a646239228bdc0790e714c16ac5b5",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "7a54f0b9c9c5a6ea3f7761ffa5cbaeef",
+      "block_index": 15,
+      "text_sha256": "59b1939201ad12a1b69f761bd3fea5cc56775c2da793e9fe770dc7e7b0c0b1ad",
+      "teacher_label": "keep",
+      "reviewed_label": "drop",
+      "note": "isolated code comment"
+    },
+    {
+      "doc_id": "2991b76c491f041cf1d2620fad652306",
+      "block_index": 52,
+      "text_sha256": "0e1b752cb67f21c24588771e2d4d08c424a80ee6a58ff0c0fec94ee2de407aa7",
+      "teacher_label": "keep",
+      "reviewed_label": "drop",
+      "note": "birth list entry"
+    },
+    {
+      "doc_id": "44e9a4109bff546cb14cf96c1770221d",
+      "block_index": 20,
+      "text_sha256": "5e64a658a549c62704c050ddbc3f2c540c9a10eefad9be01d946dc29679a6301",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "6106aa992b7a0acf4fee1ef8cc01403f",
+      "block_index": 17,
+      "text_sha256": "e56f509a765efcd05ae536df2c8c6211604611227f878662dded20b74aa5b6fc",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "fdd3a0f84f1c94ac2fdd483941d68d7c",
+      "block_index": 21,
+      "text_sha256": "1706024fb768e0bda58c5ba69263a17f4f1aaa2dd57d13926fdbd827a7d4bc48",
+      "teacher_label": "keep",
+      "reviewed_label": "unsure",
+      "note": "single semicolon-ended verse clause"
+    },
+    {
+      "doc_id": "54fab79a160831796efeccdfded74f24",
+      "block_index": 9,
+      "text_sha256": "adda57a7169637ae7b9ccd530a885d2899892fdab0c2ca286203fff9fbd0a1fb",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "d35bea95a6aacf5e3282c7cbe6b7e261",
+      "block_index": 0,
+      "text_sha256": "36923172c5a0ee04b7af9f14a7b650a037e38f499cce76eaa35e581cfeff54f6",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "226c33fee44e6f73ffbb847c3c3bb652",
+      "block_index": 13,
+      "text_sha256": "e5c12fcd73d0dd14755c57589e566ff15d05b984de043652f8551b03e55ec46d",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "3ba7be7318ce3b3b8ec48997e4cacaca",
+      "block_index": 0,
+      "text_sha256": "465326deb81640f696ccce0325d0758e797035ae47860b51d0dac09b4acdad2f",
+      "teacher_label": "keep",
+      "reviewed_label": "drop",
+      "note": "disambiguation navigation"
+    },
+    {
+      "doc_id": "68ff1a578dde8cabdd4d72d2a0ad50bc",
+      "block_index": 5,
+      "text_sha256": "87050de286e42700053579892cb26eb1a808c264afdca11cb1d2e7b08d2f4fc1",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "8539225570c94ea099969747062ab986",
+      "block_index": 78,
+      "text_sha256": "996d62bdc225c2426d782cb741752b270f78c4026f3bf96255a46ffa3d6df3ab",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "7aa222471d63077dd366d5f12743f902",
+      "block_index": 109,
+      "text_sha256": "0454f1888eacf0f9f93e38cf7749696eb49d8a4e8e3422fcd3c3e3bce40a3087",
+      "teacher_label": "keep",
+      "reviewed_label": "drop",
+      "note": "isolated code statement"
+    },
+    {
+      "doc_id": "1114bd47664f875cc7b76c2929af505b",
+      "block_index": 4,
+      "text_sha256": "c92909feb30dcd6a377975dcac31ed1350eaaa7251fa7e21546443f75ef4ee1c",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "ab3ca8189e831358dd1e830dbf137a39",
+      "block_index": 17,
+      "text_sha256": "f1c432b0c5fe9797e23e62d255e2f9d3cba2992f93a8bd42fdf937ff2fedbc10",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "5d5e605cee7f0bd12e5304e2ad7d8e95",
+      "block_index": 17,
+      "text_sha256": "a45039b374dc7e480302fa41d38774279ed9dba914f165bd77b0945e2d03dd09",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "451d41f9e192485a2674bfd640e7b490",
+      "block_index": 63,
+      "text_sha256": "9ccc52d314e9c4cbf99ef2cd865c250a0ef25bb19d1d0f9a5f62fd27497996e5",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "bcb25a9f827e9ead11ff454449e01e05",
+      "block_index": 92,
+      "text_sha256": "a15b160e7a378f227b62874b22f007c254f91631f3214388664d184055b6fda7",
+      "teacher_label": "keep",
+      "reviewed_label": "drop",
+      "note": "birth list entry"
+    },
+    {
+      "doc_id": "cf975902db74e6b42eb4f1ef476206af",
+      "block_index": 31,
+      "text_sha256": "503f0ad7eda1fb57e57d028ce21f49cf6d8e359eed298bc2940685a5cde65824",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "d7e764ce1397560d54c258f2bad43200",
+      "block_index": 23,
+      "text_sha256": "c42d646361fd94990bc7d332f682b78a0a20d043d8e8c0b7694890f147d5301b",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "c08b6d9c4ee687ff6e99b9f2fddeec5a",
+      "block_index": 36,
+      "text_sha256": "c7c1d9da4c0890e2ee145eb31ffa8811bc5c2897869774133f51a4359e5aa38c",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "bb3aa472a1789a23af3d1b76600091ca",
+      "block_index": 37,
+      "text_sha256": "592590863ee42e38c3af50c47ef85b35c80843881eb30934a43e00ae042685c6",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "f8536816f6352c8777dfaff59cab7fc5",
+      "block_index": 0,
+      "text_sha256": "d06c523081ca8375967d3e2e2340ec54a619fc75467d7185d7abedc73f9bff1b",
+      "teacher_label": "keep",
+      "reviewed_label": "keep",
+      "note": ""
+    },
+    {
+      "doc_id": "cab57d3e150e43aa3ce67a328f4e381c",
+      "block_index": 106,
+      "text_sha256": "d68fd022d26ed37286f13689a477069145b0995ec2e89abfeaf86184ea1288bc",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "31fc2a5f6cc0ed635bddb4f4a31542ad",
+      "block_index": 38,
+      "text_sha256": "0363aa0784b47ea7dd10ce5ed2f9198de2607e963f0ab2964b661461f5795031",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "912f55e3f8709c0c7b7586541d203f17",
+      "block_index": 16,
+      "text_sha256": "f96190124320ed16dc375b45e583cd808e41eb479894699baa86183d729bbf04",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "1751e70d72ded37da05f5674e1f1ca07",
+      "block_index": 85,
+      "text_sha256": "810e8d3382a6138bbb86fa47438b479ed68bff5975c90583508ae69b5e0f4af8",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "61344e05fb36d00d8c377d47b403e633",
+      "block_index": 161,
+      "text_sha256": "66eac962e0218ade043843104b106b13e03153c10e45daaaae5f4ebc06ba0021",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "0e75458ad61738fed1f8f34192a7dcc5",
+      "block_index": 22,
+      "text_sha256": "9908df250f3a5beaa7245aed1860728535624136a36b0eab378fc7f8c3308d83",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "7231fa172350b5ece8128b05f93c21b5",
+      "block_index": 95,
+      "text_sha256": "979b753a4fc0d902ee8812d3de279e7ed57d9bc8f5a666bf86ba503062b18ac0",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "b4f84c46ce1962e6f952c8e7362da82b",
+      "block_index": 149,
+      "text_sha256": "78963632f139be80424f7a2300ba8ddbacb0a18c356fe0ee9b285de842bac11e",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "f387d4f7d250ec3ce726bbe05f8706ef",
+      "block_index": 37,
+      "text_sha256": "32f4476762fdc51079c8492de91cbb4a470d0b80a31a20763c731b3fc1a3bf30",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "50aa21dcf9ba716c8b85fb76287732f2",
+      "block_index": 16,
+      "text_sha256": "215404071738574d20ed1808ea482b15f91f26948222c5afe8447dd9cc3c7ccf",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "67612ab19deaf19987d8525c84363a58",
+      "block_index": 40,
+      "text_sha256": "080112550588629340c4873da5de15a5aec8d598f1da294616d2178470c8dc68",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "839f7283f527cb38341306c781b27d0d",
+      "block_index": 71,
+      "text_sha256": "8cc4b4e40877efe185b431b44f5c37f652801e854abe95d36cc26732aecf6726",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "b24a865bba2ee2feec604d982d61fab5",
+      "block_index": 20,
+      "text_sha256": "be8c4b38437593a9ea9cefe8bd3c839258240a01579768d2d84614eb00b1fbe4",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "abd74ef6873fc67ffa06dcc558ac66ec",
+      "block_index": 27,
+      "text_sha256": "829d26e5c530398fee733e983eaeeb1f7e00a36b20f7089116142e59a8dbf313",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "2e9c0505b9b83c7748bccd38dc1f7f05",
+      "block_index": 12,
+      "text_sha256": "5065d58e089e7d9746783bb2adaec4e8335166610b03b62751f184833dfaacd5",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "f4187096e75b0dd7d225718132d9dde6",
+      "block_index": 190,
+      "text_sha256": "ad8a9c0e87f35807aee2c5ca94c0668148cd31a7edf3517a754b21de838aba2f",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "9b5f3e12b9e851c86cf4c9031d506051",
+      "block_index": 170,
+      "text_sha256": "1d0d09e450435d3c495c250a9d15adfd25f2b6f44d6a2792ca1e15c74ccc49d1",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "c679d841e0293cdb83a7749d3102a9e2",
+      "block_index": 11,
+      "text_sha256": "8acd009f13458e56823ab1eb13fc82d1438a49ef351112afd9227d26e4fec5f7",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "7461eb0eee6c43bae299f86407beddc1",
+      "block_index": 50,
+      "text_sha256": "f34f65ae81be99f6bbbb291f7595b255f206b44aaaf62ed27fc1aebcb057e02e",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "e1576e538879f68c4db689c29b490a2a",
+      "block_index": 293,
+      "text_sha256": "543e06b16d3fc1a66cdca82e98be4a8eed3b4d6f814783007df7877ae0c8fb74",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "b129b21711ff1ca47c5eb56790a56985",
+      "block_index": 10,
+      "text_sha256": "e29f9802c1ebc395fd3ba927b8e48dcadfee9c9348f6fab02af649c3b9f061d5",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "33e8ae2ceb95f7a7f8d017bb6fa207f1",
+      "block_index": 24,
+      "text_sha256": "d9bc816d3f9cb10aa155d4475e3a221731e2be8332cbfcf053d01dccaa915f30",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "49cb2fdc9ac91d4339c1338dd72c1077",
+      "block_index": 30,
+      "text_sha256": "23f1572853aad43673e3346a59d5ac3ee5d187064ee0575e933f5853aabd3b24",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "571c063150409b10541bae16eba6f50a",
+      "block_index": 69,
+      "text_sha256": "229600aac902626a8c0e0be765a33e4d4f7df5acb11383dbedd41f18a63ee8ff",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "467d8644112dc1d594b4eab806bd6c29",
+      "block_index": 81,
+      "text_sha256": "90c20aa8f87f2f384a3c85af871ae10660f5d82a1966b44751c525e161e46bea",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "de244340058d24e940dbef4da358fdb7",
+      "block_index": 40,
+      "text_sha256": "b0b2a780f3ccae7f5be66b9fc32bde390d0daef7ae941c6071c23a133f6a0c2d",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "0ce04d839b7fbf6c501ddd4159c87cc3",
+      "block_index": 91,
+      "text_sha256": "280b69b1fc8ebab3aa2b45b9122c2ab246901080bdd013de5a0f38c8101d2b75",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "ac9ebc7d3db56432cbd411e714f221ff",
+      "block_index": 72,
+      "text_sha256": "420e567bd76bbc510514e2be36255200263589bef09a5e7f7e59a5c39143b415",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "d7e764ce1397560d54c258f2bad43200",
+      "block_index": 128,
+      "text_sha256": "e0baaafc2222cf21b2d8e840de99cb630e16f5f3f4f30ac69f0865adee258469",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    },
+    {
+      "doc_id": "9d76af8b744337d82eed26e108035179",
+      "block_index": 77,
+      "text_sha256": "821da81113b5a5ebea274b02749fd65a4a02ce0ba99a62c5b47228164adfca9c",
+      "teacher_label": "drop",
+      "reviewed_label": "drop",
+      "note": ""
+    }
+  ]
+}

@@ -48,6 +48,10 @@ class LlmCleaningError(RuntimeError):
     pass
 
 
+class DocumentLimitError(ValueError):
+    """This document exceeds the local cleaning plan, not the model service."""
+
+
 class LlmCleaningHttpError(LlmCleaningError):
     def __init__(self, status: int, message: str):
         super().__init__(message)
@@ -66,7 +70,7 @@ class Removal(BaseModel):
     model_config = ConfigDict(extra="forbid")
     unit_id: int = Field(ge=0, strict=True)
     reason: Literal["advertisement", "navigation", "empty_section", "repetition", "garbled", "unrelated",
-                    "section_heading", "bibliography", "link_list", "markup", "incomplete"]
+                    "section_heading", "bibliography", "link_list", "markup", "incomplete", "non_prose"]
 
 
 class UnitEdit(BaseModel):
@@ -98,17 +102,20 @@ class CleaningConfig:
     max_chunk_characters: int = 3000
     max_attempts_per_chunk: int = 2
     max_parallel_chunks: int = 1
-    provider: Literal["llamacpp", "dashscope", "deepseek", "deepseek_web", "qwen_web", "kimi_web", "doubao_web", "chatglm_web", "spark_web", "wenxin_web", "yuanbao_web"] = "llamacpp"
+    provider: Literal["llamacpp", "dashscope", "deepseek", "deepseek_web", "qwen_web", "kimi_web", "doubao_web", "chatglm_web", "spark_web", "wenxin_web", "yuanbao_web", "laya"] = "llamacpp"
     api_key: str = field(default="", repr=False, compare=False)
     risk_fallback: CleaningConfig | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
         url = urllib.parse.urlparse(self.base_url)
-        if self.provider not in {"llamacpp", *REMOTE_PROVIDERS}:
+        if self.provider not in {"llamacpp", "laya", *REMOTE_PROVIDERS}:
             raise ValueError("未知的清洗 provider")
         if url.username or url.password or url.query or url.fragment:
             raise ValueError("base_url 不得包含用户名、密码、查询参数或片段")
-        if self.provider == "llamacpp":
+        if self.provider == "laya":
+            if self.base_url != "local://laya":
+                raise ValueError("Laya 本地来源地址无效")
+        elif self.provider == "llamacpp":
             if url.scheme != "http" or url.hostname not in {"127.0.0.1", "localhost", "::1"}:
                 raise ValueError("本地清洗服务必须使用 http://localhost 或回环 IP 地址")
             if url.path not in {"", "/"}:
@@ -449,7 +456,7 @@ class LlmCleaner:
         pending = list(reversed(groups))
         while pending:
             if len(pending) + len(planned) > self.config.max_chunks:
-                raise ValueError(f"本条超过单次清洗的 {self.config.max_chunks} 个分块上限，请先拆成较短文档")
+                raise DocumentLimitError(f"本条超过单次清洗的 {self.config.max_chunks} 个分块上限，请先拆成较短文档")
             group = pending.pop()
             retry_reserve = 1024 if self.config.provider in REMOTE_PROVIDERS else RETRY_TOKEN_RESERVE
             if self._prompt_tokens(self._messages(title, group)) + self.config.max_output_tokens + 64 + retry_reserve <= context:
@@ -539,7 +546,7 @@ class LlmCleaner:
         if len({block["id"] for block in blocks}) != len(blocks):
             raise ValueError("当前正文含重复的段落 ID")
         if sum(len(block["text"]) for block in blocks) > self.config.max_document_characters:
-            raise ValueError(f"单条正文超过 {self.config.max_document_characters:,} 字符，请先拆成较短文档")
+            raise DocumentLimitError(f"单条正文超过 {self.config.max_document_characters:,} 字符，请先拆成较短文档")
         previous = self._matching_report(blocks, title, provenance)
         if previous is not None and self.is_complete(previous["result"]):
             return {
@@ -710,6 +717,9 @@ class LlmCleaner:
                     ) from exc
         raise AssertionError("unreachable")
 
+    def _split_units(self, blocks: list[dict]) -> list[TextUnit]:
+        return split_units(blocks)
+
     def _clean(self, blocks: list[dict], *, title: str | None, provenance: dict,
                previous: dict | None = None) -> dict:
         started = time.monotonic()
@@ -721,7 +731,7 @@ class LlmCleaner:
             if not isinstance(server_context, int) or server_context <= 0:
                 raise LlmCleaningError("无法读取本地服务的实际上下文大小")
             context = min(context, server_context)
-        all_units = split_units(blocks)
+        all_units = self._split_units(blocks)
         chunks = self._plan(title, all_units, context)
         source_separators = {block["id"]: block.get("separator_after", "\n\n") for block in blocks}
         removals, edits, assessments, output_groups = [], [], [], []
@@ -900,3 +910,13 @@ class LlmCleaner:
         temporary.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(path)
         return result
+
+
+def create_cleaner(config: CleaningConfig, report_directory: Path,
+                   request_semaphore: threading.BoundedSemaphore | None = None,
+                   web_session_key: str = "single") -> LlmCleaner:
+    """Use the same review assembly and cache for generative and decision models."""
+    if config.provider == "laya":
+        from .laya_cleaning import LayaCleaner
+        return LayaCleaner(config, report_directory, request_semaphore, web_session_key)
+    return LlmCleaner(config, report_directory, request_semaphore, web_session_key)

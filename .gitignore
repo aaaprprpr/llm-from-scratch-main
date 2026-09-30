@@ -31,6 +31,8 @@ env/
 *.bin
 *.arrow
 *.pt
+/dataset/label/models/laya_multilingual/
+/dataset/label/models/laya_wiki_cleaning_v1/
 
 # Runtime outputs and caches
 output/

@@ -14,7 +14,7 @@ from dataset.label.backend.api import create_app
 from dataset.label.backend.batch_clean import _process, clean_queue, output_path
 from dataset.label.backend.database import CurationDatabase, DocumentReviewInput
 from dataset.label.backend.cleaning_progress import CleaningProgressIndex
-from dataset.label.backend.llm_cleaning import LlmCleaningError
+from dataset.label.backend.llm_cleaning import DocumentLimitError, LlmCleaningError
 
 
 class FakeCleaner:
@@ -1052,6 +1052,32 @@ class ParallelBatchTests(unittest.TestCase):
             self.assertEqual({row["source"] for row in rows}, {"healthy"})
             client.close()
             app.state.dataset_repository.clear()
+
+    def test_document_limit_does_not_disable_a_model_source(self):
+        class LimitedCleaner:
+            config = SimpleNamespace(provider="llamacpp", model="limited")
+
+            @staticmethod
+            def is_complete(_result):
+                return True
+
+            def clean(self, blocks, *, title, provenance):
+                if provenance["ordinal"] < 3:
+                    raise DocumentLimitError("单条正文超过本地长度上限")
+                return {"decision": "keep", "edited_text": blocks[0]["text"]}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with TestClient(create_app(root)) as client:
+                queue = _make_batch_queue(client, root, [f"正文 {i}。" for i in range(6)])
+            cleaner = LimitedCleaner()
+            manifest = clean_queue(database_path=root / "curation.sqlite3", queue_id=queue,
+                                   output_directory=root / "batch", cleaner=cleaner,
+                                   cleaners={"limited": cleaner}, workers=1)
+            self.assertEqual(manifest["counts"], {"incomplete": 3, "keep": 3})
+            self.assertEqual(manifest["source_errors"], {})
+            rows = [json.loads(line) for line in (root / "batch" / "progress.jsonl").read_text().splitlines()]
+            self.assertEqual([row.get("failure_reason") for row in rows[:3]], ["document_limit"] * 3)
 
     def test_repeated_identical_source_errors_open_circuit(self):
         class BrokenCleaner:

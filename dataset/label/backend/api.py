@@ -27,7 +27,7 @@ def create_app(data_root: str | Path | None = None, *, start_local_model: bool |
     context = ApiContext(root)
 
     if start_local_model is None:
-        start_local_model = data_root is None
+        start_local_model = False
 
     @asynccontextmanager
     async def lifespan(_app):

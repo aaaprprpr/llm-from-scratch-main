@@ -29,6 +29,17 @@ class LlmCleaningTests(unittest.TestCase):
         self.directory = Path(self.temporary.name)
         self.cleaner = LlmCleaner(CleaningConfig(), self.directory)
 
+    def test_deepseek_document_over_old_100k_limit_reaches_cleaning(self):
+        from dataset.label.backend.model_settings import ModelSettings
+
+        config = ModelSettings(self.directory).config("deepseek")
+        cleaner = LlmCleaner(config, self.directory)
+        blocks = [{"id": "long", "text": "正文。" * 40001}]
+        with patch.object(cleaner, "_clean", return_value={"decision": "keep"}) as cleaning:
+            result = cleaner.clean(blocks, title="长文", provenance={"doc_id": "long"})
+        self.assertEqual(result["decision"], "keep")
+        cleaning.assert_called_once()
+
     def run_clean(self, blocks, responses):
         pending = iter(responses)
 

@@ -6,11 +6,11 @@
     "context_tokens": 900000,
     "max_output_tokens": 32768,
     "timeout_seconds": 300,
-    "max_document_characters": 100000,
+    "max_document_characters": 1000000,
     "max_chunks": 64,
     "max_units_per_chunk": 4096,
     "max_parallel_chunks": 4,
-    "max_chunk_characters": 100000,
+    "max_chunk_characters": 300000,
     "max_attempts_per_chunk": 1,
     "content_risk_fallback": "dashscope"
   }

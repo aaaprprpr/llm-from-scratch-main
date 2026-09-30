@@ -38,9 +38,6 @@ def build_router(context: ApiContext) -> APIRouter:
                                   else request.failure_fallback),
             )
             context.set_model_selection(selection)
-            if ((selection.single == "local" and previous.single != "local")
-                    or (selection.batch != previous.batch and "local" in selection.batch)):
-                context.local_model.ensure_running()
             return current()
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

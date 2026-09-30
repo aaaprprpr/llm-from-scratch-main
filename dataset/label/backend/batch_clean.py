@@ -22,7 +22,7 @@ from .deepseek_web import (QWEN_WEB_BATCH_SLOTS, DEEPSEEK_WEB_BATCH_SLOTS,
                            CHATGLM_WEB_BATCH_SLOTS, SPARK_WEB_BATCH_SLOTS,
                            WENXIN_WEB_BATCH_SLOTS, YUANBAO_WEB_BATCH_SLOTS)
 from .cleaning_progress import CleaningProgressIndex, write_snapshot
-from .llm_cleaning import CleaningConfig, LlmCleaner, LlmCleaningError, PROMPT_VERSION
+from .llm_cleaning import CleaningConfig, DocumentLimitError, LlmCleaner, LlmCleaningError, PROMPT_VERSION
 
 
 def output_path(root: Path, queue_id: str, config: CleaningConfig) -> Path:
@@ -166,7 +166,8 @@ def _process(ordinal: int, value: dict, queue_id: str, cleaner: LlmCleaner) -> d
                     or "rate limited" in str(exc).lower()):
                 raise
             record["error"] = str(exc)[:300]
-            record["failure_reason"] = ("content_risk" if CleaningProgressIndex.is_content_risk(str(exc))
+            record["failure_reason"] = ("document_limit" if isinstance(exc, DocumentLimitError)
+                                        else "content_risk" if CleaningProgressIndex.is_content_risk(str(exc))
                                         else "error")
     record["output_characters"] = len(record["text"] or "")
     record["elapsed_seconds"] = round(time.monotonic() - started, 3)
@@ -213,6 +214,7 @@ def clean_queue(
                  "wenxin_web": WENXIN_WEB_BATCH_SLOTS,
                  "yuanbao_web": YUANBAO_WEB_BATCH_SLOTS}
     capacities = {source: (1 if source in retry_only or selected.config.provider == "llamacpp"
+                           else 4 if selected.config.provider == "laya"
                            else web_slots.get(selected.config.provider, 6))
                   for source, selected in sources.items()}
     total_capacity = sum(capacities.values())
@@ -223,6 +225,7 @@ def clean_queue(
     stop_event = stop_event or threading.Event()
     semaphore = threading.BoundedSemaphore(max_requests)
     local = threading.local()
+    laya_batchers = {}
 
     def worker_cleaner(source: str, slot: int):
         if not hasattr(local, "cleaners"):
@@ -230,10 +233,14 @@ def clean_queue(
         key = (source, slot)
         if key not in local.cleaners:
             selected = sources[source]
-            local.cleaners[key] = (LlmCleaner(
+            cleaner_type = selected.__class__ if selected.config.provider == "laya" else LlmCleaner
+            cloned = (cleaner_type(
                 selected.config, selected.report_directory, semaphore,
                 web_session_key=f"batch_{slot}" if selected.config.provider.endswith("_web") else "single",
             ) if isinstance(selected, LlmCleaner) else selected)
+            if source in laya_batchers:
+                cloned.batch_dispatcher = laya_batchers[source]
+            local.cleaners[key] = cloned
         return local.cleaners[key]
 
     def run_item(ordinal: int, value: dict, source: str, slot: int) -> dict:
@@ -401,6 +408,11 @@ def clean_queue(
                 new_ordinals = range(next_ordinal, min(total, next_ordinal + max(0, budget - len(selected_incomplete))))
                 snapshot("running")
                 try:
+                    if workers > 1:
+                        from .laya_cleaning import LayaBatcher
+                        for source, selected in sources.items():
+                            if selected.config.provider == "laya":
+                                laya_batchers[source] = LayaBatcher()
                     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="batch-clean") as pool:
                         tasks = iter(new_ordinals)
                         in_flight = {}
@@ -479,7 +491,7 @@ def clean_queue(
                                     record = future.result()
                                     pending_records.append(record)
                                     if (record["status"] == "incomplete" and record.get("error")
-                                            and record.get("failure_reason") != "content_risk"):
+                                            and record.get("failure_reason") not in {"content_risk", "document_limit"}):
                                         signature = re.sub(r"^第 \d+/\d+ 块[：:]\s*", "", record["error"])
                                         previous_error, previous_count = repeated_errors.get(source, ("", 0))
                                         count = previous_count + 1 if signature == previous_error else 1
@@ -531,6 +543,9 @@ def clean_queue(
                     commit()
                     snapshot("failed", str(exc))
                     raise
+                finally:
+                    for batcher in laya_batchers.values():
+                        batcher.close()
                 status = ("completed" if processed_count == total and not counts["incomplete"] else "paused" if stop_event.is_set()
                           else "needs_retry" if processed_count == total else "partial")
                 return snapshot(status)
