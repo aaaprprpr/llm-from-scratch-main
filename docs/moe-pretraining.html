@@ -1,0 +1,634 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>MoE：从 FFN 到稀疏专家 · 预训练算法笔记</title>
+  <style>
+    :root {
+      --paper:#fff; --canvas:#f5f6f8; --ink:#172333; --muted:#536174;
+      --line:#dce2e9; --soft:#edf1f6; --blue:#2458b5; --code:#182535;
+      --e0:#2463ba; --e1:#09806e; --e2:#b9660b; --e3:#8253b5;
+      --font:Inter,"Segoe UI","Microsoft YaHei UI","Microsoft YaHei",sans-serif;
+    }
+    * {box-sizing:border-box}
+    html {scroll-behavior:smooth; scroll-padding-top:25px}
+    body {margin:0;background:#fff;color:var(--ink);font:16px/1.8 var(--font)}
+    a {color:var(--blue);text-underline-offset:4px}
+    button,input,select {font:inherit}
+    button,select {cursor:pointer}
+    button {border:1px solid #bdc8d5;border-radius:5px;background:#fff;color:var(--ink);padding:7px 13px;line-height:1.5}
+    button:hover {background:var(--soft)}
+    button[aria-pressed="true"],button.primary {background:var(--ink);border-color:var(--ink);color:#fff}
+    button:disabled {opacity:.5;cursor:default}
+    :focus-visible {outline:3px solid #81a9ea;outline-offset:3px}
+    select {padding:7px 30px 7px 10px;border:1px solid #bdc8d5;background:#fff;color:var(--ink);border-radius:5px}
+    input[type="range"] {accent-color:var(--blue);width:180px;max-width:100%}
+    .layout {max-width:1000px;margin:auto;padding:28px 24px 50px}
+    main {min-width:0}
+    header {padding-bottom:8px}
+    h1 {font-size:30px;line-height:1.35;letter-spacing:-.5px;margin:0 0 14px;font-weight:700}
+    h2 {font-size:25px;line-height:1.45;letter-spacing:-.4px;margin:0 0 14px}
+    h3 {font-size:18px;line-height:1.5;margin:24px 0 10px}
+    p {margin:12px 0}
+    .lead {font-size:18px;margin:0;max-width:48em}
+    section {padding:26px 0;border-bottom:1px solid var(--line)}
+    section:last-of-type {border-bottom:0}
+    .muted,.note {color:var(--muted)}
+    .note {font-size:13px;line-height:1.75}
+    .equation {padding:18px 0;overflow-x:auto;overflow-y:hidden;margin:16px 0}
+    .equation math {font-size:24px;line-height:1.8}
+    .equation math + math {margin-top:22px}
+    math {font-family:"Cambria Math","STIX Two Math",math;font-size:1.12em}
+    .equation .eq-label {font:12px/1.5 var(--font);color:var(--muted);margin:0 0 10px}
+    .eq-inline {font-family:"Cambria Math",serif;font-size:18px}
+    .cols {display:grid;grid-template-columns:1fr 1fr;gap:24px}
+    .cols>* {min-width:0}
+    .term-list {display:grid;grid-template-columns:100px 1fr;gap:9px 14px;font-size:14px;margin:16px 0}
+    .term-list dt {font-weight:600}.term-list dd {margin:0}
+    .controls {display:flex;align-items:center;gap:10px 16px;flex-wrap:wrap;margin:18px 0}
+    .controls label {display:flex;align-items:center;gap:8px;font-size:14px}
+    .demo {margin:20px 0;min-width:0}
+    .demo-title {font-size:15px;font-weight:600;margin:0 0 10px}
+    .flow-wrap {width:100%;overflow-x:auto}
+    th {font-weight:600;color:var(--muted);text-align:left}
+    th,td {border-bottom:1px solid var(--line);padding:10px 8px;vertical-align:middle}
+    .number {font-variant-numeric:tabular-nums;font-family:"Cascadia Code",Consolas,monospace;white-space:nowrap}
+    .bar-track {height:9px;background:var(--soft);min-width:80px;position:relative}
+    .bar {height:100%;transition:width .22s ease}
+    .swatch {display:inline-block;width:9px;height:9px;margin-right:7px}
+    details {font-size:14px;margin-top:16px}
+    summary {cursor:pointer;color:var(--blue);padding:5px 0;font-weight:500}
+    .callout {margin:16px 0}
+    .stats {display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin:24px 0}
+    .stat {border-top:2px solid var(--line);padding-top:10px}
+    .stat .caption {font-size:13px;color:var(--muted)}
+    .stat .value {font-size:28px;font-weight:600;line-height:1.5;font-variant-numeric:tabular-nums}
+    .stat .unit {font-size:13px;font-weight:400}
+    .comparison {display:grid;grid-template-columns:135px 1fr 90px;gap:15px 12px;align-items:center;margin:20px 0;font-size:14px}
+    .comparison .bar-track {height:20px}
+    .comparison .number {text-align:right}
+    .bias-control {width:100%;display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:14px}
+    .bias-control input {flex:1;width:auto;min-width:130px}
+    .load-layout {display:grid;grid-template-columns:minmax(0,1.4fr) minmax(150px,.8fr);gap:32px;align-items:start}
+    .load-row {display:grid;grid-template-columns:66px minmax(80px,1fr) 60px;align-items:center;gap:10px;margin:16px 0;font-size:13px}
+    .load-row .bar-track {height:24px}
+    .target {position:absolute;left:25%;top:-4px;bottom:-4px;border-left:1px dashed #495c74;z-index:1}
+    .load-row .number {text-align:right}
+    .token-grid {display:grid;grid-template-columns:repeat(8,1fr);gap:5px;margin-top:16px}
+    .token-dot {aspect-ratio:1;border-radius:2px;transition:background-color .25s}
+    .grid-label {font-size:12px;color:var(--muted);margin-top:9px}
+    .metrics {display:flex;gap:14px 26px;flex-wrap:wrap;font-size:13px;border-top:1px solid var(--line);padding-top:14px;margin-top:18px}
+    .metrics b {font-size:17px;font-weight:600;margin-left:7px;font-variant-numeric:tabular-nums}
+    .compact th,.compact td {padding:9px 7px;font-size:13px}
+    .table-wrap {overflow-x:auto}
+    .table-wrap table {border-collapse:collapse;width:100%}
+    ol,ul {padding-left:22px} li {margin:7px 0}
+    @media (prefers-reduced-motion:reduce) {html{scroll-behavior:auto}*,*::before,*::after{transition:none!important}}
+    @media (max-width:850px) {
+      .cols {grid-template-columns:1fr;gap:0}.stats{gap:12px}
+    }
+    @media (max-width:520px) {
+      body{font-size:15px}.layout{padding:20px 16px}h1{font-size:26px}h2{font-size:22px}
+      .equation math{font-size:21px}
+      .load-layout{grid-template-columns:1fr;gap:8px}.token-grid{max-width:280px}
+      .stat .value{font-size:23px}.stats{grid-template-columns:1fr;gap:12px}
+      .stat{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+      .comparison{grid-template-columns:92px 1fr 68px;font-size:12px;gap:12px 8px}
+      .controls{gap:10px}button{min-height:40px}.term-list{grid-template-columns:70px 1fr}
+    }
+
+    figure.formula-viz {margin:22px 0 28px;padding:0;min-width:0}
+    .formula-viz figcaption {font-size:15px;margin:0 0 10px;font-weight:600}
+    .formula-viz .svg-scroll {overflow-x:auto}
+    .formula-viz svg {display:block;width:100%;height:auto;min-width:640px;font-family:var(--font)}
+    .formula-viz .vector-plot {min-width:360px;max-width:520px}
+    .formula-viz p {font-size:14px;margin:9px 0}
+    .formula-viz .controls {margin:12px 0}
+    .math-pair {display:grid;grid-template-columns:1fr 1fr;gap:20px}
+    .math-pair>* {min-width:0}
+    @media(max-width:650px){.math-pair{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+<div class="layout">
+  <main>
+    <header>
+      <h1>MoE：按 token 选择 FFN</h1>
+      <p>MoE 要解决的是：怎样让模型拥有更多参数，又不让每个 token 都承担执行全部参数的计算成本？理解它，需要把三件事连起来：专家保存什么，路由器怎么选择，预测下一个 token 的误差怎样训练这些选择。</p>
+    </header>
+
+    <section id="mechanism">
+      <h2>从已有的 FFN 理解专家</h2>
+      <p>先看普通 Transformer。一个 token 经过注意力层后，已经把能看到的上下文信息融合进自己的隐藏向量。接下来的 FFN 对这个向量做非线性变换，输出仍然是同样的维度，再加回残差流。虽然一批 token 会被放在一起做矩阵运算，但 FFN 对每个位置分别计算；它本身不在不同 token 之间交换信息。</p>
+      <p>在你当前的模型里，这个 FFN 是 SwiGLU。设输入向量 x 的维度为 D，中间维度为 F。W₁ 和 W₃ 分别把 D 维映射到 F 维，一条分支经过 SiLU 后与另一条分支逐元素相乘，最后 W₂ 把结果映射回 D 维：</p>
+      <div class="equation">
+        <div class="eq-label">现有 FFN · 按列向量记法</div>
+        <math display="block" aria-label="FFN x 等于 W2 乘以 SiLU W1x 与 W3x 的逐元素积"><mrow><mi>FFN</mi><mo>(</mo><mi>x</mi><mo>)</mo><mo>=</mo><msub><mi>W</mi><mn>2</mn></msub><mo>[</mo><mi>SiLU</mi><mo>(</mo><msub><mi>W</mi><mn>1</mn></msub><mi>x</mi><mo>)</mo><mo>⊙</mo><mo>(</mo><msub><mi>W</mi><mn>3</mn></msub><mi>x</mi><mo>)</mo><mo>]</mo></mrow></math>
+      </div>
+
+      <figure class="formula-viz">
+        <figcaption>把公式中的每一个向量展开：2维输入 → 两条3维分支 → 同位置相乘 → 2维输出</figcaption>
+        <p>矩阵里的数是固定教学权重。蓝色支路经过 SiLU，绿色支路保留内容；橙色向量的第 j 格，只由两条分支的第 j 格相乘得到。</p>
+        <div class="controls"><label for="swi-x">输入第1维 x₁ <input id="swi-x" type="range" min="-2" max="2" step="0.05" value="1.5"></label><output id="swi-x-value"></output><span>第2维固定为1</span></div>
+        <div class="svg-scroll"><svg id="swi-figure" role="img" aria-label="SwiGLU 两条分支的实际矩阵、向量值、逐元素乘法和输出投影"></svg></div>
+        <p id="swi-readout" aria-live="polite"></p>
+      </figure>
+      <p>普通密集 FFN 的特点是：这一层的所有 token 都使用同一套 W₁、W₃、W₂。无论输入是什么，都完整执行这一套变换。把 F 增大，可以增加参数容量，但每个 token 的矩阵计算也随之增大。</p>
+      <p>MoE 把这一套 FFN 扩展成 E 套参数独立的 FFN，再为每个 token 只选 k 套执行，其中 k 通常远小于 E。每一套 FFN 就叫一个专家。增加 E 主要增加可供选择的参数；控制 k 则控制单个 token 要执行多少专家。这种“根据输入只执行部分网络”的方式叫条件计算。</p>
+      <p><strong>这里的专家是一层中的一个 FFN，不是一个完整语言模型。</strong>它不独立处理整篇文章，也不单独输出词表概率。多个选中专家各自输出一个 D 维向量，合并后仍是 D 维，因而能够接回原来的 Transformer。不同 MoE 层通常各有自己的路由器和专家，某个 token 在上一层选了专家 0，不代表下一层也要选专家 0。</p>
+      <p>路由器也是一个可学习的模块。它先把 x 映射为 E 个分数，再决定执行哪些专家。被选中的专家编号集合记为 S，合并权重记为 α。下一节将它们逐项展开。</p>
+
+
+      <p>注意不要把两种“门控”混在一起。SwiGLU 内部的门控，决定一个 FFN 内哪些中间特征通过；MoE 的路由门控，决定整个 token 交给哪些 FFN。一个 MoE 专家内部仍然可以使用 SwiGLU，二者处于不同层次。</p>
+    </section>
+
+    <section id="routing">
+      <h2>一次前向：打分、选择、计算、合并</h2>
+      <p>假设有 4 个专家。路由矩阵的每一行都与 x 做一次点积，得到 4 个实数分数，也就是 logits。softmax 将它们转成非负、总和为 1 的概率。这些概率表达当前路由器对专家的偏好，<strong>不代表它已经分别运行了 4 个专家、比较过谁的输出更好</strong>。如果先执行全部专家再挑选，稀疏计算的收益就没有了。</p>
+      <div class="equation">
+        <div class="eq-label">MoE · 路由概率 → 选专家 → 加权输出</div>
+        <math display="block" aria-label="p 等于 softmax Wr x，S 等于 Top k p"><mrow><mi>p</mi><mo>=</mo><mi>softmax</mi><mo>(</mo><msub><mi>W</mi><mi>r</mi></msub><mi>x</mi><mo>)</mo><mo>,</mo><mspace width="1em"/><mi>S</mi><mo>=</mo><msub><mi>Top</mi><mi>k</mi></msub><mo>(</mo><mi>p</mi><mo>)</mo></mrow></math>
+        <math display="block" aria-label="输出等于选中专家的加权和，alpha 为选中概率归一化"><mrow><mi>y</mi><mo>=</mo><munder><mo>∑</mo><mrow><mi>i</mi><mo>∈</mo><mi>S</mi></mrow></munder><msub><mi>α</mi><mi>i</mi></msub><msub><mi>FFN</mi><mi>i</mi></msub><mo>(</mo><mi>x</mi><mo>)</mo><mo>,</mo><mspace width="1em"/><msub><mi>α</mi><mi>i</mi></msub><mo>=</mo><mfrac><msub><mi>p</mi><mi>i</mi></msub><mrow><munder><mo>∑</mo><mrow><mi>j</mi><mo>∈</mo><mi>S</mi></mrow></munder><msub><mi>p</mi><mi>j</mi></msub></mrow></mfrac></mrow></math>
+      </div>
+      <p>W<sub>r</sub> 的形状是 E × D；p 是长度为 E 的路由概率向量；Top-k 取出概率最大的 k 个专家编号。上式采用“只对选中概率重新归一化”的权重定义，所以选中专家的 α 之和为 1。它是一种常见选择，并非所有 MoE 都必须采用；尤其 k = 1 时，会产生后文要解释的梯度问题。</p>
+      <figure class="formula-viz">
+        <figcaption>Wᵣx、softmax、Top-k、归一化，是四次不同的运算</figcaption>
+        <p>这次把 x 取成 [1, Δ]；只有专家0对应的第二个权重为1，所以拖 Δ 只改变它的分数。初始概率正好是正文的 [0.60, 0.30, 0.08, 0.02]。</p>
+        <div class="controls"><label for="route-delta">输入变化 Δ <input id="route-delta" type="range" min="-4" max="2" step="0.05" value="0"></label><output id="route-delta-value"></output><label for="route-k">Top-k <select id="route-k"><option value="1">1</option><option value="2" selected>2</option></select></label></div>
+        <div class="svg-scroll"><svg id="router-dot-figure" role="img" aria-label="四行路由矩阵各与输入做点积，再计算指数和概率"></svg></div>
+        <div class="svg-scroll"><svg id="routing-math-figure" role="img" aria-label="同一尺度比较全部概率、Top-k 截断后的概率和重新归一化的合并权重"></svg></div>
+        <p id="routing-math-readout" aria-live="polite"></p>
+      </figure>
+
+      <p>例如，一个 token 得到的概率是 [0.60, 0.30, 0.08, 0.02]。Top-2 会选择专家 0 和专家 1。只在被选中的概率之间归一化，得到 α₀ = 0.60 / 0.90 = 2/3，α₁ = 0.30 / 0.90 = 1/3。随后才真正执行这两个专家；专家 2 和专家 3 对这个 token 不做 FFN 计算。</p>
+      <p>为便于手算，假设专家 0 的输出是 [3, 0]，专家 1 的输出是 [0, 6]。合并就是逐坐标加权：</p>
+      <div class="equation">
+        <math display="block" aria-label="三分之二乘以向量三零，加三分之一乘以向量零六，等于向量二二"><mrow><mi>y</mi><mo>=</mo><mfrac><mn>2</mn><mn>3</mn></mfrac><mo>[</mo><mn>3</mn><mo>,</mo><mn>0</mn><mo>]</mo><mo>+</mo><mfrac><mn>1</mn><mn>3</mn></mfrac><mo>[</mo><mn>0</mn><mo>,</mo><mn>6</mn><mo>]</mo><mo>=</mo><mo>[</mo><mn>2</mn><mo>,</mo><mn>2</mn><mo>]</mo></mrow></math>
+      </div>
+
+      <figure class="formula-viz">
+        <figcaption>向量相加，就是把箭头首尾接起来</figcaption>
+        <p>专家输出暂时固定为坐标点，以便只观察 α 的作用。α₀=2/3 时，蓝箭头从长度3缩到2；α₁=1/3 时，绿箭头从长度6缩到2。从原点走完两段，恰好到 [2, 2]。虚线连接被选中的专家输出，归一化加权结果落在这条线段上。</p>
+        <div class="controls"><label for="vector-delta">同一个输入变化 Δ <input id="vector-delta" type="range" min="-4" max="2" step="0.05" value="0"></label><output id="vector-delta-value"></output></div>
+        <div class="svg-scroll"><svg id="vector-sum-figure" class="vector-plot" role="img" aria-label="加权后的专家向量首尾相接，得到 MoE 合向量"></svg></div>
+        <p id="vector-sum-readout" aria-live="polite"></p>
+      </figure>
+      <p>整个向量会分别送给两个专家，而不是把向量前半截给专家 0、后半截给专家 1。合并也不是拼接：每个专家的输出都是 D 维，加权后仍为 D 维。如果改成 Top-1 并把选中权重归一化为 1，这个 token 的 MoE 输出就直接等于专家 0 的输出。</p>
+      <p>实际训练会同时处理 N = B × T 个 token。每个 token 都有自己的选择，所以要把选中同一专家的 token 暂时聚在一起，做一次批量 FFN 计算，再按原来的 token 位置把结果放回去。Top-2 的一个 token 会出现在两个专家的输入批次中，回填时把两份加权输出加到同一位置。这就是单卡上“分发与合并”的实质。</p>
+      <p><strong>“每 token 激活 k 个”不意味着“每 batch 只使用 k 个”。</strong>这批 token 可以共同覆盖全部专家。若 N = 1000、k = 2，就有 2000 次 token→专家分配；只是每个 token 自己只执行两个专家。所谓稀疏性是相对于单个 token 的路径而言的。</p>
+      <p>路由依据是当前隐藏向量，而不是固定的词编号。相同的词在不同上下文里有不同的表示，因此可以走不同专家。专家也没有预先贴上“数学”“中文”这样的标签；它们能否形成有用的分工，要看后续训练。</p>
+    </section>
+
+    <section id="budget">
+      <h2>总参数增加，不代表比原 FFN 更省计算</h2>
+      <p>你最初说“提高参数量，减小活跃参数和计算量”，这里必须指定比较对象。假设一个原始 FFN 有 P 个参数，把它换成 4 个同样大小的专家，每次选 1 个，那么总专家参数变成 4P，而每个 token 仍使用 P。与原来的 FFN 比，是总参数增加、主要计算基本保持；与把全部 4P 参数都执行一遍的密集 FFN 比，才是减少活跃参数和计算。</p>
+      <p>这个区别可以直接从 SwiGLU 的三块矩阵推出。两块矩阵的形状为 F × D，另一块为 D × F，均无偏置，因此一个专家有 3DF 个参数。E 个专家总共有 3EDF；一个 token 执行 k 个专家，则涉及 3kDF 个专家参数。</p>
+      <div class="equation">
+        <math display="block" aria-label="专家总参数 3 E D F，每 token 激活的专家参数 3 k D F"><mrow><msub><mi>P</mi><mtext>全部专家</mtext></msub><mo>=</mo><mn>3</mn><mi>E</mi><mi>D</mi><mi>F</mi><mo>,</mo><mspace width="1em"/><msub><mi>P</mi><mtext>每 token 专家</mtext></msub><mo>=</mo><mn>3</mn><mi>k</mi><mi>D</mi><mi>F</mi></mrow></math>
+        <math display="block" aria-label="FFN 前向主要 FLOPs 约为 6 k D F"><mrow><msub><mi>FLOPs</mi><mtext>FFN / token</mtext></msub><mo>≈</mo><mn>6</mn><mi>k</mi><mi>D</mi><mi>F</mi></mrow></math>
+        <p class="note">三块无偏置矩阵各有 D × F 个参数；乘法和加法各计 1 FLOP。此式只计算前向矩阵乘，未计 SiLU、逐元素乘、路由、索引、反向及优化器。</p>
+      </div>
+      <p>代入你当前的 D = 576、F = 1536，一个 FFN 有 2,654,208 个参数。换成 4 专家 Top-1，单层专家总参数约为 10.62M，但每 token 仍只执行约 2.65M 的专家参数。若保持专家宽度不变却改成 Top-2，主要 FFN 计算就约为原来的两倍；它不会因为名字里有“稀疏”就自动比原模型更省算力。</p>
+      <p>另一种选择是把每个专家宽度缩小。例如 Top-2 搭配 F = 768，两个半宽专家的主要矩阵计算合起来，约等于原来一个 F = 1536 的 FFN。但“两个半宽专家的加权和”和“一个完整宽度 FFN”是不同的函数结构，不能仅凭 FLOPs 相同就认为表达能力或训练效果相同。下面的计算器把 E、k、F 分开，正是为了看到这三个变量各自改变什么。</p>
+      <div class="controls">
+        <label for="budget-e">专家 E <select id="budget-e"><option>2</option><option selected>4</option><option>8</option><option>16</option></select></label>
+        <label for="budget-k">激活 k <select id="budget-k"><option selected>1</option><option>2</option><option>4</option></select></label>
+        <label for="budget-f">专家宽度 F <select id="budget-f"><option>768</option><option selected>1536</option><option>3072</option></select></label>
+      </div>
+
+      <figure class="formula-viz">
+        <figcaption>3DF 是三块矩阵的面积；E 是总共有几组，k 是当前执行几组</figcaption>
+        <div class="svg-scroll"><svg id="matrix-budget-figure" role="img" aria-label="每个专家的三块矩阵，着色表示当前 token 执行的专家，灰色表示仍存储但不执行"></svg></div>
+        <p>着色的前 k 个专家只代表某个 token 的一种选择，不表示路由永远选前 k 个。三块矩阵每块面积都为 D×F，W₂ 只是把长宽转置。</p>
+        <div class="svg-scroll"><svg id="flops-figure" role="img" aria-label="一个点积的乘加操作，推广到矩阵和多个专家的运算数"></svg></div>
+      </figure>
+      <div class="stats" aria-live="polite">
+        <div class="stat"><div class="caption">单层 · 全部专家参数</div><div class="value" id="param-total"></div></div>
+        <div class="stat"><div class="caption">单层 · 每 token 激活的专家参数</div><div class="value" id="param-active"></div></div>
+        <div class="stat"><div class="caption">FFN 主要计算 / 原 FFN</div><div class="value" id="compute-ratio"></div></div>
+      </div>
+      <div class="comparison" aria-label="专家参数对比，三行使用同一尺度">
+        <div>原 FFN</div><div class="bar-track"><div id="bar-dense" class="bar" style="background:#8291a4"></div></div><div id="num-dense" class="number"></div>
+        <div>全部专家</div><div class="bar-track"><div id="bar-total" class="bar" style="background:var(--blue)"></div></div><div id="num-total" class="number"></div>
+        <div>每 token 激活</div><div class="bar-track"><div id="bar-active" class="bar" style="background:var(--e1)"></div></div><div id="num-active" class="number"></div>
+      </div>
+      <p id="budget-explain" class="callout"></p>
+      <p id="model-total"></p>
+      <p class="note">整模总参数按当前配置精确计数：12 层、词表 24576、共享 embedding / lm_head、标准多头注意力；12 个 FFN 全换为 MoE。路由器参数每层另加 E × D。</p>
+      <p>上面的整模参数还包含注意力、词嵌入和输出层，所以不能把“4 个专家”直接理解成“整模型参数乘 4”。路由器自身也有 E × D 个参数，并且每个 token 都要计算所有 E 个路由分数；稀疏掉的是专家 FFN 的执行，并没有免除路由打分。</p>
+      <p><strong>不执行一个专家，不等于不存储它。</strong>它必须保留权重，之后收到 token 时才能计算；训练还需要相应梯度与优化器状态。另一方面，同样数量的矩阵运算，被拆成多个小批次以后未必有原来一个大批次快，分发与合并也有开销。所以 MoE 给的是“以稀疏计算使用更大参数容量”的结构，实际速度和效果仍取决于训练规模与实现。</p>
+    </section>
+
+    <section id="training">
+      <h2>预训练时，谁在教专家，谁在教路由器</h2>
+      <p>换成 MoE 后，预训练的主任务不变：给定前面的 token，预测下一个 token。没有额外的数据标签告诉模型“这句话应该用专家 2”。设训练序列中的 token 为 u₁、u₂……，语言建模损失仍然是：</p>
+      <div class="equation">
+        <math display="block" aria-label="语言建模损失为正确下一个 token 概率的负对数均值"><mrow><msub><mi>L</mi><mtext>next-token</mtext></msub><mo>=</mo><mo>−</mo><mfrac><mn>1</mn><mi>N</mi></mfrac><munderover><mo>∑</mo><mrow><mi>t</mi><mo>=</mo><mn>1</mn></mrow><mi>N</mi></munderover><mi>log</mi><msub><mi>P</mi><mi>θ</mi></msub><mo>(</mo><msub><mi>u</mi><mrow><mi>t</mi><mo>+</mo><mn>1</mn></mrow></msub><mo>∣</mo><msub><mi>u</mi><mrow><mn>1</mn><mo>:</mo><mi>t</mi></mrow></msub><mo>)</mo></mrow></math>
+      </div>
+
+      <figure class="formula-viz">
+        <figcaption>−log 把“正确答案有多不可能”变成损失；Σ/N 把各位置的损失求平均</figcaption>
+        <div class="controls"><label for="ce-p">第2个位置：正确答案的概率 <input id="ce-p" type="range" min="0.02" max="0.98" step="0.01" value="0.2"></label><output id="ce-p-value"></output></div>
+        <div class="svg-scroll"><svg id="ce-figure" role="img" aria-label="正确答案概率到负对数损失的曲线，以及三个位置的损失如何求平均"></svg></div>
+        <p id="ce-readout" aria-live="polite"></p>
+      </figure>
+      <p>这里 N 表示参与损失计算的预测位置数，θ 包含整个模型的训练参数。正确 token 的概率越低，损失越大。这个误差从输出层往回传，经过后面的 Transformer 层，最终到达当前 MoE 的合并输出 y。</p>
+      <p>假设到达 y 的梯度是向量 g，也就是 ∂L/∂y。记专家 i 的输出为 eᵢ。由于 y 是各个 αᵢeᵢ 的和，反向传播自然分成两条路：</p>
+      <div class="equation">
+        <math display="block" aria-label="专家输出梯度为权重乘以上游梯度，合并权重梯度为上游梯度与专家输出的内积"><mrow><mfrac><mrow><mo>∂</mo><mi>L</mi></mrow><mrow><mo>∂</mo><msub><mi>e</mi><mi>i</mi></msub></mrow></mfrac><mo>=</mo><msub><mi>α</mi><mi>i</mi></msub><mi>g</mi><mo>,</mo><mspace width="1em"/><mfrac><mrow><mo>∂</mo><mi>L</mi></mrow><mrow><mo>∂</mo><msub><mi>α</mi><mi>i</mi></msub></mrow></mfrac><mo>=</mo><msup><mi>g</mi><mi mathvariant="normal">T</mi></msup><msub><mi>e</mi><mi>i</mi></msub><mspace width="1em"/><mo>(</mo><mi>i</mi><mo>∈</mo><mi>S</mi><mo>)</mo></mrow></math>
+      </div>
+
+      <figure class="formula-viz">
+        <figcaption>同一个上游梯度，分成“专家输出怎么改”和“混合权重怎么改”两条路径</figcaption>
+        <p>固定 e₀=[3,0]、e₁=[0,6]，α=[2/3,1/3]。先让上游梯度 g=[1,−1]：第1维增大会增大损失，第2维增大会减小损失。</p>
+        <div class="controls"><label for="backward-gy">g 的第2维 <input id="backward-gy" type="range" min="-2" max="2" step="0.1" value="-1"></label><output id="backward-gy-value"></output></div>
+        <div class="math-pair">
+          <div><p><strong>αᵢg：方向保持，箭头长度按 α 缩小。</strong></p><div class="svg-scroll"><svg id="gradient-vector-figure" class="vector-plot" role="img" aria-label="上游梯度向量按两个合并权重缩放，形成专家输出梯度"></svg></div></div>
+          <div><p><strong>gᵀeᵢ：夹角锐则为正，钝则为负，垂直则为零。</strong></p><div class="svg-scroll"><svg id="gradient-dot-figure" class="vector-plot" role="img" aria-label="梯度方向与两个专家输出方向之间的夹角，解释点积的正负"></svg></div></div>
+        </div>
+        <div class="svg-scroll"><svg id="backward-figure" role="img" aria-label="把梯度缩放和点积展开为逐坐标乘法，说明两条梯度路径"></svg></div>
+        <p id="backward-readout" aria-live="polite"></p>
+      </figure>
+      <p>第一条进入专家内部，更新它的 SwiGLU 参数，使它以后处理类似表示时更有助于降低预测误差。第二条改变合并权重；只要权重到路由分数之间还保留可微路径，就能进一步更新路由矩阵。这就是路由器获得任务训练信号的来源。它没有直接拿到“最佳专家”的标签，而是从自己的选择和合并方式对最终预测造成的影响中学习。</p>
+      <p>对当前 token 没被选中的专家，没有执行相应 FFN，也就没有这条 token 的任务梯度。其他 token 如果选中了它，它仍然会得到它们的训练信号。这里说的是数据产生的梯度，不是说一个未被选中的参数绝对不会受到优化器动量或权重衰减的影响。</p>
+      <p>这也说明“专家分工”是怎样可能出现的：路由器让不同输入更多地进入不同专家，各专家再被各自收到的数据更新，之后路由又依据新的模型状态继续选择。这个共同学习过程可以形成分工，也可能偏向少数专家；新增专家数量本身不保证分工一定发生。</p>
+    </section>
+
+    <section id="balance">
+      <h2>同一张卡，也会有专家学不到东西</h2>
+      <p>你提出的单卡疑问，在硬件层面是有道理的。假设 1000 个 token 使用 Top-1，专家大小相同、没有容量截断，也不考虑实现开销，那么无论分成 [250, 250, 250, 250]，还是 [1000, 0, 0, 0]，都执行了 1000 次单 token 的专家 FFN。所有专家又都在同一张卡上，不存在“某张卡独自过载、其他卡等它”的跨卡问题。甚至集中到一个较大的矩阵批次，有时还更容易利用 GPU。</p>
+      <p>但训练不仅关心这一步算了多少，还关心这些计算更新了哪些参数。如果持续采用第二种分配，专家 0 不断接受任务训练，而另外三个专家几乎没有机会学习。它们虽然占据了参数空间，却没有充分参与当前数据的建模。你原本想借 MoE 增加可用容量，实际却可能长期只用到其中一部分。</p>
+      <p>这种偏向可能在早期就出现。路由器的初始分数有小差别，硬 Top-1 会把小差别变成离散的选择差别；被更多选择的专家接受更多数据更新，其他专家缺乏训练机会，之后这种差距可能继续维持。这通常被称为路由塌缩。它不是每次训练都必然发生，但<strong>是否同卡并不能消除这种学习上的不均衡</strong>。</p>
+      <p>负载均衡项就是给路由器增加一个约束：优化预测误差的同时，避免长期把绝大多数 token 都交给少数专家。它不替专家学习具体知识，也不强制给每个 token 平均使用全部专家。要理解它怎样工作，先区分两个很容易混淆的统计量。</p>
+      <p>对一批 N 个 token，fᵢ 表示“实际上有多少比例的 token 选了专家 i”；p̄ᵢ 表示“路由器给专家 i 的概率，跨 token 平均之后有多大”。前者来自硬选择，后者来自 softmax。它们不是同一个东西：如果每个 token 的概率都是 [0.26, 0.25, 0.25, 0.24]，平均概率看上去很均匀，Top-1 却会让所有 token 都选专家 0，实际负载是 [1, 0, 0, 0]。</p>
+      <div class="equation">
+        <div class="eq-label">Top-1 · 从整批 token 统计负载</div>
+        <math display="block" aria-label="f i 为选择专家 i 的 token 比例，平均 p i 为整批的平均路由概率"><mrow><msub><mi>f</mi><mi>i</mi></msub><mo>=</mo><mfrac><mn>1</mn><mi>N</mi></mfrac><munderover><mo>∑</mo><mrow><mi>t</mi><mo>=</mo><mn>1</mn></mrow><mi>N</mi></munderover><mi mathvariant="normal">𝟙</mi><mo>[</mo><msub><mi>s</mi><mi>t</mi></msub><mo>=</mo><mi>i</mi><mo>]</mo><mo>,</mo><mspace width="1em"/><msub><mover><mi>p</mi><mo>¯</mo></mover><mi>i</mi></msub><mo>=</mo><mfrac><mn>1</mn><mi>N</mi></mfrac><munderover><mo>∑</mo><mrow><mi>t</mi><mo>=</mo><mn>1</mn></mrow><mi>N</mi></munderover><msub><mi>p</mi><mrow><mi>t</mi><mi>i</mi></mrow></msub></mrow></math>
+        <math display="block" aria-label="均衡损失 E 乘以 f 与平均概率的内积"><mrow><msub><mi>L</mi><mtext>balance</mtext></msub><mo>=</mo><mi>E</mi><munderover><mo>∑</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>E</mi></munderover><msub><mi>f</mi><mi>i</mi></msub><msub><mover><mi>p</mi><mo>¯</mo></mover><mi>i</mi></msub><mo>,</mo><mspace width="1em"/><mi>L</mi><mo>=</mo><msub><mi>L</mi><mtext>next-token</mtext></msub><mo>+</mo><mi>λ</mi><msub><mi>L</mi><mtext>balance</mtext></msub></mrow></math>
+      </div>
+
+      <figure class="formula-viz">
+        <figcaption>同一张概率表：按行取最大值产生 f，按列平均产生 p̄</figcaption>
+        <div class="controls"><label for="stats-preset">四个 token 的概率 <select id="stats-preset"><option value="subtle">都略微偏向专家0</option><option value="balanced">各自偏向不同专家</option><option value="collapsed">都明显偏向专家0</option></select></label><label for="stats-expert">展开专家 <select id="stats-expert"><option>0</option><option>1</option><option>2</option><option>3</option></select></label></div>
+        <div class="svg-scroll"><svg id="stats-figure" role="img" aria-label="四行四列路由概率，行内最大值标记，以及按列统计平均概率和被选中频率"></svg></div>
+        <p id="stats-readout" aria-live="polite"></p>
+        <p>接着把同一专家的两个统计量相乘。每列上条是 f，下条是 p̄，长度都以1为满量程。</p>
+        <div class="svg-scroll"><svg id="balance-product-figure" role="img" aria-label="逐专家计算负载比例乘平均概率，再求和并乘专家数"></svg></div>
+        <p id="product-readout" aria-live="polite"></p>
+        <div class="controls"><label for="loss-lambda">均衡项系数 λ <input id="loss-lambda" type="range" min="0" max="1" step="0.01" value="0.1"></label><output id="loss-lambda-value"></output></div>
+        <div class="svg-scroll"><svg id="loss-sum-figure" role="img" aria-label="语言建模损失与加权均衡损失相加得到总损失"></svg></div>
+        <p id="loss-sum-readout"></p>
+      </figure>
+      <p class="note">均衡损失来源：<a href="https://www.jmlr.org/papers/volume23/21-0998/21-0998.pdf">Switch Transformer §2.2</a>。</p>
+      <p>式中的 s<sub>t</sub> 是 token t 选中的专家编号，𝟙[s<sub>t</sub> = i] 在选中专家 i 时取 1，否则取 0。这组公式先统计实际分配 f，再把它与平均路由概率 p̄ 做内积。系数 E 用于调整专家数量变化带来的尺度；λ 控制均衡项相对于语言建模损失的影响。</p>
+      <p><strong>反向传播时，f 被视为已经观察到的常量，梯度经由 p̄ 回到路由器。</strong>暂时把各专家概率看成可调的分配，fᵢ 越大的专家，每增加一份概率，对均衡损失的增加就越大；相反，把概率移向 fᵢ 较小的专家更有利于减小这个损失。softmax 的概率之和固定为 1，所以这个更新会改变专家之间的相对偏好，而不只是把所有分数一起降低。</p>
+      <p>为了看清梯度方向，令一个 token 的路由 logit 为 z<sub>tj</sub> = w<sub>j</sub> · x<sub>t</sub> + b<sub>j</sub>。下面的实验固定 x 和 w，只更新每个专家的偏置 b；代入 softmax 导数，可以得到：</p>
+        <div class="equation">
+          <math display="block" aria-label="均衡损失对偏置的梯度"><mrow><mfrac><mrow><mo>∂</mo><msub><mi>L</mi><mtext>balance</mtext></msub></mrow><mrow><mo>∂</mo><msub><mi>b</mi><mi>j</mi></msub></mrow></mfrac><mo>=</mo><mfrac><mi>E</mi><mi>N</mi></mfrac><munderover><mo>∑</mo><mrow><mi>t</mi><mo>=</mo><mn>1</mn></mrow><mi>N</mi></munderover><msub><mi>p</mi><mrow><mi>t</mi><mi>j</mi></mrow></msub><mo>(</mo><msub><mi>f</mi><mi>j</mi></msub><mo>−</mo><munderover><mo>∑</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>E</mi></munderover><msub><mi>f</mi><mi>i</mi></msub><msub><mi>p</mi><mrow><mi>t</mi><mi>i</mi></mrow></msub><mo>)</mo></mrow></math>
+        </div>
+      <p>括号中的第二项，是当前 token 按概率加权得到的平均负载。若某专家的 fⱼ 高于这个平均负载，它对该 token 的梯度贡献为正；梯度下降会倾向于降低它的偏置。低负载专家则可能得到相反方向的更新。对所有 token 求和，就得到表中用于更新 b 的梯度。每一步按 b ← b − ηλ∇<sub>b</sub>L 更新，再重新计算 Top-1，某些 token 便可能切换专家。</p>
+      <p>均匀负载并不要求均衡损失为零。当所有 fᵢ = 1/E 时，由于各专家的平均概率之和为 1，这个损失正好等于 1，而且在把 f 视为常量的反向过程中，梯度为零。反过来，损失接近 1 也不能单独证明负载均匀：前面 [0.26, 0.25, 0.25, 0.24] 的例子虽然全部选中专家 0，损失却只有 4 × 0.26 = 1.04。所以还要直接看实际分配计数。</p>
+      <p>下面从专家 0 的路由偏置较大开始。每个格子都是固定的一个 token，颜色表示它当前选择的专家。点击“梯度下降 1 步”，先看偏置和梯度，再看哪些 token 改了归属；连续优化只是重复这个实际计算过程。</p>
+      <div class="demo">
+        <div class="bias-control"><label for="bias">初始偏置 b₀</label><input id="bias" type="range" min="0" max="6" step="0.1" value="4"><output id="bias-value" for="bias" class="number">4.0</output><button id="balance-reset" type="button">重置</button></div>
+        <div class="controls">
+          <button id="balance-step" type="button">梯度下降 1 步</button>
+          <button id="balance-play" class="primary" type="button">连续优化</button>
+          <span class="note">只更新路由偏置 · 学习率 η = 1 · λ = 1</span>
+        </div>
+        <div class="load-layout">
+          <div>
+            <div class="demo-title">实际分给各专家的 token</div>
+            <div id="load-bars"></div>
+            <div class="note">虚线：25%（每个专家 16 / 64）。不是硬性配额。</div>
+          </div>
+          <div>
+            <div class="demo-title">64 个 token 的专家归属</div>
+            <div id="token-grid" class="token-grid" role="img" aria-label="64 个 token 的专家归属"></div>
+            <div class="grid-label">每格代表固定的一个 token；颜色对应左侧专家。</div>
+          </div>
+        </div>
+        <div class="metrics" aria-live="polite">
+          <span>更新步数<b id="balance-steps">0</b></span>
+          <span>L<sub>balance</sub><b id="balance-loss"></b></span>
+          <span>最大专家占比<b id="balance-max"></b></span>
+        </div>
+        <div class="table-wrap">
+          <table class="compact"><thead><tr><th>专家</th><th>fᵢ：实际占比</th><th>p̄ᵢ：平均概率</th><th>当前偏置 bᵢ</th><th>∂L / ∂bᵢ</th></tr></thead><tbody id="balance-numbers"></tbody></table>
+        </div>
+        <p id="balance-status" class="note"></p>
+        <figure class="formula-viz">
+          <figcaption>把偏置梯度里的 Σ 展开：64 个 token 各贡献一项，最后带符号相加</figcaption>
+          <div class="controls"><label for="gradient-expert">观察偏置 bᵢ <select id="gradient-expert"><option value="0">专家0</option><option value="1">专家1</option><option value="2">专家2</option><option value="3">专家3</option></select></label><label for="gradient-token">展开一个 token <input id="gradient-token" type="range" min="0" max="63" step="1" value="0"></label><output id="gradient-token-value"></output></div>
+          <div class="svg-scroll"><svg id="load-gradient-figure" role="img" aria-label="64 个 token 对选定路由偏置的正负梯度贡献和总和"></svg></div>
+          <p id="load-gradient-readout" aria-live="polite"></p>
+        </figure>
+
+      </div>
+      <p class="note">此实验只优化均衡项，不训练专家，也不包含语言建模目标。因此它展示的是分配如何被改变，不是专家能力的提升。λ = 1 仅为便于观察。</p>
+      <p>实际预训练同时存在两个目标：语言建模损失推动预测变好，均衡项推动专家得到更充分的使用。λ 太强时，路由可能过分追求分配均匀；太弱时，又可能阻止不了集中。均衡是训练约束，不是“所有专家能力都已提高”的证据。尤其小模型和有限数据下，在 token 总量与 k 固定时，专家更多还意味着每个专家平均能分到的数据更少，不能把增加专家数直接等同于效果提升。</p>
+    </section>
+
+    <section id="gradient">
+      <h2>Top-k 不可微，路由器为什么还能训练</h2>
+      <p>前面说路由器从合并权重接收任务梯度，这里还缺一个关键条件：从权重 α 到路由分数之间，真的存在有效梯度吗？“模型可以执行前向”并不能保证这条学习路径成立，Top-1 尤其容易出现这种问题。</p>
+      <p>先区分“选谁”和“给多少权重”。Top-k 输出的专家编号是离散的：当前分数最高的是专家 0，把分数稍微改一点，编号仍然是 0；只有跨过另一个专家的分数时，编号才会跳变。通常的反向传播不会对这个整数选择求导，而是在当前选中的分支上继续传播。选中的概率仍然是连续可微的，所以只要输出确实依赖这些概率，就可以沿这条路径更新路由器。参数更新后，下次前向的排序又可能发生变化。</p>
+
+      <p>下面三幅图共用同一个概率。左边画真实前向函数 pₛ→α，右边画反向传播的路径和局部导数；两者必须分开看。</p>
+      <div class="controls"><label for="slope-p">选中专家概率 pₛ（保持选择不变）<input id="slope-p" type="range" min="0.26" max="0.95" step="0.01" value="0.6"></label><output id="slope-p-value"></output></div>
+          <h3>直接保留选中概率</h3>
+          <div class="equation"><math display="block"><mrow><mi>y</mi><mo>=</mo><msub><mi>p</mi><mi>s</mi></msub><msub><mi>FFN</mi><mi>s</mi></msub><mo>(</mo><mi>x</mi><mo>)</mo></mrow></math></div>
+
+      <figure class="formula-viz"><div class="svg-scroll"><svg id="plain-slope-figure" role="img" aria-label="未归一化的 Top-1 权重随概率线性变化，导数为1"></svg></div></figure>
+          <p>这里 s 是选中的专家。概率 p<sub>s</sub> 改变时，y 也会改变，因此任务误差能够通过 p<sub>s</sub> 回传给路由器。代价是前向输出会乘上这个概率：p<sub>s</sub> = 0.6 时，专家输出只有原来的 0.6 倍。</p>
+          <h3>Top-1 直接归一化</h3>
+          <div class="equation"><math display="block"><mrow><msub><mi>α</mi><mi>s</mi></msub><mo>=</mo><mfrac><msub><mi>p</mi><mi>s</mi></msub><msub><mi>p</mi><mi>s</mi></msub></mfrac><mo>=</mo><mn>1</mn><mo>,</mo><mspace width=".5em"/><mfrac><mrow><mo>∂</mo><msub><mi>α</mi><mi>s</mi></msub></mrow><mrow><mo>∂</mo><msub><mi>p</mi><mi>s</mi></msub></mrow></mfrac><mo>=</mo><mn>0</mn></mrow></math></div>
+
+      <figure class="formula-viz"><div class="svg-scroll"><svg id="normalized-slope-figure" role="img" aria-label="归一化权重恒为1，分子和分母两条梯度路径互相抵消"></svg></div></figure>
+          <p>只有一个被选中的概率时，除以选中概率之和，就是 p<sub>s</sub> 除以它自己，结果恒为 1。路由概率在当前选择不变的范围内怎样变化，都不会影响这个权重。于是任务损失通过合并权重回到路由器的梯度消失。专家依然能学，路由器也仍可收到均衡项的梯度，但它失去了这条来自预测任务的权重学习信号。</p>
+      <h3>直通估计：前向为 1，反向保留梯度</h3>
+      <div class="equation"><math display="block" aria-label="权重 p s 减去 stop gradient p s 加 1"><mrow><msub><mi>α</mi><mi>s</mi></msub><mo>=</mo><msub><mi>p</mi><mi>s</mi></msub><mo>−</mo><mi>stopgrad</mi><mo>(</mo><msub><mi>p</mi><mi>s</mi></msub><mo>)</mo><mo>+</mo><mn>1</mn></mrow></math></div>
+
+      <figure class="formula-viz"><div class="svg-scroll"><svg id="straight-slope-figure" role="img" aria-label="直通估计的真实前向曲线仍恒为1，但 stopgrad 阻断一条反向路径后人为保留梯度1"></svg></div></figure>
+      <p>stopgrad 保留数值，但阻断梯度。前向时，两项概率相消，α = 1；反向时，只有第一项 p<sub>s</sub> 传梯度，因此 ∂α / ∂p<sub>s</sub> = 1。<strong>这是人为指定的替代梯度，不是硬路由的真实导数。</strong></p>
+      <p>比如 p<sub>s</sub> = 0.6，前向算的是 0.6 − 0.6 + 1 = 1；反向把第二个 0.6 当作常量，得到 1 − 0 + 0 = 1。它把“前向要保持的数值”和“反向采用的导数”分开定义，使输出不被概率缩小，同时仍让路由器收到一条替代的任务梯度。本地 MiniMind 的 Top-1 分支采用的就是这个思路。</p>
+      <p>Top-2 的选中概率归一化不同：α₀ = p₀/(p₀+p₁) 还取决于两个专家的相对分数，并非恒定值，因此通常仍保留权重梯度。但硬选择边界依旧没有直接求导；在当前选择固定时，这种归一化的任务梯度直接作用于选中专家的相对 logits；未选中专家的路由分数可由均衡项等路径调整，而其 FFN 参数仍需要等收到 token 才有任务梯度。</p>
+      <p>因此，学习 MoE 时需要同时追踪两件事：前向到底执行了哪些专家，反向误差到底经过哪些路径。只看到 token 被分给多个 FFN，还没有完整理解训练；必须再确认专家能收到数据梯度、路由器能学到有用的选择，以及这种选择没有长期闲置大部分专家。</p>
+    </section>
+
+
+  </main>
+</div>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const colors = ['#2463ba','#09806e','#b9660b','#8253b5'];
+const softmax = a => { const m = Math.max(...a), e = a.map(v => Math.exp(v-m)), s = e.reduce((u,v)=>u+v,0); return e.map(v=>v/s); };
+const dot = (a,b) => a.reduce((s,v,i)=>s+v*b[i],0);
+const fmt = (x,d=3) => x.toFixed(d);
+const pct = x => (100*x).toFixed(1)+'%';
+const vec = x => '['+x.map(v=>fmt(v)).join(', ')+']';
+const millions = x => (x/1e6).toFixed(2)+'M';
+const NS = 'http://www.w3.org/2000/svg';
+const svgEl = (tag, attrs, text) => { const el=document.createElementNS(NS,tag); for(const [k,v] of Object.entries(attrs))el.setAttribute(k,v); if(text!==undefined)el.textContent=text; return el; };
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+// 函数括号只包住自身参数，避免被同一行的大求和号、分数撑高。
+document.querySelectorAll('math mo').forEach(el=>{if(['(',')','[',']'].includes(el.textContent))el.setAttribute('stretchy','false');});
+
+function updateBudget(){
+  const E=Number($('budget-e').value),F=Number($('budget-f').value),D=576,L=12;
+  for(const option of $('budget-k').options)option.disabled=Number(option.value)>E;
+  if(Number($('budget-k').value)>E)$('budget-k').value=String(E);
+  const k=Number($('budget-k').value),base=3*D*1536,total=E*3*D*F,active=k*3*D*F,max=Math.max(base,total,active),ratio=active/base;
+  $('param-total').textContent=millions(total);$('param-active').textContent=millions(active);$('compute-ratio').textContent=fmt(ratio,2)+'×';
+  for(const [name,value] of [['dense',base],['total',total],['active',active]]){$('bar-'+name).style.width=(100*value/max)+'%';$('num-'+name).textContent=millions(value);}
+  $('budget-explain').textContent=`相对原 FFN：专家总参数为 ${fmt(total/base,1)} 倍，每 token 的主要 FFN 计算为 ${fmt(ratio,1)} 倍。相对把全部专家都执行一遍，只执行 ${k}/${E} 的专家计算。`;
+  const denseModel=61945920,moeModel=denseModel-L*base+L*(total+D*E);
+  renderMatrices();
+  $('model-total').innerHTML=`若 12 层全替换，整模总参数：<strong class="number">${millions(denseModel)} → ${millions(moeModel)}</strong>（${moeModel.toLocaleString('en-US')} 个；已含 router）。`;
+}
+['budget-e','budget-k','budget-f'].forEach(id=>$(id).addEventListener('change',updateBudget));
+
+// 64 个固定输入；四个固定方向的路由分数 + 可训练偏置。
+const balanceLogits=Array.from({length:64},(_,t)=>{const angle=2*Math.PI*(t+.37)/64;return [1.8*Math.cos(angle),1.8*Math.sin(angle),-1.8*Math.cos(angle),-1.8*Math.sin(angle)];});
+let bias=[4,0,0,0],balanceSteps=0,balanceTimer=null;
+function balanceState(b=bias){
+  const p=balanceLogits.map(row=>softmax(row.map((z,i)=>z+b[i])));
+  const ids=p.map(row=>row.indexOf(Math.max(...row))),counts=[0,0,0,0];ids.forEach(i=>counts[i]++);
+  const f=counts.map(n=>n/64),mean=[0,1,2,3].map(i=>p.reduce((s,row)=>s+row[i]/64,0));
+  const loss=4*dot(f,mean),grad=[0,0,0,0];
+  p.forEach(row=>{const weighted=dot(f,row);row.forEach((v,j)=>grad[j]+=4/64*v*(f[j]-weighted));});
+  return {p,ids,counts,f,mean,loss,grad};
+}
+function renderBalance(){
+  const s=balanceState();
+  if(!$('load-bars').children.length)$('load-bars').innerHTML=colors.map((color,i)=>`<div class="load-row"><span><span class="swatch" style="background:${color}"></span>专家 ${i}</span><div class="bar-track"><span class="target"></span><div class="bar" style="background:${color};width:0%"></div></div><span class="number"></span></div>`).join('');
+  s.counts.forEach((n,i)=>{const row=$('load-bars').children[i];row.querySelector('.bar').style.width=(n/64*100)+'%';row.querySelector('.number').textContent=n+' / 64';});
+  const squares=$('token-grid').children;
+  s.ids.forEach((id,i)=>{squares[i].style.background=colors[id];squares[i].title=`token ${i} → 专家 ${id}`;});
+  $('token-grid').setAttribute('aria-label','64 个 token 的专家归属：'+s.counts.map((n,i)=>`专家 ${i}，${n} 个`).join('；'));
+  $('balance-steps').textContent=balanceSteps;$('balance-loss').textContent=fmt(s.loss,4);$('balance-max').textContent=pct(Math.max(...s.f));
+  $('balance-numbers').innerHTML=s.f.map((f,i)=>`<tr><td><span class="swatch" style="background:${colors[i]}"></span>${i}</td><td class="number">${pct(f)}</td><td class="number">${pct(s.mean[i])}</td><td class="number">${fmt(bias[i])}</td><td class="number">${fmt(s.grad[i],4)}</td></tr>`).join('');
+  const even=s.counts.every(n=>n===16),maxI=s.counts.indexOf(Math.max(...s.counts));
+  $('balance-status').textContent=even?'实际分配已经均匀：fᵢ = 1/4。此时 L = 1，偏置梯度为 0；这不表示专家已经学会不同能力。':`专家 ${maxI} 接收 ${s.counts[maxI]} 个 token；这一步将按表中梯度更新偏置。没有收到 token 的专家缺乏这些 token 的任务训练信号。`;
+  renderBalanceDerivative(s);
+  return s;
+}
+function stopBalance(){if(balanceTimer!==null)clearInterval(balanceTimer);balanceTimer=null;$('balance-play').textContent='连续优化';}
+function stepBalance(){const s=balanceState();bias=bias.map((b,i)=>b-s.grad[i]);balanceSteps++;const updated=renderBalance();if(updated.counts.every(n=>n===16)||balanceSteps>=200)stopBalance();}
+function resetBalance(){stopBalance();bias=[Number($('bias').value),0,0,0];balanceSteps=0;$('bias-value').textContent=fmt(bias[0],1);renderBalance();}
+$('token-grid').innerHTML=Array.from({length:64},()=>'<div class="token-dot"></div>').join('');
+$('bias').addEventListener('input',resetBalance);$('balance-reset').addEventListener('click',resetBalance);
+$('balance-step').addEventListener('click',()=>{stopBalance();stepBalance();});
+$('balance-play').addEventListener('click',()=>{if(balanceTimer!==null){stopBalance();return;}if(balanceState().counts.every(n=>n===16))return;$('balance-play').textContent='暂停优化';balanceTimer=setInterval(stepBalance,reducedMotion?500:240);});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){stopBalance();}});
+
+// Each figure evaluates the formula beside it; no prerecorded routing animation.
+const ink='#172333', muted='#536174', grid='#dce2e9', red='#b83c3c';
+function chart(id,w,h){const s=$(id);s.setAttribute('viewBox',`0 0 ${w} ${h}`);s.replaceChildren();return s;}
+function tx(s,x,y,t,size=14,color=ink,anchor='start'){s.append(svgEl('text',{x,y,'font-size':size,fill:color,'text-anchor':anchor},t));}
+function line(s,x1,y1,x2,y2,color=grid,width=1,dash=''){s.append(svgEl('line',{x1,y1,x2,y2,stroke:color,'stroke-width':width,...(dash?{'stroke-dasharray':dash}:{})}));}
+function rect(s,x,y,w,h,fill,stroke='none'){s.append(svgEl('rect',{x,y,width:Math.max(0,w),height:Math.max(0,h),fill,stroke}));}
+function arrow(s,x1,y1,x2,y2,color=ink,width=2){line(s,x1,y1,x2,y2,color,width);const a=Math.atan2(y2-y1,x2-x1),r=7;s.append(svgEl('path',{d:`M ${x2-r*Math.cos(a-.42)} ${y2-r*Math.sin(a-.42)} L ${x2} ${y2} L ${x2-r*Math.cos(a+.42)} ${y2-r*Math.sin(a+.42)}`,fill:'none',stroke:color,'stroke-width':width}));}
+function circle(s,x,y,r,color){s.append(svgEl('circle',{cx:x,cy:y,r,fill:color}));}
+function path(s,points,color,width=2,dash=''){s.append(svgEl('path',{d:points.map((p,i)=>`${i?'L':'M'}${p[0]} ${p[1]}`).join(' '),fill:'none',stroke:color,'stroke-width':width,...(dash?{'stroke-dasharray':dash}:{})}));}
+function vectorCells(s,x,y,v,color=colors[0],label=''){
+  if(label)tx(s,x+35,y-13,label,14,ink,'middle');
+  v.forEach((n,i)=>{rect(s,x,y+i*35,70,30,color+'12');rect(s,x+35+(n<0?-Math.min(32,Math.abs(n)*4):0),y+i*35+26,Math.min(32,Math.abs(n)*4),3,color);tx(s,x+35,y+i*35+21,fmt(n,2),14,ink,'middle');});
+}
+function matrixCells(s,x,y,a,label,color,cellWidth=30){tx(s,x+a[0].length*cellWidth/2,y-10,label,14,ink,'middle');a.forEach((r,i)=>r.forEach((v,j)=>{rect(s,x+j*cellWidth,y+i*28,cellWidth-2,26,color+'12');tx(s,x+j*cellWidth+cellWidth/2-1,y+i*28+18,String(v),12,ink,'middle');}));}
+
+function renderSwi(){
+  const a=Number($('swi-x').value),x=[a,1],w1=[[1,0],[0,1],[1,-1]],w3=[[1,1],[1,-1],[.5,1]],w2=[[1,0,1],[0,1,-1]];
+  const z=w1.map(r=>dot(r,x)),gate=z.map(v=>v/(1+Math.exp(-v))),content=w3.map(r=>dot(r,x)),h=gate.map((v,i)=>v*content[i]),out=w2.map(r=>dot(r,h));
+  $('swi-x-value').textContent=fmt(a,2);
+  const s=chart('swi-figure',900,360);
+  vectorCells(s,15,150,x,ink,'x · 2维');
+  arrow(s,89,163,135,92,colors[0]);arrow(s,89,184,135,259,colors[1]);
+  matrixCells(s,139,50,w1,'W₁ · 3×2',colors[0]);matrixCells(s,139,221,w3,'W₃ · 3×2',colors[1]);
+  arrow(s,204,90,242,90,colors[0]);arrow(s,204,260,392,260,colors[1]);
+  vectorCells(s,249,48,z,colors[0],'W₁x');
+  arrow(s,323,94,390,94,colors[0]);tx(s,356,78,'SiLU',13,ink,'middle');
+  vectorCells(s,400,48,gate,colors[0],'门控分支');vectorCells(s,400,219,content,colors[1],'内容分支');
+  for(let i=0;i<3;i++){line(s,472,63+i*35,509,63+i*35,colors[0]);line(s,472,234+i*35,509,234+i*35,colors[1]);}
+  arrow(s,512,104,564,174,ink);arrow(s,512,260,564,190,ink);
+  tx(s,527,186,'⊙',22);vectorCells(s,574,136,h,colors[2],'同位置相乘 · 3维');
+  arrow(s,651,187,682,187);matrixCells(s,690,155,w2,'W₂ · 2×3',colors[2]);
+  arrow(s,783,187,814,187);vectorCells(s,822,150,out,ink,'输出 · 2维');
+  tx(s,450,350,`第3维：SiLU(${fmt(z[2],2)}) × ${fmt(content[2],2)} = ${fmt(h[2],3)}；没有与第1、2维交叉相乘。`,14,ink,'middle');
+  $('swi-readout').textContent=`输出第1维 = 1×${fmt(h[0])} + 0×${fmt(h[1])} + 1×${fmt(h[2])} = ${fmt(out[0])}。拖 x₁，沿图从左到右看这个结果如何产生。SiLU 的结果可以为负，也可大于 1，并不是概率。`;
+}
+
+const fixedExperts=[[3,0],[0,6],[-2,1],[1,-2]];
+function visualRoute(){
+  const delta=Number($('route-delta').value),k=Number($('route-k').value),z=[.6,.3,.08,.02].map(Math.log);z[0]+=delta;
+  const p=softmax(z),ids=[0,1,2,3].sort((a,b)=>p[b]-p[a]).slice(0,k),mass=ids.reduce((s,i)=>s+p[i],0),alpha=p.map((v,i)=>ids.includes(i)?v/mass:0);
+  const y=[0,1].map(d=>ids.reduce((s,i)=>s+alpha[i]*fixedExperts[i][d],0));return {delta,k,z,p,ids,mass,alpha,y};
+}
+function renderRoutingMath(){
+  const r=visualRoute();$('route-delta-value').textContent=fmt(r.delta,2);
+  $('vector-delta').value=r.delta;$('vector-delta-value').textContent=fmt(r.delta,2);
+  const gate=chart('router-dot-figure',900,180),W=[.6,.3,.08,.02].map((p,i)=>[+Math.log(p).toFixed(3),i===0?1:0]);
+  matrixCells(gate,20,35,W,'Wᵣ · 4×2',colors[0],48);tx(gate,143,97,'×',23);vectorCells(gate,181,56,[1,r.delta],colors[1],'x · 2维');tx(gate,285,97,'=',23);vectorCells(gate,328,30,r.z,ink,'z · 4维');
+  tx(gate,440,51,`专家0：ln(0.60) × 1 + 1 × ${fmt(r.delta,2)} = ${fmt(r.z[0])}`,14);
+  tx(gate,440,87,`exp(z) = [${r.z.map(z=>fmt(Math.exp(z))).join(', ')}]`,14);
+  tx(gate,440,123,`各项再除以总和 ${fmt(r.z.reduce((a,z)=>a+Math.exp(z),0))}，得到下面的概率。`,14);
+  const s=chart('routing-math-figure',900,295),xs=[200,448,698],width=150;
+  tx(s,45,26,'路由分数 zᵢ');['softmax 后 pᵢ','Top-k 留下的概率','除以保留概率之和 → αᵢ'].forEach((t,j)=>tx(s,xs[j],26,t,14));
+  for(let i=0;i<4;i++){
+    const y=59+i*49,chosen=r.ids.includes(i);tx(s,8,y+18,`专家 ${i}`,14,colors[i]);tx(s,93,y+18,fmt(r.z[i],2),14);
+    [r.p[i],chosen?r.p[i]:0,r.alpha[i]].forEach((v,j)=>{rect(s,xs[j],y,width,25,'#edf1f6');rect(s,xs[j],y,width*v,25,colors[i]);tx(s,xs[j]+width+7,y+18,fmt(v,3),13);});
+    if(!chosen)tx(s,530,y+18,'未选中',12,muted,'middle');
+  }
+  tx(s,200,278,'总和 = 1');tx(s,448,278,`总和 = ${fmt(r.mass)}`);tx(s,698,278,'总和重新变成 1');
+  $('routing-math-readout').textContent=`保留专家 ${r.ids.join('、')}。每个保留概率都除以 ${fmt(r.mass)}；例如专家 ${r.ids[0]}：${fmt(r.p[r.ids[0]])} ÷ ${fmt(r.mass)} = ${fmt(r.alpha[r.ids[0]])}。三列使用相同的 0～1 长度尺度。`;
+  renderVectorSum(r);
+}
+function coordinatePlane(s,w,h,xmin,xmax,ymin,ymax){
+  const L=48,R=w-24,T=30,B=h-38,X=x=>L+(x-xmin)/(xmax-xmin)*(R-L),Y=y=>B-(y-ymin)/(ymax-ymin)*(B-T);
+  for(let x=Math.ceil(xmin);x<=xmax;x++){line(s,X(x),T,X(x),B,'#edf1f6');if(x!==0)tx(s,X(x),Y(0)+18,String(x),11,muted,'middle');}
+  for(let y=Math.ceil(ymin);y<=ymax;y++){line(s,L,Y(y),R,Y(y),'#edf1f6');if(y!==0)tx(s,X(0)-8,Y(y)+4,String(y),11,muted,'end');}
+  arrow(s,L,Y(0),R,Y(0),muted,1);arrow(s,X(0),B,X(0),T,muted,1);tx(s,R-5,Y(0)-10,'第1维',12,muted,'end');tx(s,X(0)+8,T+6,'第2维',12,muted);tx(s,X(0)-8,Y(0)+17,'0',11,muted,'end');return {X,Y};
+}
+function renderVectorSum(r){
+  const s=chart('vector-sum-figure',520,370),{X,Y}=coordinatePlane(s,520,370,-3,4,-3,7);
+  if(r.ids.length===2){const [a,b]=r.ids.map(i=>fixedExperts[i]);line(s,X(a[0]),Y(a[1]),X(b[0]),Y(b[1]),muted,1,'5 4');}
+  fixedExperts.forEach((e,i)=>{circle(s,X(e[0]),Y(e[1]),4,r.ids.includes(i)?colors[i]:'#bac4d0');tx(s,X(e[0])+(i===0?-8:8),Y(e[1])-10,`e${i} = [${e}]`,12,r.ids.includes(i)?colors[i]:muted,i===0?'end':'start');});
+  let start=[0,0];r.ids.forEach(i=>{const end=start.map((v,d)=>v+r.alpha[i]*fixedExperts[i][d]);arrow(s,X(start[0]),Y(start[1]),X(end[0]),Y(end[1]),colors[i],4);start=end;});
+  arrow(s,X(0),Y(0),X(r.y[0]),Y(r.y[1]),ink,1.8);circle(s,X(r.y[0]),Y(r.y[1]),4,ink);tx(s,X(r.y[0])+9,Y(r.y[1])+19,`y = ${vec(r.y)}`,13);
+  $('vector-sum-readout').textContent='首尾相接：'+r.ids.map(i=>`${fmt(r.alpha[i])} × [${fixedExperts[i]}]`).join(' + ')+' = '+vec(r.y)+'。彩色箭头是加权后的分量，黑箭头是它们的合向量。';
+}
+
+function renderMatrices(){
+  const E=Number($('budget-e').value),k=Number($('budget-k').value),F=Number($('budget-f').value),ncols=4,h=Math.ceil(E/ncols)*173+40,s=chart('matrix-budget-figure',900,h),long=F/32,short=18;
+  for(let i=0;i<E;i++){
+    const x=(i%4)*224+12,y=Math.floor(i/4)*173+22,c=i<k?colors[0]:'#d9e0e8';
+    tx(s,x,y,`专家 ${i}：${i<k?'本 token 执行':'存储，未执行'}`,13,i<k?ink:muted);
+    const yy=y+20;rect(s,x+5,yy,short,long,c);rect(s,x+57,yy,short,long,c);rect(s,x+108,yy,long,short,c);
+    tx(s,x+14,yy+long+17,'W₁',12,ink,'middle');tx(s,x+66,yy+long+17,'W₃',12,ink,'middle');tx(s,x+108+long/2,yy+36,'W₂',12,ink,'middle');
+    tx(s,x+5,y+142,'F×D + F×D + D×F = 3DF',11,muted);
+  }
+  tx(s,12,h-6,`全部 ${E} 组矩阵都存在；这个 token 只执行着色的 ${k} 组。增大 F 时，每一块矩阵的面积也随之增大。`,13);
+  const flops=chart('flops-figure',900,140);
+  tx(flops,12,24,'把一次“矩阵乘”拆到一行：',14);
+  [2,1,-1].forEach((v,i)=>{rect(flops,260+i*90,8,40,26,'#edf1f6');tx(flops,280+i*90,27,String(v),14,ink,'middle');tx(flops,315+i*90,27,'×',15);rect(flops,260+i*90,43,40,26,colors[0]+'16');tx(flops,280+i*90,62,String([3,2,1][i]),14,ink,'middle');});
+  tx(flops,570,29,'→ 6 + 2 − 1 = 7',16);tx(flops,570,62,'3次乘法 + 2次加法',14);
+  tx(flops,12,105,'F×D 矩阵约需 2DF 次运算；D×F 同量级。三块矩阵 × k 个专家 ≈ 6kDF。',15);
+}
+
+function renderCE(){
+  const p=Number($('ce-p').value),probs=[.5,p,.8],losses=probs.map(v=>-Math.log(v)),mean=losses.reduce((a,b)=>a+b)/3;
+  $('ce-p-value').textContent=fmt(p,2);const s=chart('ce-figure',900,280),X=q=>50+q*350,Y=l=>225-l/4*185;
+  for(const q of [.1,.5,1]){line(s,X(q),Y(0),X(q),Y(4),'#edf1f6');tx(s,X(q),Y(0)+20,String(q),12,muted,'middle');}
+  for(let l=0;l<=4;l++){line(s,X(0),Y(l),X(1),Y(l),'#edf1f6');tx(s,X(0)-10,Y(l)+4,String(l),12,muted,'end');}
+  tx(s,50,22,'损失 −log(p)');tx(s,400,265,'正确答案的概率 p',12,muted,'end');
+  path(s,Array.from({length:150},(_,i)=>{const q=.02+.98*i/149;return [X(q),Y(-Math.log(q))];}),colors[0],2.5);
+  circle(s,X(p),Y(-Math.log(p)),5,colors[2]);line(s,X(p),Y(-Math.log(p)),X(p),Y(0),colors[2],1,'4 3');
+  tx(s,460,22,'逐个预测位置计算，再求平均');
+  probs.forEach((q,i)=>{const y=54+i*53;tx(s,465,y+16,`t${i+1}: p=${fmt(q,2)}`,13);rect(s,565,y,losses[i]*66,23,i===1?colors[2]:colors[0]);tx(s,565+losses[i]*66+8,y+16,fmt(losses[i]),13);});
+  tx(s,465,239,`(${losses.map(v=>fmt(v)).join(' + ')}) ÷ 3 = ${fmt(mean)}`,14);
+  $('ce-readout').textContent=`第二个预测位置的正确答案概率为 ${pct(p)}，它贡献 ${fmt(losses[1])} 的损失。三个位置平均得到 Lnext-token = ${fmt(mean)}；只拉高一个位置的正确答案概率，就能看到它自己的损失如何减少。`;
+  return mean;
+}
+
+function renderBackprop(){
+  const gy=Number($('backward-gy').value),g=[1,gy],alpha=[2/3,1/3],es=[[3,0],[0,6]],s=chart('backward-figure',900,315);
+  $('backward-gy-value').textContent=fmt(gy,2);
+  tx(s,18,26,`上游梯度 g = [1, ${fmt(gy,2)}]：这两维分别增加一点，损失会怎样变？`,15);
+  tx(s,18,64,'路径 A：进入专家输出，逐坐标乘 αᵢ',14);tx(s,470,64,'路径 B：进入权重，对应坐标相乘后相加',14);
+  for(let i=0;i<2;i++){
+    const y=95+i*105;tx(s,18,y,`专家 ${i} · α=${fmt(alpha[i])}`,13,colors[i]);
+    [1,gy].forEach((v,d)=>{rect(s,23+d*91,y+15,78,31,colors[i]+'14');tx(s,62+d*91,y+36,`${fmt(alpha[i],2)}×${fmt(v,1)}`,12,ink,'middle');});
+    arrow(s,207,y+30,249,y+30,colors[i]);tx(s,262,y+36,vec(g.map(v=>alpha[i]*v)),15);
+    const terms=es[i].map((v,d)=>g[d]*v),grad=terms.reduce((a,b)=>a+b,0);
+    tx(s,472,y+29,`[1, ${fmt(gy,2)}] · [${es[i]}]`,14,colors[i]);
+    tx(s,472,y+57,`${fmt(terms[0],2)} + (${fmt(terms[1],2)}) = ${fmt(grad,2)}`,14);
+    tx(s,472,y+81,grad>0?'正：单独增大 α 会增损失':grad<0?'负：单独增大 α 会降损失':'零：一阶不变',11,grad>0?red:colors[1]);
+  }
+  const d0=dot(g,es[0]),d1=dot(g,es[1]),dz=alpha[0]*alpha[1]*(d0-d1);
+  $('backward-readout').textContent=`右侧是对每个 α 的局部偏导，暂时固定另一个 α。若再经过两权重的 softmax 约束，路由分数梯度为 [${fmt(dz)}, ${fmt(-dz)}]；更新分数时减去梯度。拖 g 的第2维，观察“多用专家1”从有利变成不利的时刻。`;
+  const a=chart('gradient-vector-figure',420,300),plane=coordinatePlane(a,420,300,-.5,1.5,-2.5,2.5);
+  arrow(a,plane.X(0),plane.Y(0),plane.X(1),plane.Y(gy),ink,1.5);
+  alpha.forEach((v,i)=>{arrow(a,plane.X(0),plane.Y(0),plane.X(v),plane.Y(v*gy),colors[i],i===0?5:3);tx(a,plane.X(v)+7,plane.Y(v*gy)+(i===0?-10:19),`α${i}g`,14,colors[i]);});
+  tx(a,plane.X(1)+7,plane.Y(gy)-6,'g',15);
+  const b=chart('gradient-dot-figure',420,300),q=coordinatePlane(b,420,300,-1,4,-3,7);
+  es.forEach((e,i)=>{arrow(b,q.X(0),q.Y(0),q.X(e[0]),q.Y(e[1]),colors[i],3);tx(b,q.X(e[0])+8,q.Y(e[1])-7,`e${i}`,14,colors[i]);});
+  arrow(b,q.X(0),q.Y(0),q.X(1),q.Y(gy),ink,2);tx(b,q.X(1)+8,q.Y(gy)+5,'g',15);
+}
+
+function statsExample(){
+  const mode=$('stats-preset').value;
+  const p=mode==='balanced'?Array.from({length:4},(_,t)=>Array.from({length:4},(_,i)=>i===t?.7:.1)):
+    Array.from({length:4},()=>mode==='subtle'?[.26,.25,.25,.24]:[.85,.05,.05,.05]);
+  const ids=p.map(row=>row.indexOf(Math.max(...row))),f=[0,1,2,3].map(i=>ids.filter(v=>v===i).length/4),mean=[0,1,2,3].map(i=>p.reduce((a,row)=>a+row[i]/4,0));
+  return {p,ids,f,mean,loss:4*dot(f,mean)};
+}
+function renderStatsExample(){
+  const r=statsExample(),j=Number($('stats-expert').value),s=chart('stats-figure',900,354),col=[144,270,396,522];
+  tx(s,16,21,'每行 = 一个 token；每列 = 一个专家的概率',14);rect(s,col[j]-7,35,99,302,'#f5f7fa');
+  for(let i=0;i<4;i++)tx(s,col[i]+42,55,`专家 ${i}`,13,colors[i],'middle');
+  r.p.forEach((row,t)=>{const y=69+t*41;tx(s,14,y+23,`token ${t}`,13);row.forEach((v,i)=>{rect(s,col[i],y,85,32,colors[i]+(Math.round(24+v*135).toString(16).padStart(2,'0')),r.ids[t]===i?colors[i]:'none');if(r.ids[t]===i)rect(s,col[i],y,4,32,colors[i]);tx(s,col[i]+42,y+22,fmt(v,2),14,ink,'middle');});tx(s,666,y+23,`行内最大 → 专家 ${r.ids[t]}`,13,colors[r.ids[t]]);});
+  for(let i=0;i<4;i++){arrow(s,col[i]+42,232,col[i]+42,260,muted,1);tx(s,col[i]+42,282,fmt(r.mean[i],3),14,ink,'middle');tx(s,col[i]+42,326,fmt(r.f[i],3),14,colors[i],'middle');}
+  tx(s,14,282,'按列平均 p̄ᵢ',13);tx(s,14,326,'数选中次数 / 4',13);tx(s,666,282,'软概率的平均',13);tx(s,666,326,'硬选择的频率 fᵢ',13);
+  $('stats-readout').textContent=`看专家 ${j}：p̄${j} = (${r.p.map(row=>fmt(row[j],2)).join(' + ')}) / 4 = ${fmt(r.mean[j])}；f${j} = (${r.ids.map(i=>i===j?1:0).join(' + ')}) / 4 = ${fmt(r.f[j])}。色条/边框标记每行实际选中的位置。`;
+  const product=chart('balance-product-figure',900,155);
+  r.f.forEach((f,i)=>{const x=15+i*213;tx(product,x,24,`专家 ${i}`,13,colors[i]);rect(product,x,38,175*f,14,colors[i]);rect(product,x,60,175*r.mean[i],14,colors[i]+'65');tx(product,x,98,`${fmt(f,2)} × ${fmt(r.mean[i],2)}`,14);tx(product,x,123,`= ${fmt(f*r.mean[i],3)}`,14);});
+  const lambda=Number($('loss-lambda').value),ce=renderCE(),aux=lambda*r.loss;$('loss-lambda-value').textContent=fmt(lambda,3);
+  $('product-readout').textContent=`每列把“实际使用比例 f”乘“平均概率 p̄”，再相加：4 × (${r.f.map((f,i)=>fmt(f*r.mean[i],3)).join(' + ')}) = ${fmt(r.loss)}。${r.ids.every(i=>i===0)?'注意：四行都选了专家0，即使概率看起来接近均匀。':'四个 token 各选一个专家。'}`;
+  const sum=chart('loss-sum-figure',900,98),scale=650/(ce+aux);
+  rect(sum,15,20,ce*scale,24,colors[0]);rect(sum,15+ce*scale,20,aux*scale,24,colors[2]);tx(sum,15,69,`预测损失 ${fmt(ce)} + λ × 均衡损失 ${fmt(lambda)} × ${fmt(r.loss)} = ${fmt(ce+aux)}`,15);
+  $('loss-sum-readout').textContent='蓝色来自前面三个预测位置的平均损失，橙色来自本图的加权均衡项。这里只比较标量损失的构成，条长不能用来判断两者梯度范数的大小。';
+}
+
+function renderBalanceDerivative(state){
+  const j=Number($('gradient-expert').value),t=Number($('gradient-token').value),s=chart('load-gradient-figure',900,245);
+  const contributions=state.p.map(row=>4/64*row[j]*(state.f[j]-dot(state.f,row))),max=Math.max(.005,...contributions.map(Math.abs));
+  const baseline=105,scale=67/max;
+  tx(s,15,22,`每根柱 = 一个 token 对偏置 b${j} 的梯度贡献；把64根柱的带符号数值相加`,14);
+  line(s,30,baseline,860,baseline,muted);tx(s,18,baseline+4,'0',12,muted,'end');
+  contributions.forEach((g,i)=>{const x=33+i*12.8,h=Math.abs(g)*scale;rect(s,x,g>=0?baseline-h:baseline,9,h,i===t?ink:g>=0?red:colors[1]);});
+  tx(s,30,193,'token 0',12,muted);tx(s,838,193,'63',12,muted);tx(s,30,223,`Σ 贡献 = ${fmt(state.grad[j],5)}；b${j}：${fmt(bias[j])} → ${fmt(bias[j]-state.grad[j])}（学习率1，下一步）`,14);
+  const p=state.p[t],avg=dot(state.f,p),gap=state.f[j]-avg;
+  $('gradient-token-value').textContent=t;[...$('token-grid').children].forEach((el,i)=>{el.style.outline=i===t?'2px solid '+ink:'none';});
+  $('load-gradient-readout').textContent=`黑柱 token ${t}：概率 p=${fmt(p[j])}；专家负载 f=${fmt(state.f[j])}；该 token 的概率加权平均负载 Σᵢfᵢpᵢ=${fmt(avg)}。差值 ${fmt(gap)} × 概率 ${fmt(p[j])} × 4/64 = ${fmt(contributions[t],5)}。红柱为正，梯度下降会减小偏置；绿柱为负，会增大偏置。`;
+}
+
+function slopePlot(id,mode,p){
+  const s=chart(id,850,210),X=x=>45+(x-.25)/.75*260,Y=y=>160-y*115;
+  line(s,45,Y(0),318,Y(0),muted);line(s,45,Y(0),45,Y(1.1),muted);
+  [.25,.5,.75,1].forEach(v=>tx(s,X(v),182,String(v),11,muted,'middle'));tx(s,306,204,'pₛ',13);tx(s,14,35,'α',14);
+  path(s,[[X(.25),Y(mode==='plain'?.25:1)],[X(1),Y(1)]],colors[0],3);circle(s,X(p),Y(mode==='plain'?p:1),5,colors[2]);
+  tx(s,65,23,mode==='plain'?'前向：概率变，输出权重也变':'前向：概率变，输出权重始终为1',13);
+  if(mode==='plain'){
+    tx(s,370,57,`pₛ = ${fmt(p,2)} → α = ${fmt(p,2)}`,17);arrow(s,385,92,693,92,colors[1],3);tx(s,540,82,'反向传回 ×1',15,colors[1],'middle');tx(s,370,143,'pₛ 增加 0.01，α 也增加 0.01。',14);
+  }else if(mode==='normalize'){
+    tx(s,370,44,`α = ${fmt(p,2)} / ${fmt(p,2)} = 1`,17);
+    arrow(s,765,87,405,87,colors[0],2);tx(s,565,78,`分子路径：+1/p = +${fmt(1/p,2)}`,14,colors[0],'middle');
+    arrow(s,765,134,405,134,colors[2],2);tx(s,565,125,`分母路径：−p/p² = −${fmt(1/p,2)}`,14,colors[2],'middle');
+    tx(s,370,181,'两条反向贡献相消 → 总梯度为 0',15);
+  }else{
+    tx(s,370,43,`前向：${fmt(p,2)} − ${fmt(p,2)} + 1 = 1`,16);
+    arrow(s,765,87,405,87,colors[1],2);tx(s,565,78,'第一条 pₛ 路径：传回 +1',14,colors[1],'middle');
+    line(s,765,132,606,132,muted,2);line(s,606,120,606,144,red,3);tx(s,591,128,'stopgrad 阻断第二条路径：0',13,red,'end');
+    tx(s,370,181,'反向被定义成 1；前向曲线本身的斜率仍为 0。',14);
+  }
+}
+function renderSlopePlots(){const p=Number($('slope-p').value);$('slope-p-value').textContent=fmt(p,2);slopePlot('plain-slope-figure','plain',p);slopePlot('normalized-slope-figure','normalize',p);slopePlot('straight-slope-figure','straight',p);}
+
+function initFormulaFigures(){
+  $('swi-x').addEventListener('input',renderSwi);
+  $('route-delta').addEventListener('input',renderRoutingMath);$('route-k').addEventListener('change',renderRoutingMath);
+  $('vector-delta').addEventListener('input',()=>{$('route-delta').value=$('vector-delta').value;renderRoutingMath();});
+  $('ce-p').addEventListener('input',renderStatsExample);$('backward-gy').addEventListener('input',renderBackprop);
+  ['stats-preset','stats-expert','loss-lambda'].forEach(id=>$(id).addEventListener('input',renderStatsExample));
+  ['gradient-expert','gradient-token'].forEach(id=>$(id).addEventListener('input',()=>renderBalanceDerivative(balanceState())));
+  $('slope-p').addEventListener('input',renderSlopePlots);
+  renderSwi();renderRoutingMath();renderMatrices();renderBackprop();renderStatsExample();renderSlopePlots();
+}
+
+initFormulaFigures();updateBudget();renderBalance();
+</script>
+</body>
+</html>
