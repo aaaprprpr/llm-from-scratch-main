@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>MoE：从 FFN 到稀疏专家 · 预训练算法笔记</title>
+  <title>混合专家预训练：从 FFN 到稀疏专家</title>
   <style>
     :root {
       --paper:#fff; --canvas:#f5f6f8; --ink:#172333; --muted:#536174;
@@ -116,6 +116,7 @@
   <main>
     <header>
       <h1>MoE：按 token 选择 FFN</h1>
+      <p class="note">学习笔记，2026-10-05 整理。正文数值以 12 层、576 隐藏维度、1536 FFN、24,576 词表为例；当前默认模型仍是普通稠密 Transformer，本页不表示项目已启用 MoE。</p>
       <p>MoE 要解决的是：怎样让模型拥有更多参数，又不让每个 token 都承担执行全部参数的计算成本？理解它，需要把三件事连起来：专家保存什么，路由器怎么选择，预测下一个 token 的误差怎样训练这些选择。</p>
     </header>
 

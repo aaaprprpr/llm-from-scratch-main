@@ -17,7 +17,7 @@
 | 验证与保存 | 每 500 次更新及最终一步验证、生成样例并保存 checkpoint |
 | 恢复 | `paths.resume=null`，从头开始 |
 
-[24K 最终权重评测](../../docs/minimind-full-pretraining-evaluation-20260923.md)和[24K/8K 对比](../../docs/minimind-24k-vs-8k-evaluation-20260927.md)记录了既有结果。8K/32K 实验的 checkpoint 和 bin 保留在各自原目录。
+[24K 最终权重评测](../../docs/历史记录/2026-09-23-MiniMind完整版预训练评测.md)和[24K/8K 对比](../../docs/历史记录/2026-09-27-MiniMind两版词表与上下文对比.md)记录了既有结果。8K/32K 实验的 checkpoint 和 bin 保留在各自原目录。
 
 从仓库根目录启动一轮新训练：
 

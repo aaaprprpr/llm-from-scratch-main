@@ -23,6 +23,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Sampler, random_split
 
+from checkpoint_io import load_checkpoint
 from models.model import Transformer
 from train.pretrain.train_model import (
     attention_kernel_context,
@@ -30,6 +31,7 @@ from train.pretrain.train_model import (
     get_device,
     lr_cosine_schedule,
     resolve_amp_dtype,
+    tokenizer_fingerprint,
     verify_flash_attention,
 )
 from train.sft.collator import SFTCollator
@@ -278,17 +280,15 @@ def build_dataloader(
     )
 
 
-def build_model(config: Config, device):
-    model_args = config.require("model")
+def build_model(config: Config, device, checkpoint=None):
+    if checkpoint is None:
+        source_path = config.optional_path("paths", "resume")
+        if source_path is None:
+            source_path = config.resolve_path("paths", "pretrained_weights")
+        checkpoint = load_checkpoint(source_path, mmap=True)
+    model_args = checkpoint["model_args"]
     model = Transformer(**model_args)
-    checkpoint = torch.load(
-        config.resolve_path("paths", "pretrained_weights"),
-        map_location="cpu",
-        weights_only=True,
-        mmap=True,
-    )
-    state_dict = checkpoint.get("model", checkpoint)
-    model.load_state_dict(state_dict, strict=True)
+    model.load_state_dict(checkpoint["model"], strict=True)
     model.to(device)
     return model, model_args
 
@@ -466,22 +466,22 @@ def save_checkpoint(
             "next_batch_index": next_batch_index,
             "model_args": model_args,
             "config": config.data,
+            "tokenizer_sha256": tokenizer_fingerprint(
+                config.resolve_path("paths", "tokenizer")
+            ),
+            "stage": "sft",
         },
         path,
     )
     print(f"已保存 checkpoint：{path}")
 
 
-def load_checkpoint_if_needed(resume_path, model, optimizer, device):
+def load_checkpoint_if_needed(resume_path, model, optimizer, device, checkpoint=None):
     if resume_path is None:
         return 0, 0, 0
 
-    checkpoint = torch.load(
-        resume_path,
-        map_location="cpu",
-        weights_only=True,
-        mmap=True,
-    )
+    if checkpoint is None:
+        checkpoint = load_checkpoint(resume_path, mmap=True)
     model.load_state_dict(checkpoint["model"], strict=True)
     optimizer.load_state_dict(checkpoint["optimizer"])
     move_optimizer_to_device(optimizer, device)
@@ -507,6 +507,10 @@ def write_metric(metrics_file, step, train_loss, val_loss, lr):
 
 def train(config: Config):
     train_config = config.require("train")
+    source_path = config.optional_path("paths", "resume")
+    if source_path is None:
+        source_path = config.resolve_path("paths", "pretrained_weights")
+    checkpoint = load_checkpoint(source_path, mmap=True)
     tokenizer = load_tokenizer(config)
     dataset = load_or_build_dataset(config, tokenizer)
     train_dataset, val_dataset = split_dataset(config, dataset)
@@ -539,7 +543,7 @@ def train(config: Config):
         pin_memory=pin_memory,
     )
 
-    model, model_args = build_model(config, device)
+    model, model_args = build_model(config, device, checkpoint)
     if train_config.get("activation_checkpointing", False):
         model.gradient_checkpointing_enable()
     optimizer = torch.optim.AdamW(
@@ -551,8 +555,9 @@ def train(config: Config):
     run_dir, resume_path = prepare_run_dir(config)
     metrics_file = run_dir / "metrics.csv"
     global_step, start_epoch, start_batch_index = load_checkpoint_if_needed(
-        resume_path, model, optimizer, device
+        resume_path, model, optimizer, device, checkpoint
     )
+    del checkpoint
 
     micro_batches_per_epoch = math.ceil(
         len(train_dataset) / train_config["micro_batch_size"]

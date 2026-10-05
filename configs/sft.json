@@ -1,11 +1,11 @@
 {
   "paths": {
     "dataset": "train/sft/data/coig_cqia",
-    "tokenizer": "tokenizer/bpe_8192",
+    "tokenizer": "tokenizer/bpe_24576",
     "chat_template": "train/sft/chat_template.jinja",
-    "pretrained_weights": "output/train_logs/run_20260731_150306/ckpt_step_93277.pt",
+    "pretrained_weights": "output/train_logs/run_20260923_130232/ckpt_step_13248.pt",
     "sft_logs": "output/sft_logs",
-    "tokenized_cache": "output/sft_cache/coig_cqia_sft_v2_tokenized_2k.pt",
+    "tokenized_cache": "output/sft_cache/coig_cqia_24576_tokenized_2k.pt",
     "resume": null
   },
   "data": {
@@ -26,20 +26,11 @@
     "tokenize_workers": "auto",
     "tokenize_chunksize": 32
   },
-  "model": {
-    "vocab_size": 8192,
-    "context_length": 4096,
-    "n_head": 8,
-    "num_layers": 12,
-    "d_model": 512,
-    "d_ff": 2048,
-    "theta": 10000.0
-  },
   "train": {
     "device": "auto",
     "precision": "bfloat16",
     "activation_checkpointing": false,
-    "require_flash_attention": true,
+    "require_flash_attention": false,
     "num_workers": 0,
     "max_seq_len": 2048,
     "micro_batch_size": 1,

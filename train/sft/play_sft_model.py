@@ -10,6 +10,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import torch
 
+from checkpoint_io import load_checkpoint
 from models.model import Transformer
 from train.pretrain.train_model import autocast_context, get_device, resolve_amp_dtype
 from train.sft.utils import (
@@ -21,15 +22,11 @@ from train.sft.utils import (
 )
 
 
-def load_model(config, checkpoint_path: Path, device: torch.device):
-    checkpoint = torch.load(
-        checkpoint_path,
-        map_location="cpu",
-        weights_only=True,
-        mmap=True,
-    )
+def load_model(config, checkpoint_path: Path, device: torch.device, checkpoint=None):
+    if checkpoint is None:
+        checkpoint = load_checkpoint(checkpoint_path, mmap=True)
 
-    model_args = checkpoint.get("model_args", config.require("model"))
+    model_args = checkpoint["model_args"]
     model = Transformer(**model_args)
     model.load_state_dict(checkpoint["model"], strict=True)
     model.to(device)
@@ -84,8 +81,10 @@ def main():
     print(f"使用设备：{device}")
     print(f"加载 SFT checkpoint：{checkpoint_path}")
 
+    checkpoint = load_checkpoint(checkpoint_path, mmap=True)
     tokenizer = load_tokenizer(config)
-    model, model_args = load_model(config, checkpoint_path, device)
+    model, model_args = load_model(config, checkpoint_path, device, checkpoint)
+    del checkpoint
     context_length = model_args["context_length"]
 
     print("-" * 50)

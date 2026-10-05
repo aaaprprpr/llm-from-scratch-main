@@ -1,28 +1,20 @@
 {
   "paths": {
     "dataset": "wenbopan/Chinese-dpo-pairs",
-    "tokenizer": "tokenizer/bpe_8192",
+    "tokenizer": "tokenizer/bpe_24576",
     "chat_template": "train/sft/chat_template.jinja",
     "sft_logs": "output/sft_logs",
     "sft_checkpoint": null,
     "tokenized_cache": "output/dpo_cache/wenbopan_chinese_dpo.pt",
     "dpo_logs": "output/dpo_logs",
+    "dpo_checkpoint": null,
     "clean_weights": "output/dpo_weights/model.pt",
     "hf_export": "export/hf/dpo_model",
     "resume": null
   },
-  "model": {
-    "vocab_size": 8192,
-    "context_length": 256,
-    "n_head": 8,
-    "num_layers": 12,
-    "d_model": 512,
-    "d_ff": 2048,
-    "theta": 10000.0
-  },
   "data": {
     "split": "train",
-    "max_seq_len": 256
+    "max_seq_len": 2048
   },
   "train": {
     "device": "auto",
@@ -30,8 +22,8 @@
     "activation_checkpointing": false,
     "require_flash_attention": false,
     "num_workers": 0,
-    "micro_batch_size": 8,
-    "gradient_accumulation_steps": 1,
+    "micro_batch_size": 2,
+    "gradient_accumulation_steps": 4,
     "num_epochs": 1,
     "beta": 0.1,
     "max_learning_rate": 0.000005,

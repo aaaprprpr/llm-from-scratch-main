@@ -15,7 +15,7 @@ def sequence_logprob(
     loss_mask = shift_labels.ne(IGNORE_INDEX)
 
     safe_labels = shift_labels.masked_fill(~loss_mask, 0)
-    token_logps = F.log_softmax(shift_logits, dim=-1).gather(
+    token_logps = F.log_softmax(shift_logits.float(), dim=-1).gather(
         dim=-1,
         index=safe_labels.unsqueeze(-1),
     )

@@ -54,4 +54,4 @@ ceval_all_local
 pretrained_weights
 train/sft/alpaca_zh_local
 train/sft/data/
-export/hf/dpo_model
+export/hf/*_model/

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>训练配置面板</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">LLM FROM SCRATCH</p>
+        <h1>训练配置面板</h1>
+        <p class="intro">调整参数后明确保存，再用项目原有命令运行。</p>
+      </div>
+      <span class="local-badge">本地配置</span>
+    </header>
+
+    <nav id="config-tabs" class="config-tabs" aria-label="选择配置"></nav>
+
+    <section class="workspace" aria-label="配置编辑器">
+      <div class="toolbar">
+        <div class="file-info">
+          <h2 id="config-title">读取配置中…</h2>
+          <code id="config-path"></code>
+        </div>
+        <div class="save-actions">
+          <span id="save-state" class="save-state" role="status">正在连接</span>
+          <button id="reload-button" class="button secondary" type="button" disabled>重新读取</button>
+          <button id="save-button" class="button primary" type="button" disabled>保存配置</button>
+        </div>
+      </div>
+
+      <div class="editor-tools">
+        <div class="view-switch" role="group" aria-label="编辑方式">
+          <button id="form-view-button" class="view-button active" type="button" aria-pressed="true">参数表单</button>
+          <button id="json-view-button" class="view-button" type="button" aria-pressed="false">原始 JSON</button>
+        </div>
+        <label id="search-control" class="search-control">
+          <span>查找参数</span>
+          <input id="field-search" type="search" placeholder="学习率、batch、路径…" autocomplete="off">
+        </label>
+      </div>
+
+      <p id="notice" class="notice" role="status" hidden></p>
+      <p id="config-hint" class="config-hint" hidden>SFT / DPO 的模型结构来自所选 checkpoint 的 model_args；分词器应与该权重对应。此面板修改训练配置，不会改变已有权重的维度。</p>
+
+      <div id="editor">
+        <form id="form-editor" autocomplete="off"></form>
+        <div id="json-editor" class="json-editor" hidden>
+          <p class="editor-hint">编辑整个配置，保留 JSON 的数字、布尔值和 null 类型。</p>
+          <textarea id="raw-json" class="json-input full-json" aria-label="完整配置 JSON" spellcheck="false"></textarea>
+          <p id="raw-error" class="field-error" hidden></p>
+        </div>
+      </div>
+
+      <p id="empty-search" class="empty-state" hidden>没有匹配的参数。试试原始字段名。</p>
+    </section>
+    <p class="footer-note">保存只更新选中的配置文件；启动训练、处理数据和导出仍使用项目原有入口。</p>
+  </main>
+</body>
+</html>

@@ -13,7 +13,7 @@ sys.path = [
 ]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from config_loader import Config
+from config_loader import Config, resolve_recorded_path
 
 # 当前 Windows 环境里先 import torch 再 import datasets/pyarrow 会崩。
 from train.dpo.datasets.wenbopan_chinese_dpo import (
@@ -23,6 +23,7 @@ from train.dpo.datasets.wenbopan_chinese_dpo import (
 
 import torch
 from torch.utils.data import DataLoader, Sampler, random_split
+from checkpoint_io import load_checkpoint
 
 from train.dpo.collator import DPOCollator
 from train.dpo.loss import dpo_loss, model_sequence_logprob
@@ -149,7 +150,7 @@ def load_or_build_dataset(config: Config, tokenizer):
     cache_key = build_cache_key(config)
 
     if cache_path.exists():
-        cached = torch.load(cache_path, map_location="cpu", weights_only=True)
+        cached = load_checkpoint(cache_path)
         if cached.get("cache_key") == cache_key:
             dataset = cached["dataset"]
             skipped = cached.get("skipped", 0)
@@ -239,17 +240,16 @@ def build_model(model_args, state_dict, device):
     return model
 
 
-def build_policy_and_reference(config: Config, device):
-    checkpoint_path = find_latest_sft_checkpoint(config)
+def build_policy_and_reference(config: Config, device, resume_checkpoint=None):
+    recorded_reference = (resume_checkpoint or {}).get("reference_checkpoint")
+    checkpoint_path = (
+        resolve_recorded_path(recorded_reference)
+        if recorded_reference else find_latest_sft_checkpoint(config)
+    )
     print(f"加载 SFT checkpoint：{checkpoint_path}")
 
-    checkpoint = torch.load(
-        checkpoint_path,
-        map_location="cpu",
-        weights_only=True,
-        mmap=True,
-    )
-    model_args = checkpoint.get("model_args", config.require("model"))
+    checkpoint = load_checkpoint(checkpoint_path, mmap=True)
+    model_args = checkpoint["model_args"]
     state_dict = checkpoint["model"]
     policy_model = build_model(model_args, state_dict, device)
     reference_model = build_model(model_args, state_dict, device)
@@ -257,7 +257,7 @@ def build_policy_and_reference(config: Config, device):
     for param in reference_model.parameters():
         param.requires_grad_(False)
 
-    return policy_model, reference_model, model_args
+    return policy_model, reference_model, model_args, checkpoint_path
 
 
 def move_optimizer_to_device(optimizer, device):
@@ -431,6 +431,8 @@ def save_checkpoint(
     output_dir,
     model_args,
     config: Config,
+    reference_checkpoint,
+    tokenizer_sha256,
 ):
     path = output_dir / f"ckpt_step_{global_step}.pt"
     torch.save(
@@ -443,22 +445,21 @@ def save_checkpoint(
             "next_batch_index": next_batch_index,
             "model_args": model_args,
             "config": config.data,
+            "stage": "dpo",
+            "reference_checkpoint": reference_checkpoint.as_posix(),
+            "tokenizer_sha256": tokenizer_sha256,
         },
         path,
     )
     print(f"已保存 checkpoint：{path}")
 
 
-def load_checkpoint_if_needed(resume_path, model, optimizer, device):
+def load_checkpoint_if_needed(resume_path, model, optimizer, device, checkpoint=None):
     if resume_path is None:
         return 0, 0, 0
 
-    checkpoint = torch.load(
-        resume_path,
-        map_location="cpu",
-        weights_only=True,
-        mmap=True,
-    )
+    if checkpoint is None:
+        checkpoint = load_checkpoint(resume_path, mmap=True)
     model.load_state_dict(checkpoint["model"], strict=True)
     optimizer.load_state_dict(checkpoint["optimizer"])
     move_optimizer_to_device(optimizer, device)
@@ -502,7 +503,13 @@ def train(config: Config):
     )
     print(f"使用设备：{device}，精度：{effective_precision}")
 
+    resume_path = config.optional_path("paths", "resume")
+    resume_checkpoint = load_checkpoint(resume_path, mmap=True) if resume_path else None
+    policy_model, reference_model, model_args, base_path = build_policy_and_reference(
+        config, device, resume_checkpoint
+    )
     tokenizer = load_tokenizer(config)
+    tokenizer_sha256 = file_sha256(config.resolve_path("paths", "tokenizer") / "tokenizer.json")
     dataset = load_or_build_dataset(config, tokenizer)
     train_dataset, val_dataset = split_dataset(config, dataset)
     val_loader = build_dataloader(
@@ -513,9 +520,6 @@ def train(config: Config):
         pin_memory=pin_memory,
     )
 
-    policy_model, reference_model, model_args = build_policy_and_reference(
-        config, device
-    )
     if train_config.get("activation_checkpointing", False):
         policy_model.gradient_checkpointing_enable()
     optimizer = torch.optim.AdamW(
@@ -527,8 +531,9 @@ def train(config: Config):
     run_dir, resume_path = prepare_run_dir(config)
     metrics_file = run_dir / "metrics.csv"
     global_step, start_epoch, start_batch_index = load_checkpoint_if_needed(
-        resume_path, policy_model, optimizer, device
+        resume_path, policy_model, optimizer, device, resume_checkpoint
     )
+    del resume_checkpoint
 
     micro_batches_per_epoch = math.ceil(
         len(train_dataset) / train_config["micro_batch_size"]
@@ -664,6 +669,8 @@ def train(config: Config):
                     run_dir,
                     model_args,
                     config,
+                    base_path.relative_to(PROJECT_ROOT) if base_path.is_relative_to(PROJECT_ROOT) else base_path,
+                    tokenizer_sha256,
                 )
 
             accum_steps = 0

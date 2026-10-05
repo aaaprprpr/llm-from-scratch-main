@@ -1,13 +1,13 @@
+import argparse
 import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MODEL_DIR = PROJECT_ROOT / "export" / "hf" / "dpo_model"
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from vllm import LLM, SamplingParams
+from train.dpo.utils import load_config
 
 
 PROMPTS = [
@@ -33,11 +33,16 @@ def clean_answer(text: str) -> str:
 
 
 def main():
+    config = load_config()
+    parser = argparse.ArgumentParser(description="用 vLLM 原生 Llama 后端离线生成")
+    parser.add_argument("--model", type=Path, default=config.resolve_path("paths", "hf_export"))
+    args = parser.parse_args()
+    from vllm import LLM, SamplingParams
+
     llm = LLM(
-        model=str(MODEL_DIR),
-        trust_remote_code=True,
-        task="generate",
-        model_impl="transformers",
+        model=str(args.model),
+        runner="generate",
+        model_impl="vllm",
     )
     tokenizer = llm.get_tokenizer()
     prompts = [build_prompt(tokenizer, prompt) for prompt in PROMPTS]

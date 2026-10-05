@@ -18,7 +18,8 @@ class LLMFromScratchForCausalLM(PreTrainedModel, GenerationMixin):
     config_class = LLMFromScratchConfig
     main_input_name = "input_ids"
     supports_gradient_checkpointing = False
-    all_tied_weights_keys = {}
+    _tied_weights_keys = {"lm_head.weight": "embedding.weight"}
+    create_static_kv_cache = CoreTransformer.create_static_kv_cache
 
     @classmethod
     def _supports_default_dynamic_cache(cls):
@@ -35,6 +36,7 @@ class LLMFromScratchForCausalLM(PreTrainedModel, GenerationMixin):
             vocab_size=config.vocab_size,
             context_length=config.context_length,
             num_layers=config.num_layers,
+            tie_word_embeddings=config.tie_word_embeddings,
         )
         self.rope = core.rope
         self.layers = core.layers
@@ -43,6 +45,20 @@ class LLMFromScratchForCausalLM(PreTrainedModel, GenerationMixin):
         self.embedding = core.embedding
         self.lm_head = core.lm_head
         self.gradient_checkpointing = False
+        self.post_init()
+
+    def _init_weights(self, module):
+        if module is self.rope:
+            # HF 从 meta 设备加载时必须重建未写入 state_dict 的 RoPE 表。
+            frequency_indices = torch.arange(
+                module.d_k // 2, dtype=torch.float64, device=module.inv_freq.device
+            )
+            module.inv_freq = (1.0 / module.theta ** (2.0 * frequency_indices / module.d_k)).float()
+            module.cos_cached = torch.empty(0, module.d_k // 2, device=module.inv_freq.device)
+            module.sin_cached = torch.empty_like(module.cos_cached)
+            module._maybe_extend_cache(self.context_length, module.inv_freq.device)
+        else:
+            super()._init_weights(module)
 
     def get_input_embeddings(self):
         return self.embedding
@@ -110,6 +126,10 @@ class LLMFromScratchForCausalLM(PreTrainedModel, GenerationMixin):
         use_cache=True,
         **kwargs,
     ):
+        position_ids = kwargs.get("position_ids")
+        if position_ids is None and attention_mask is not None:
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask == 0, 0)
         if past_key_values is None and use_cache:
             past_key_values = CoreTransformer.create_static_kv_cache(
                 self,
@@ -118,10 +138,13 @@ class LLMFromScratchForCausalLM(PreTrainedModel, GenerationMixin):
             )
         if past_key_values is not None and past_key_values.get_seq_length() > 0:
             input_ids = input_ids[:, -1:]
+            if position_ids is not None:
+                position_ids = position_ids[:, -1:]
 
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "past_key_values": past_key_values,
             "use_cache": use_cache,
+            "position_ids": position_ids,
         }

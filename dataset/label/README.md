@@ -123,7 +123,7 @@ inspect → preview → import → prepare → project-create → source-attach
 → queue-full → show-item/review-* → materialize
 ```
 
-Materialize 输出仍保留 canonical provenance 列，但仅使用人工审核事件；自动任务的最新合并结果在 `effective_cleaned.jsonl` 中。两种输出不能互换。完整运行链与这次代码复查见 [标注工具代码复查](../../docs/label-tool-code-audit-20260928.md)。`dataset/data_pipeline/build_bin.py` 只在检测到标注输出专用的 `dataset.json` 时启用新 loader；原有 `save_to_disk` 预处理结果继续走原来的 `datasets.load_from_disk`，并继续要求只有 `text` 一列。
+Materialize 输出仍保留 canonical provenance 列，但仅使用人工审核事件；自动任务的最新合并结果在 `effective_cleaned.jsonl` 中。两种输出不能互换。完整运行链与这次代码复查见 [标注工具代码复查](../../docs/历史记录/2026-09-28-语料清洗台代码复查.md)。`dataset/data_pipeline/build_bin.py` 只在检测到标注输出专用的 `dataset.json` 时启用新 loader；原有 `save_to_disk` 预处理结果继续走原来的 `datasets.load_from_disk`，并继续要求只有 `text` 一列。
 
 ## 验证
 
@@ -138,7 +138,7 @@ npm run build
 
 清洗台左侧“设置”给单条清洗选一个模型，给批量清洗勾选多个来源：DeepSeek API、Qwen API、本地 Qwen 27B、本地 Laya 分类器（实验），以及 DeepSeek、千问、Kimi、豆包、智谱清言、讯飞星火、文心、腾讯元宝的网页来源。默认单条使用 DeepSeek API，批量只勾选本地模型；设置页还有独立的“普通清洗失败后交给 DeepSeek API”开关，修改后在下次启动或续跑批量任务时生效。密钥和网页登录令牌由根目录 `.env` 读取。切换批量模型需先暂停运行中的任务，已有队列进度会继续使用，不会重新处理已完成条目。较快来源会自动接更多条；某来源出现非敏感未完成时，同一条最多再交给另一个勾选来源一次；仍未完成时，再由 DeepSeek API 补一次。明确的内容敏感拒绝留待人工查看，不继续向其他来源派发。尝试都会写入进度。
 
-启动 `./clean` 只打开清洗台，不会占用显卡加载 Qwen 27B；实际选择本地 Qwen 执行单条或批量清洗时，才检测同级 `qwen/` 项目的 CUDA 服务并按需启动。由清洗台启动的服务在退出清洗台后释放。`./clean-batch` 选择本地 Qwen 时也会自动启动并等待就绪，日志位于忽略版本控制的 `dataset/label/data/local_model.log`。Laya 使用项目内的权重和 Python 推理，不另起服务；当前实验选项加载针对维基语料微调的 `dataset/label/models/laya_wiki_cleaning_v1/`，不自动加入默认批量模型。基座误删问题和微调后的对照分别见 [基座评估](../../docs/laya-local-classifier-evaluation.md)与[微调报告](../../docs/laya-finetuning-evaluation-20260930.md)；其他数据源需先抽样验证。
+启动 `./clean` 只打开清洗台，不会占用显卡加载 Qwen 27B；实际选择本地 Qwen 执行单条或批量清洗时，才检测同级 `qwen/` 项目的 CUDA 服务并按需启动。由清洗台启动的服务在退出清洗台后释放。`./clean-batch` 选择本地 Qwen 时也会自动启动并等待就绪，日志位于忽略版本控制的 `dataset/label/data/local_model.log`。Laya 使用项目内的权重和 Python 推理，不另起服务；当前实验选项加载针对维基语料微调的 `dataset/label/models/laya_wiki_cleaning_v1/`，不自动加入默认批量模型。基座误删问题和微调后的对照分别见 [基座评估](../../docs/历史记录/2026-09-30-Laya基础分类权重评测.md)与[微调报告](../../docs/历史记录/2026-09-30-Laya语料清洗微调评测.md)；其他数据源需先抽样验证。
 
 DeepSeek 网页来源复用 [Node 示例](../../deepseek-web-api/README.md) 调用网页内部接口，需要 Node.js 18 或更新版本；在 VS Code Remote 环境下会自动查找其自带的 Node。先从已登录的网页取得自己的令牌，在根目录 `.env` 中添加 `DEEPSEEK_WEB_TOKEN=...`，然后重启 `./clean`；这不是正式的 `DEEPSEEK_API_KEY`。设置页会显示令牌是否已配置。首次请求创建会话，后续单条与批量复用同一 `chat_session_id`，每次请求仍重新解 PoW；各文档使用空 `parent_message_id` 独立判断，避免前一条正文进入后一条的上下文。会话 ID 保存在数据根目录的 `deepseek_web_session.json`，重启后继续使用；深度思考和联网搜索始终关闭。单条和批量仍使用同一套提示词、只删不改写校验与进度记录。网页接口没有可靠的 token 用量回传，因此此来源的用量统计为 0。批量中 DeepSeek 网页固定使用一个会话槽，分别反复处理不同文档；与单条清洗的会话分开。首条请求失败后也保存已创建的会话 ID，避免下一条再次创建。批量任务结束、暂停或失败后会删除它创建的网页会话；单条会话保留以便下次复用。删除失败会在批量统计里提示，并保留本地会话 ID 供下次重试。
 
@@ -148,4 +148,4 @@ Kimi 网页和豆包网页分别使用 `deepseek-web-api/kimi_chat.mjs`、`deeps
 
 各网页来源独立计时，互不等待；同一来源的人工单条与批量请求互斥，一次只清洗一条数据。千问和 DeepSeek 网页在上次回复结束后至少等待 20 秒，其余网页来源至少等待 15 秒；失败回复也会等待。遇到限流只将该来源间隔加倍，最高 5 分钟；持续成功后才缓慢缩短。网页请求等待限速时不占用正式 API 的并发名额。401、403、429、禁言和签名失效会停派该来源，本轮未完成条目转交其他可用来源。网页接口没有公开稳定的批量额度；这些间隔是保守的运行设置，不能保证账号不会再次被限流。
 
-本地样本效果见 [27B 清洗试验](../../docs/local-qwen-cleaning-evaluation-20260928.md)。
+本地样本效果见 [27B 清洗试验](../../docs/历史记录/2026-09-28-本地千问清洗试验.md)。

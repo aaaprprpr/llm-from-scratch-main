@@ -1,131 +1,51 @@
-import shutil
+import argparse
+import json
 import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path = [
-    path for path in sys.path if Path(path or Path.cwd()).resolve() != SCRIPT_DIR
-]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import torch
-from transformers import AutoTokenizer
-
-from config_loader import Config
-from export.hf.configuration_llm_from_scratch import LLMFromScratchConfig
-from export.hf.modeling_llm_from_scratch import LLMFromScratchForCausalLM
-
-CONFIG_PATH = PROJECT_ROOT / "configs" / "dpo.json"
-CONFIG_CODE_PATH = PROJECT_ROOT / "export" / "hf" / "configuration_llm_from_scratch.py"
-MODEL_CODE_PATH = PROJECT_ROOT / "export" / "hf" / "modeling_llm_from_scratch.py"
-CORE_MODEL_CODE_PATH = PROJECT_ROOT / "models" / "model.py"
-CORE_MODEL_MODULES_PATH = PROJECT_ROOT / "models" / "modules"
-CORE_MODEL_UTILS_PATH = PROJECT_ROOT / "models" / "utils.py"
+from checkpoint_io import load_checkpoint
+from export.hf.convert_llama import build_llama_model
+from train.dpo.utils import load_config
+from train.sft.utils import load_tokenizer, load_tokenizer_from_paths
 
 
-def load_config() -> Config:
-    return Config(CONFIG_PATH)
-
-
-def build_hf_config(config: Config, tokenizer) -> LLMFromScratchConfig:
-    model_config = {
-        **config.require("model"),
-        "use_cache": True,
+def export_checkpoint(checkpoint_path: Path, output_dir: Path, config):
+    checkpoint = load_checkpoint(checkpoint_path, mmap=True)
+    bundled_tokenizer = checkpoint_path.parent / "tokenizer"
+    bundled_template = checkpoint_path.parent / "chat_template.jinja"
+    if bundled_tokenizer.is_dir() and bundled_template.is_file():
+        tokenizer = load_tokenizer_from_paths(bundled_tokenizer, bundled_template)
+    else:
+        tokenizer = load_tokenizer(config)
+    model = build_llama_model(checkpoint, tokenizer)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    model.save_pretrained(output_dir, safe_serialization=True)
+    tokenizer.save_pretrained(output_dir)
+    metadata = {
+        "source_checkpoint": str(checkpoint_path),
+        "stage": checkpoint.get("stage", "dpo"),
+        "model_args": checkpoint["model_args"],
+        "tokenizer_sha256": checkpoint.get("tokenizer_sha256"),
+        "weight_mapping": "dense-to-llama; q/k interleaved-to-half RoPE rows",
     }
-    hf_config = LLMFromScratchConfig(
-        **model_config,
-        bos_token_id=tokenizer.bos_token_id,
-        eos_token_id=tokenizer.eos_token_id,
-        pad_token_id=tokenizer.pad_token_id,
+    (output_dir / "training_metadata.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    hf_config.architectures = ["LLMFromScratchForCausalLM"]
-    hf_config.auto_map = {
-        "AutoConfig": "configuration_llm_from_scratch.LLMFromScratchConfig",
-        "AutoModel": "modeling_llm_from_scratch.LLMFromScratchForCausalLM",
-        "AutoModelForCausalLM": ("modeling_llm_from_scratch.LLMFromScratchForCausalLM"),
-    }
-    return hf_config
-
-
-def load_tokenizer(config: Config):
-    tokenizer = AutoTokenizer.from_pretrained(config.resolve_path("paths", "tokenizer"))
-    tokenizer.chat_template = config.resolve_path("paths", "chat_template").read_text(
-        encoding="utf-8"
-    )
-
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    return tokenizer
-
-
-def copy_remote_code_files(output_dir: Path):
-    shutil.copy2(CONFIG_CODE_PATH, output_dir / "configuration_llm_from_scratch.py")
-    shutil.copy2(MODEL_CODE_PATH, output_dir / "modeling_llm_from_scratch.py")
-    shutil.copy2(CORE_MODEL_CODE_PATH, output_dir / "model.py")
-    shutil.copy2(CORE_MODEL_MODULES_PATH / "__init__.py", output_dir / "modules.py")
-    for module_name in (
-        "rope.py",
-        "attention.py",
-        "feed_forward.py",
-        "block.py",
-        "cache.py",
-    ):
-        shutil.copy2(CORE_MODEL_MODULES_PATH / module_name, output_dir / module_name)
-    shutil.copy2(CORE_MODEL_UTILS_PATH, output_dir / "utils.py")
-
-
-def write_readme(output_dir: Path):
-    readme = """# LLM From Scratch DPO Model
-
-This directory is a HuggingFace-style export of the local DPO model.
-
-Transformers usage:
-
-```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-model_dir = "export/hf/dpo_model"
-tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
-model = AutoModelForCausalLM.from_pretrained(model_dir, trust_remote_code=True)
-```
-
-vLLM usage may require the Transformers modeling backend:
-
-```powershell
-vllm serve export/hf/dpo_model --task generate --model-impl transformers --trust-remote-code
-```
-"""
-    (output_dir / "README.md").write_text(readme, encoding="utf-8")
+    return model, tokenizer
 
 
 def main():
     config = load_config()
-    weights_path = config.resolve_path("paths", "clean_weights")
-    output_dir = config.resolve_path("paths", "hf_export")
-
-    print(f"加载 DPO 纯权重：{weights_path}")
-    state_dict = torch.load(
-        weights_path,
-        map_location="cpu",
-        weights_only=True,
-        mmap=True,
-    )
-
-    tokenizer = load_tokenizer(config)
-    hf_config = build_hf_config(config, tokenizer)
-    model = LLMFromScratchForCausalLM(hf_config)
-    model.load_state_dict(state_dict, strict=True)
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    tokenizer.save_pretrained(output_dir)
-    model.save_pretrained(output_dir, safe_serialization=True)
-    copy_remote_code_files(output_dir)
-    write_readme(output_dir)
-
-    print(f"HF 目录已保存到：{output_dir}")
-    print("Transformers 加载时需要 trust_remote_code=True")
+    parser = argparse.ArgumentParser(description="导出标准 Llama 格式，供 Transformers 和 vLLM 原生加载")
+    parser.add_argument("--checkpoint", type=Path, default=config.resolve_path("paths", "clean_weights"))
+    parser.add_argument("--output", type=Path, default=config.resolve_path("paths", "hf_export"))
+    args = parser.parse_args()
+    print(f"加载模型：{args.checkpoint}")
+    export_checkpoint(args.checkpoint, args.output, config)
+    print(f"标准 Llama 模型和 tokenizer 已保存到：{args.output}")
 
 
 if __name__ == "__main__":

@@ -1,18 +1,14 @@
-import os
+import argparse
 import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MODEL_DIR = PROJECT_ROOT / "export" / "hf" / "dpo_model"
-MODULE_CACHE = PROJECT_ROOT / ".hf_modules_cache"
-
-os.environ.setdefault("HF_MODULES_CACHE", str(MODULE_CACHE))
-
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from train.dpo.utils import load_config
 
 
 PROMPTS = [
@@ -69,12 +65,16 @@ def generate_answer(model, tokenizer, prompt: str, device: torch.device):
 
 
 def main():
+    config = load_config()
+    parser = argparse.ArgumentParser(description="试玩标准 HF 导出的聊天模型")
+    parser.add_argument("--model", type=Path, default=config.resolve_path("paths", "hf_export"))
+    args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"使用设备：{device}")
-    print(f"加载 HF 模型：{MODEL_DIR}")
+    print(f"加载 HF 模型：{args.model}")
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(MODEL_DIR, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(args.model, local_files_only=True)
+    model = AutoModelForCausalLM.from_pretrained(args.model, local_files_only=True)
     model.to(device)
     model.eval()
 

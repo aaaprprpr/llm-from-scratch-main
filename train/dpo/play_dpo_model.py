@@ -9,6 +9,7 @@ sys.path = [
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import torch
+from checkpoint_io import load_checkpoint
 
 from train.dpo.utils import load_config
 from models.model import Transformer
@@ -22,14 +23,8 @@ from train.sft.utils import (
 
 
 def load_model(config, checkpoint_path: Path, device: torch.device):
-    checkpoint = torch.load(
-        checkpoint_path,
-        map_location="cpu",
-        weights_only=True,
-        mmap=True,
-    )
-
-    model_args = checkpoint.get("model_args", config.require("model"))
+    checkpoint = load_checkpoint(checkpoint_path, mmap=True)
+    model_args = checkpoint["model_args"]
     model = Transformer(**model_args)
     model.load_state_dict(checkpoint["model"], strict=True)
     model.to(device)
@@ -77,7 +72,7 @@ def main():
         config.get("train", "precision", default="bfloat16"),
         device,
     )
-    checkpoint_path = find_latest_checkpoint(
+    checkpoint_path = config.optional_path("paths", "dpo_checkpoint") or find_latest_checkpoint(
         config.resolve_path("paths", "dpo_logs"),
         stage_name="DPO",
     )
@@ -85,8 +80,8 @@ def main():
     print(f"使用设备：{device}")
     print(f"加载 DPO checkpoint：{checkpoint_path}")
 
-    tokenizer = load_tokenizer(config)
     model, model_args = load_model(config, checkpoint_path, device)
+    tokenizer = load_tokenizer(config)
     context_length = model_args["context_length"]
 
     print("-" * 50)

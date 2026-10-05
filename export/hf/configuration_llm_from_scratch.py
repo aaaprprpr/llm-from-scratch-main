@@ -6,23 +6,25 @@ class LLMFromScratchConfig(PretrainedConfig):
 
     def __init__(
         self,
-        vocab_size=8192,
-        context_length=256,
-        n_head=8,
+        vocab_size=24576,
+        context_length=4096,
+        n_head=9,
         num_layers=12,
-        d_model=512,
-        d_ff=2048,
+        d_model=576,
+        d_ff=1536,
         theta=10000.0,
         pad_token_id=0,
         bos_token_id=0,
         eos_token_id=0,
+        tie_word_embeddings=False,
         **kwargs,
     ):
-        use_cache = kwargs.pop("use_cache", False)
+        use_cache = kwargs.pop("use_cache", True)
         super().__init__(
             pad_token_id=pad_token_id,
             bos_token_id=bos_token_id,
             eos_token_id=eos_token_id,
+            tie_word_embeddings=tie_word_embeddings,
             **kwargs,
         )
         self.use_cache = use_cache
