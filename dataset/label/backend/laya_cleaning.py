@@ -9,7 +9,8 @@ from concurrent.futures import Future
 from pathlib import Path
 from queue import Empty, Queue
 
-from .llm_cleaning import ChunkAssessment, LlmCleaner, LlmCleaningError, Removal, TextUnit, split_units
+from .llm_cleaning import (ChunkAssessment, LlmCleaner, LlmCleaningError, Removal,
+                           SourceUnavailableError, TextUnit, split_units)
 
 MODEL_DIRECTORY = Path(__file__).resolve().parents[1] / "models" / "laya_wiki_cleaning_v1"
 # TileLang can flip choices very close to 0.5; recheck those with the stock forward.
@@ -140,10 +141,12 @@ class LayaCleaner(LlmCleaner):
                     agent = load(str(MODEL_DIRECTORY), device="cuda" if torch.cuda.is_available() else "cpu")
                     if agent.device.type == "cuda":
                         agent.cfg["max_len"] = max(int(agent.cfg.get("max_len", 0)), 2048)
-                        agent.accelerate(strict=False)
+                        # Lengths vary continuously; the unlimited CUDA graph cache
+                        # eventually exhausts VRAM in a long cleaning run.
+                        agent.accelerate(use_graphs=False, strict=False)
                     cls._agent = agent
                 except Exception as exc:
-                    raise LlmCleaningError(f"Laya 模型加载失败：{exc}") from exc
+                    raise SourceUnavailableError(f"Laya 模型加载失败：{exc}") from exc
             return cls._agent
 
     @classmethod
@@ -187,6 +190,10 @@ class LayaCleaner(LlmCleaner):
                 answers = self._predict_states(states) if batcher is None else batcher.predict(states)
             except LlmCleaningError:
                 raise
+            except RuntimeError as exc:
+                raise SourceUnavailableError(
+                    f"Laya 第 {chunk_number}/{chunk_count} 块推理运行故障：{exc}"
+                ) from exc
             except Exception as exc:
                 raise LlmCleaningError(f"Laya 第 {chunk_number}/{chunk_count} 块推理失败：{exc}") from exc
             if len(answers) != len(indexed):

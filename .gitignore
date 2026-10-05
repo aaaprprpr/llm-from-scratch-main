@@ -18,6 +18,16 @@ env/
 .qwen-web-auth.json.lock
 .deepseek-session.json
 .qwen-session.json
+.aws/
+
+# Python tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
 
 # IDE
 .vscode/
@@ -31,8 +41,12 @@ env/
 *.bin
 *.arrow
 *.pt
-/dataset/label/models/laya_multilingual/
-/dataset/label/models/laya_wiki_cleaning_v1/
+*.pth
+*.ckpt
+*.safetensors
+*.gguf
+*.onnx
+/dataset/label/models/
 
 # Runtime outputs and caches
 output/
@@ -44,6 +58,10 @@ dpo_cache/
 sft_weights/
 dpo_weights/
 .hf_modules_cache/
+*.log
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
 
 # Historical model artifacts
 main/my_sft_complete_model

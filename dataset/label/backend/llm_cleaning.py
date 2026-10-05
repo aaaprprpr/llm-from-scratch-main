@@ -48,6 +48,10 @@ class LlmCleaningError(RuntimeError):
     pass
 
 
+class SourceUnavailableError(LlmCleaningError):
+    """The model runtime is broken; retrying this document with it cannot help."""
+
+
 class DocumentLimitError(ValueError):
     """This document exceeds the local cleaning plan, not the model service."""
 
@@ -540,14 +544,15 @@ class LlmCleaner:
         return (result.get("decision") in {"keep", "drop"}
                 and not any(item.get("fallback") for item in result.get("assessments", [])))
 
-    def clean(self, blocks: list[dict], *, title: str | None, provenance: dict) -> dict:
+    def clean(self, blocks: list[dict], *, title: str | None, provenance: dict,
+              use_cache: bool = True) -> dict:
         if not blocks or not any(block["text"].strip() for block in blocks):
             raise ValueError("当前正文为空，没有可清洗的内容")
         if len({block["id"] for block in blocks}) != len(blocks):
             raise ValueError("当前正文含重复的段落 ID")
         if sum(len(block["text"]) for block in blocks) > self.config.max_document_characters:
             raise DocumentLimitError(f"单条正文超过 {self.config.max_document_characters:,} 字符，请先拆成较短文档")
-        previous = self._matching_report(blocks, title, provenance)
+        previous = self._matching_report(blocks, title, provenance) if use_cache else None
         if previous is not None and self.is_complete(previous["result"]):
             return {
                 **previous["result"],

@@ -94,7 +94,7 @@ kbd { padding: 2px 5px; border: 1px solid #d4d8d2; border-radius: 4px; backgroun
 .editor-summary strong { font-weight: 600; }
 .editor-summary strong.dirty { color: var(--danger); }
 .editor-summary { gap: 12px; flex-wrap: wrap; }
-.llm-clean-button { margin-left: auto; }
+.editor-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .llm-result { margin-bottom: 18px; padding: 14px 16px; border: 1px solid #b9d3ca; border-radius: 8px; background: #edf4ef; font-size: 12px; line-height: 1.65; }
 .llm-result-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .llm-result-heading strong { color: var(--accent); }

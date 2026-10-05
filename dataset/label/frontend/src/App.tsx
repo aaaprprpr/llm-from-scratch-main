@@ -58,6 +58,7 @@ function App() {
           llmCleaning={review.llmCleaning}
           llmResult={review.llmResult}
           onLlmClean={() => void review.cleanCurrentDocument()}
+          onResetCleaning={() => void review.resetCurrentCleaning()}
           textDirty={review.textDirty}
           busy={review.busy}
           activeBlockId={review.activeBlockId}

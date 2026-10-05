@@ -301,6 +301,31 @@ export function useReviewWorkspace(showSettings = false) {
     applyDraftBlocks(nextBlocks);
   }, [applyDraftBlocks, draftBlocks]);
 
+  const resetCurrentCleaning = useCallback(async () => {
+    if (!document || busy || llmInFlight.current) return;
+    const version = documentVersion.current;
+    setBusy(true);
+    setStatus("正在恢复本条原文…");
+    try {
+      await requestJson(`/api/reviews/documents/${document.document.doc_id}/reset-cleaning`, {
+        method: "POST",
+        body: JSON.stringify({
+          queue_id: queueId, ordinal,
+          expected_revision: document.document_review?.revision ?? 0,
+          content_sha256: document.document.content_sha256,
+        }),
+      });
+      if (version !== documentVersion.current) return;
+      void refreshCleanProgress();
+      await loadDocument();
+      setStatus(`第 ${ordinal + 1} 条已恢复原文，等待重新清洗`);
+    } catch (error) {
+      if (version === documentVersion.current) setStatus(`重置失败：${String(error)}`);
+    } finally {
+      if (version === documentVersion.current) setBusy(false);
+    }
+  }, [busy, document, loadDocument, ordinal, queueId, refreshCleanProgress]);
+
   const cleanCurrentDocument = useCallback(async () => {
     if (!document || busy || llmInFlight.current) return;
     const blocks = serializeEditableBlocks(draftBlocks);
@@ -493,6 +518,7 @@ export function useReviewWorkspace(showSettings = false) {
     finishSetup,
     updateDraftBlocks,
     cleanCurrentDocument,
+    resetCurrentCleaning,
     undoDraft,
     saveAndGo,
     commitPageInput,

@@ -22,7 +22,8 @@ from .deepseek_web import (QWEN_WEB_BATCH_SLOTS, DEEPSEEK_WEB_BATCH_SLOTS,
                            CHATGLM_WEB_BATCH_SLOTS, SPARK_WEB_BATCH_SLOTS,
                            WENXIN_WEB_BATCH_SLOTS, YUANBAO_WEB_BATCH_SLOTS)
 from .cleaning_progress import CleaningProgressIndex, write_snapshot
-from .llm_cleaning import CleaningConfig, DocumentLimitError, LlmCleaner, LlmCleaningError, PROMPT_VERSION
+from .llm_cleaning import (CleaningConfig, DocumentLimitError, LlmCleaner,
+                           LlmCleaningError, PROMPT_VERSION, SourceUnavailableError)
 
 
 def output_path(root: Path, queue_id: str, config: CleaningConfig) -> Path:
@@ -157,7 +158,8 @@ def _process(ordinal: int, value: dict, queue_id: str, cleaner: LlmCleaner) -> d
             elif any("Content Exists Risk" in warning for warning in result.get("warnings", [])):
                 record["failure_reason"] = "content_risk"
         except (LlmCleaningError, ValueError) as exc:
-            if ("HTTP 401" in str(exc) or "HTTP 403" in str(exc) or "HTTP 429" in str(exc)
+            if (isinstance(exc, SourceUnavailableError)
+                    or "HTTP 401" in str(exc) or "HTTP 403" in str(exc) or "HTTP 429" in str(exc)
                     or "签名材料已过期" in str(exc) or "签名材料已用完" in str(exc)
                     or "缺少千问凭据" in str(exc)
                     or "豆包没有返回 SSE 聊天流" in str(exc)

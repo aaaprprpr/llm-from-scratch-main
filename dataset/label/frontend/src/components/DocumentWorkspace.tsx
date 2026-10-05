@@ -14,6 +14,7 @@ type Props = {
   llmCleaning: boolean;
   llmResult: LlmCleaningResult | null;
   onLlmClean: () => void;
+  onResetCleaning: () => void;
   activeBlockId: string | null;
   onFinishSetup: (projectId: string, queueId: string) => Promise<void>;
   onSetupPageChange: (page: SetupPage) => void;
@@ -35,6 +36,7 @@ export default function DocumentWorkspace({
   llmCleaning,
   llmResult,
   onLlmClean,
+  onResetCleaning,
   activeBlockId,
   onFinishSetup,
   onSetupPageChange,
@@ -43,6 +45,12 @@ export default function DocumentWorkspace({
   onActiveBlockChange,
   onBlocksChange,
 }: Props) {
+  const alreadyReset = !textDirty && document?.document_review?.decision === "unsure"
+    && document.document_review.edited_text === document.review_text;
+  const hasCleaning = textDirty || document?.effective_source !== "original"
+    || document?.document_review != null || document?.batch_clean != null
+    || document?.block_materialized_text !== document?.review_text;
+
   return (
     <main className="document-panel panel">
       {showSetup ? (
@@ -68,9 +76,15 @@ export default function DocumentWorkspace({
               {` · ${Array.from(editorText).length.toLocaleString()} 字符`}
             </span>
             <strong className={textDirty ? "dirty" : ""}>{textDirty ? "尚未保存" : "已保存"}</strong>
-            <button className="primary llm-clean-button" onClick={onLlmClean} disabled={busy}>
-              {llmCleaning ? "自动清洗中…" : "自动清洗并保存本条"}
-            </button>
+            <div className="editor-actions">
+              <button className="secondary" onClick={onResetCleaning} disabled={busy || alreadyReset || !hasCleaning}
+                      title="恢复导入时的正文，标记待复核">
+                重置本条清洗
+              </button>
+              <button className="primary llm-clean-button" onClick={onLlmClean} disabled={busy}>
+                {llmCleaning ? "自动清洗中…" : "自动清洗并保存本条"}
+              </button>
+            </div>
           </div>
           {llmResult && <section className="llm-result" aria-label="LLM 清洗结果">
             <strong>{llmResult.saved ? "清洗结果已直接保存" : "存在未完成分块，未写入清洗结果"}</strong>
