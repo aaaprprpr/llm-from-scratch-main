@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import patch
+from types import ModuleType, SimpleNamespace
+from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
 
@@ -27,6 +29,33 @@ class _FakeAgent:
 
 
 class LayaCleaningTests(unittest.TestCase):
+    def test_cuda_model_disables_unbounded_shape_graph_cache(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            model_path = Path(temporary)
+            (model_path / "model.safetensors").touch()
+            agent = SimpleNamespace(device=SimpleNamespace(type="cuda"), cfg={"max_len": 1024},
+                                    accelerate=Mock())
+            fake_laya = ModuleType("laya")
+            fake_laya.load = Mock(return_value=agent)
+            with (patch.object(LayaCleaner, "_agent", None),
+                  patch("dataset.label.backend.laya_cleaning.MODEL_DIRECTORY", model_path),
+                  patch.dict(sys.modules, {"laya": fake_laya}),
+                  patch("torch.cuda.is_available", return_value=True)):
+                self.assertIs(LayaCleaner._model(), agent)
+            self.assertEqual(agent.cfg["max_len"], 2048)
+            agent.accelerate.assert_called_once_with(use_graphs=False, strict=False)
+
+    def test_cpu_fallback_restores_fast_path_without_cuda_graphs(self):
+        import torch
+        from laya.agent import Agent
+
+        agent = Agent.__new__(Agent)
+        agent.model = SimpleNamespace(to=Mock())
+        agent.accelerate = Mock()
+        agent._restore_runtime(torch.device("cuda"), torch.bfloat16, True, False)
+        agent.model.to.assert_called_once_with(torch.device("cuda"))
+        agent.accelerate.assert_called_once_with(use_graphs=False)
+
     def test_fast_inference_rechecks_only_uncertain_answers(self):
         class FastAgent:
             _fast = object()

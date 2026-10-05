@@ -25,7 +25,7 @@ def export_effective(database_path: Path, queue_id: str, output: Path,
             project_revision = (manual_revision if manual_revision is not None else
                                 database.get_project(queue["project_id"])["current_revision"])
             manual_ordinals = sorted(ordinal for ordinal, item in manual.items()
-                                     if item["decision"] in {"keep", "drop"})
+                                     if item["decision"] in {"keep", "drop"} or item["has_edit"])
             rows = index.db.execute(
                 "SELECT ordinal, doc_id, status, cleaned_start, cleaned_end FROM results ORDER BY ordinal"
             )
@@ -71,6 +71,9 @@ def _write_effective(ordinal: int, batch: dict | None, manual: dict[int, dict],
             counts["drop"] += 1
             return
         text = reader.read(ordinal)["materialized_text"].strip()
+    elif decision == "unsure" and manual[ordinal]["has_edit"]:
+        counts["incomplete"] += 1
+        return
     elif batch is not None:
         if batch["status"] == "drop":
             counts["drop"] += 1

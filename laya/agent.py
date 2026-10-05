@@ -670,7 +670,7 @@ class Agent(HookRegistry):
             self.model.forward = self._stock_forward
             self._fast = None
 
-    def _restore_runtime(self, device, dtype, amp_enabled: bool, had_fast: bool) -> None:
+    def _restore_runtime(self, device, dtype, amp_enabled: bool, fast_graphs: bool | None) -> None:
         """Undo the scoped CPU fallback of `_infer`, best effort.
 
         A model that no longer fits `device` after the CPU retry stays demoted: raising out of a
@@ -690,8 +690,8 @@ class Agent(HookRegistry):
                   "staying on CPU." % (device, e))
             return
         self.device, self.dtype, self.amp_enabled = device, dtype, amp_enabled
-        if had_fast:
-            self.accelerate()
+        if fast_graphs is not None:
+            self.accelerate(use_graphs=fast_graphs)
 
     @staticmethod
     def _check_question(qid: str, qdef: Any) -> None:
@@ -974,7 +974,7 @@ class Agent(HookRegistry):
                     self.cpu_fallback_count += 1
                     self.last_fallback_reason = str(e)
                     held_device, held_dtype, held_amp = self.device, self.dtype, self.amp_enabled
-                    had_fast = self._fast is not None
+                    fast_graphs = self._fast.use_graphs if self._fast is not None else None
                     # Only our batch scope can retain BF16 copies after this failed forward.
                     # Release them before moving the model and retrying on CPU.
                     if self.device.type == "cuda" and _BATCH_AUTOCAST_CACHE.get():
@@ -992,7 +992,7 @@ class Agent(HookRegistry):
                     try:
                         return run()
                     finally:
-                        self._restore_runtime(held_device, held_dtype, held_amp, had_fast)
+                        self._restore_runtime(held_device, held_dtype, held_amp, fast_graphs)
             if use_amp and self.device.type in ("mps", "cpu"):
                 # Not every MPS/CPU build implements autocast for every op. Retry this
                 # request in full precision. One miss must not turn AMP off; a build that

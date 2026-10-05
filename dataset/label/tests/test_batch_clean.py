@@ -7,6 +7,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -14,7 +15,8 @@ from dataset.label.backend.api import create_app
 from dataset.label.backend.batch_clean import _process, clean_queue, output_path
 from dataset.label.backend.database import CurationDatabase, DocumentReviewInput
 from dataset.label.backend.cleaning_progress import CleaningProgressIndex
-from dataset.label.backend.llm_cleaning import DocumentLimitError, LlmCleaningError
+from dataset.label.backend.llm_cleaning import (DocumentLimitError, LlmCleaningError,
+                                                SourceUnavailableError)
 
 
 class FakeCleaner:
@@ -54,6 +56,107 @@ def _make_batch_queue(client, root: Path, texts: list[str]) -> str:
 
 
 class BatchCleaningTests(unittest.TestCase):
+    def test_broken_local_runtime_stops_before_paid_fallback(self):
+        class BrokenCleaner:
+            config = SimpleNamespace(provider="laya", model="broken")
+
+            def clean(self, blocks, *, title, provenance):
+                raise SourceUnavailableError("Laya GPU 设备混用")
+
+        class PaidCleaner:
+            config = SimpleNamespace(provider="deepseek", model="paid")
+
+            def __init__(self):
+                self.calls = 0
+
+            def clean(self, blocks, *, title, provenance):
+                self.calls += 1
+                raise AssertionError("本地模型运行故障不应产生付费请求")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with TestClient(create_app(root)) as client:
+                queue = _make_batch_queue(client, root, ["待清洗正文。"])
+            broken, paid = BrokenCleaner(), PaidCleaner()
+            output = root / "batch"
+            with self.assertRaisesRegex(LlmCleaningError, "所选批量模型均不可用"):
+                clean_queue(database_path=root / "curation.sqlite3", queue_id=queue,
+                            output_directory=output, cleaner=broken,
+                            cleaners={"laya": broken}, failure_fallback=paid, workers=1)
+            self.assertEqual(paid.calls, 0)
+            self.assertEqual(json.loads((output / "manifest.json").read_text())["status"], "failed")
+
+    def test_reset_single_review_restores_prepared_original(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = create_app(root)
+            with TestClient(app) as client:
+                queue = _make_batch_queue(client, root, ["原始正文。\n小标题"])
+                url = f"/api/queues/{queue}/items/0"
+                original = client.get(url).json()
+                doc_id = original["document"]["doc_id"]
+                saved = client.put(f"/api/reviews/documents/{doc_id}", json={
+                    "queue_id": queue, "ordinal": 0, "expected_revision": 0,
+                    "decision": "keep", "edited_text": "修改后的正文。",
+                })
+                self.assertEqual(saved.status_code, 200, saved.text)
+                reset = client.post(f"/api/reviews/documents/{doc_id}/reset-cleaning", json={
+                    "queue_id": queue, "ordinal": 0, "expected_revision": 1,
+                    "content_sha256": original["document"]["content_sha256"],
+                })
+                self.assertEqual(reset.status_code, 200, reset.text)
+                view = client.get(url).json()
+                self.assertEqual(view["materialized_text"], original["review_text"])
+                self.assertEqual(view["document_review"]["decision"], "unsure")
+                self.assertEqual(view["queue"]["state_counts"]["pending"], 1)
+                self.assertEqual(app.state.api_context.batch_jobs.status(queue)["counts"],
+                                 {"incomplete": 1})
+            app.state.dataset_repository.clear()
+
+    def test_reset_restores_source_and_hides_batch_until_recleaned(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = create_app(root)
+            with TestClient(app) as client:
+                queue = _make_batch_queue(client, root, ["原始正文。\n参考文献"])
+                manager = app.state.api_context.batch_jobs
+                output = manager._output(queue)
+                clean_queue(database_path=root / "curation.sqlite3", queue_id=queue,
+                            output_directory=output, cleaner=FakeCleaner(), workers=1)
+                url = f"/api/queues/{queue}/items/0"
+                before = client.get(url).json()
+                self.assertEqual(before["effective_source"], "batch")
+                self.assertEqual(before["materialized_text"], "清理后的正文。")
+                doc_id = before["document"]["doc_id"]
+                identity = {"queue_id": queue, "ordinal": 0, "expected_revision": 0,
+                            "content_sha256": before["document"]["content_sha256"]}
+                reset_url = f"/api/reviews/documents/{doc_id}/reset-cleaning"
+                response = client.post(reset_url, json=identity)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(client.post(reset_url, json=identity).status_code, 409)
+                after = client.get(url).json()
+                self.assertEqual(after["materialized_text"], before["review_text"])
+                self.assertEqual(after["effective_source"], "manual")
+                self.assertEqual(after["document_review"]["decision"], "unsure")
+                self.assertEqual(after["item"]["state"], "pending")
+                self.assertEqual(manager.item_status_page(queue, 0, 1, "review")["items"][0]["ordinal"], 0)
+                self.assertEqual(manager.status(queue)["completed"], 0)
+                self.assertEqual(manager.export(queue)["exported_records"], 0)
+                self.assertEqual((output / "effective_cleaned.jsonl").read_text(), "")
+                with patch.object(app.state.api_context.llm_cleaner, "clean", return_value={
+                    "decision": "keep", "edited_text": "重新清洗的正文。",
+                    "removals": [], "edits": [], "assessments": [],
+                }) as mocked:
+                    cleaned = client.post(f"/api/reviews/documents/{doc_id}/llm-clean", json={
+                        **identity, "expected_revision": 1,
+                        "blocks": [{"id": f"{doc_id}:edited:0", "text": after["review_text"],
+                                    "separator_after": ""}],
+                    })
+                self.assertEqual(cleaned.status_code, 200, cleaned.text)
+                self.assertFalse(mocked.call_args.kwargs["use_cache"])
+                self.assertEqual(client.get(url).json()["materialized_text"], "重新清洗的正文。")
+            app.state.dataset_repository.clear()
+
     def test_non_risk_failure_uses_paid_api_without_sending_fresh_rows_to_it(self):
         class WebCleaner:
             config = SimpleNamespace(provider="deepseek_web", model="web")

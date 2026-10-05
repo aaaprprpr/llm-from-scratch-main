@@ -147,13 +147,21 @@ class BatchJobManager:
             batch_counts, scanned, attempts = index.summary()
             conclusive = {ordinal: item for ordinal, item in manual.items()
                           if item["decision"] in {"keep", "drop"}}
-            overridden = index.statuses(list(conclusive))
+            pending_edits = {ordinal for ordinal, item in manual.items()
+                             if item["decision"] == "unsure" and item["has_edit"]}
+            overridden = index.statuses(list(conclusive.keys() | pending_edits))
         effective = batch_counts.copy()
         for ordinal, item in conclusive.items():
             prior = overridden.get(ordinal)
             if prior:
                 effective[prior] -= 1
             effective[item["decision"]] += 1
+        for ordinal in pending_edits:
+            prior = overridden.get(ordinal)
+            if prior in {"keep", "drop"}:
+                effective[prior] -= 1
+            if prior != "incomplete":
+                effective["incomplete"] += 1
         effective = {key: value for key, value in effective.items() if value > 0}
         total = sum(queue["state_counts"].values())
         completed = effective.get("keep", 0) + effective.get("drop", 0)

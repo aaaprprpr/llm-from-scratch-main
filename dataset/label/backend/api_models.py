@@ -97,6 +97,13 @@ class CleaningBlock(BaseModel):
     separator_after: str = Field(default="\n\n", max_length=100000)
 
 
+class ResetCleaningRequest(BaseModel):
+    queue_id: str
+    ordinal: int = Field(ge=0)
+    expected_revision: int = Field(ge=0)
+    content_sha256: str
+
+
 class LlmCleanRequest(BaseModel):
     queue_id: str
     ordinal: int = Field(ge=0)

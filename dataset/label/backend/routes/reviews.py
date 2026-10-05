@@ -3,7 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 
 from ..api_context import ApiContext
-from ..api_models import BlockReviewRequest, DocumentReviewRequest, LlmCleanRequest, ReviewPositionRequest, UndoRequest
+from ..api_models import (BlockReviewRequest, DocumentReviewRequest, LlmCleanRequest,
+                          ResetCleaningRequest, ReviewPositionRequest, UndoRequest)
 from ..database import BlockReviewInput, DocumentReviewInput
 from ..documents import DocumentService
 from ..llm_cleaning import LlmCleaningError
@@ -86,6 +87,36 @@ def build_router(context: ApiContext) -> APIRouter:
         except Exception as exc:
             context.raise_http(exc)
 
+    @router.post("/api/reviews/documents/{doc_id}/reset-cleaning")
+    def reset_document_cleaning(doc_id: str, request: ResetCleaningRequest):
+        try:
+            with context.open_database() as database:
+                value = DocumentService(database, context.repository).queue_document(
+                    request.queue_id, request.ordinal,
+                )
+                if value["document"]["doc_id"] != doc_id:
+                    raise ValueError("当前条目与请求文档不一致，请重新加载")
+                if value["document"]["content_sha256"] != request.content_sha256:
+                    raise ValueError("文档来源已改变，请重新加载")
+                state, _ = database.set_document_review(
+                    project_id=value["item"]["project_id"],
+                    review=DocumentReviewInput(
+                        doc_id=doc_id,
+                        source_row=int(value["document"]["source_row"]),
+                        content_sha256=value["document"]["content_sha256"],
+                        decision="unsure", quality=None, primary_category=None,
+                        flags=(), notes="", edited_text=value["review_text"],
+                        guideline_version=database.get_project(value["item"]["project_id"])[
+                            "guideline_version"
+                        ],
+                    ),
+                    expected_revision=request.expected_revision,
+                    actor="reset-cleaning",
+                )
+            return {"review": state}
+        except Exception as exc:
+            context.raise_http(exc)
+
     @router.post("/api/reviews/documents/{doc_id}/llm-clean")
     def clean_document_with_llm(doc_id: str, request: LlmCleanRequest):
         try:
@@ -112,6 +143,10 @@ def build_router(context: ApiContext) -> APIRouter:
                     provenance={**value["provenance"], "doc_id": doc_id,
                                 "queue_id": request.queue_id, "ordinal": request.ordinal,
                                 "expected_revision": request.expected_revision},
+                    **({"use_cache": False} if (value["document_review"] is not None
+                                              and value["document_review"]["decision"] == "unsure"
+                                              and value["document_review"].get("edited_text") == value["review_text"])
+                       else {}),
                 )
             except (LlmCleaningError, RuntimeError) as error:
                 reason = ("risk" if "Content Exists Risk" in str(error) else
