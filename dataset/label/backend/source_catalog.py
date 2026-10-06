@@ -52,8 +52,10 @@ def _sample_rows(source_id: str, path: Path, kind: str, sample_root: Path) -> tu
     sample_path = sample_root / f"{source_id}.sample.json"
     if sample_path.is_file():
         sample = json.loads(sample_path.read_text(encoding="utf-8"))
-        splits = sample.get("sample_rows", {})
-        rows = next(iter(splits.values()), [])
+        rows = sample.get("rows")
+        if rows is None:
+            splits = sample.get("sample_rows", {})
+            rows = next(iter(splits.values()), [])
         counts = sample.get("summary", {}).get("splits", {})
         record_count = sum(value.get("num_rows", 0) for value in counts.values()) or None
         return rows[:3], record_count

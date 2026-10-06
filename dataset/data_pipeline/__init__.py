@@ -1,2 +1,2 @@
-"""Dataset download, preprocessing, and binary encoding tools."""
+"""数据下载与独立的中间 Dataset 编码工具。"""
 

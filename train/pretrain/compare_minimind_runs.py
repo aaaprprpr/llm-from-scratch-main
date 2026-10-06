@@ -20,7 +20,7 @@ import torch.nn.functional as F
 from tokenizers import Tokenizer
 
 from checkpoint_io import load_checkpoint
-from config_loader import resolve_recorded_path
+from configs.config_loader import resolve_recorded_path
 from models.model import Transformer
 
 

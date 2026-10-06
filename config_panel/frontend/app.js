@@ -3,10 +3,11 @@
 const labels = {
   paths: "文件与路径", model: "模型结构", train: "训练参数", optimizer: "优化器",
   lr_schedule: "学习率调度", logging: "日志与保存", sample: "生成采样", play: "生成预览",
-  data: "数据集", sources: "数据源", download: "下载", preprocess: "预处理",
-  build_bin: "构建训练 bin", export: "模型导出", hf: "Hugging Face", gguf: "GGUF",
+  data: "数据集", sources: "数据源", download: "下载",
+  build_bin: "构建 bin", export: "模型导出", hf: "Hugging Face", gguf: "GGUF",
   tokenizer: "分词器", tokenizer_vocab: "分词器路径", train_data: "训练数据", val_data: "验证数据",
   out_root: "训练输出目录", resume: "恢复训练权重", dataset: "数据集路径", chat_template: "对话模板",
+  model_config: "共用模型配置",
   pretrained_weights: "预训练权重", sft_logs: "SFT 输出目录", sft_checkpoint: "SFT 权重",
   tokenized_cache: "分词缓存", dpo_logs: "DPO 输出目录", clean_weights: "纯模型权重",
   hf_export: "Hugging Face 导出目录", vocab_size: "词表大小", context_length: "上下文窗口",
@@ -31,17 +32,12 @@ const labels = {
   save_every: "保存间隔", eval_batches: "验证批次数", val_size: "验证集大小",
   length_bucket_multiplier: "长度分桶倍数", beta: "DPO β", average_logprob: "平均序列对数概率",
   kind: "来源类型", repo: "仓库 ID", filename: "文件名", sha256: "文件摘要", path: "路径",
-  data_files: "数据文件", config: "数据集配置", cleanup_cache: "清理下载缓存", input: "输入来源",
-  output: "输出目录", fix_text: "修正文本文字", max_repetition_ratio: "最大重复比例",
+  data_files: "数据文件", config: "数据集配置", cleanup_cache: "清理下载缓存", input: "输入 Dataset 目录",
+  output: "输出目录",
   workers: "处理进程数", overwrite: "覆盖已有输出", train_bin: "训练 bin 路径",
   val_bin: "验证 bin 路径", train_ratio: "训练集比例", backend: "实现后端",
   qk_norm: "Q/K 归一化", dropout: "Dropout", max_steps: "最大训练步数", max_iters: "最大训练步数",
-  checkpoint: "权重路径", output_dir: "输出目录", dtype: "权重精度", format: "导出格式",
-  llm_cleaning: "模型辅助清洗", provider: "模型服务", base_url: "服务地址",
-  context_tokens: "服务上下文长度", max_output_tokens: "最大输出 token 数", timeout_seconds: "请求超时（秒）",
-  max_document_characters: "最大文档字符数", max_chunks: "最多分块数", max_units_per_chunk: "每块最大单元数",
-  max_parallel_chunks: "并行块数", max_chunk_characters: "每块最大字符数", max_attempts_per_chunk: "每块尝试次数",
-  content_risk_fallback: "备用清洗服务"
+  checkpoint: "权重路径", output_dir: "输出目录", dtype: "权重精度", format: "导出格式"
 };
 
 const hints = {
@@ -50,14 +46,18 @@ const hints = {
   micro_batch_size: "一次前向与反向计算的样本数。", gradient_accumulation_steps: "累积这些步之后更新一次权重。",
   resume: "未设置时从训练入口指定的起点开始；填写权重路径以恢复。",
   pretrained_weights: "SFT 的初始权重。", sft_checkpoint: "DPO 的初始 SFT 权重。",
+  model_config: "新预训练读取这份共用结构配置；已有 checkpoint 的实际结构仍从权重读取。",
+  input: "填写统一本地 Dataset / Arrow 中间格式目录。来源名称和 JSONL 文件不能直接作为 bin 输入。",
   max_lr: "支持科学计数法，例如 3e-4。", max_learning_rate: "支持科学计数法，例如 2e-5。",
   min_lr: "支持科学计数法。", min_learning_rate: "支持科学计数法。",
   beta: "DPO 相对参考模型的偏离约束强度。", theta: "RoPE 的频率基数。"
 };
 
 const $ = (id) => document.getElementById(id);
-const state = { configs: [], active: null, data: null, saved: "", view: "form", busy: false, nullable: new Set(), errors: new Map() };
+const state = { configs: [], active: null, data: null, saved: "", view: "form", busy: false, saving: false, saveError: null, nullable: new Set(), errors: new Map() };
 let nextFieldId = 0;
+let saveTimer;
+let savePromise = null;
 
 function textElement(tag, className, content) {
   const element = document.createElement(tag);
@@ -86,9 +86,10 @@ function isDirty() {
 
 function updateState() {
   const dirty = isDirty();
-  $("save-state").textContent = state.busy ? "处理中…" : dirty ? "有未保存修改" : state.data ? "已保存" : "未读取";
+  $("save-state").textContent = state.busy ? "读取中…" : state.saveError ? "保存失败" : state.errors.size ? "输入未完成" : state.saving ? "保存中…" : dirty ? "等待自动保存…" : state.data ? "已保存" : "未读取";
   $("save-state").classList.toggle("dirty", dirty);
-  $("save-button").disabled = state.busy || !dirty || state.errors.size > 0;
+  $("save-state").classList.toggle("saving", state.saving);
+  $("save-state").classList.toggle("failed", Boolean(state.saveError));
   $("reload-button").disabled = state.busy || !state.active;
   $("editor").inert = state.busy;
   $("field-search").disabled = state.busy;
@@ -130,12 +131,17 @@ function renderTabs() {
   }
 }
 
-async function loadConfig(id, ask = true) {
-  if (ask && isDirty() && !window.confirm("还有未保存的修改，放弃修改并读取配置？")) return;
+async function loadConfig(id, flush = true) {
+  clearTimeout(saveTimer);
   state.busy = true;
   updateState();
   notice("");
   try {
+    if (flush) {
+      if (state.errors.size) { notice("请先完成标红的输入，再切换或重读配置。", true); return; }
+      await saveConfig();
+      if (state.saveError) return;
+    }
     const config = await request(`/api/configs/${encodeURIComponent(id)}`);
     state.active = config;
     state.data = config.data;
@@ -143,9 +149,7 @@ async function loadConfig(id, ask = true) {
     state.nullable.clear();
     state.errors.clear();
     collectNullable(state.data);
-    $("config-title").textContent = config.label;
-    $("config-path").textContent = config.filename;
-    $("config-hint").hidden = !["sft", "dpo"].includes(config.id);
+    $("config-hint").hidden = !["model", "pretrain", "sft", "dpo"].includes(config.id);
     $("field-search").value = "";
     for (const tab of document.querySelectorAll(".config-tab")) {
       const selected = tab.dataset.id === config.id;
@@ -172,7 +176,15 @@ function setFieldError(path, input, errorElement, error) {
   input.classList.toggle("invalid", Boolean(error));
   errorElement.textContent = error || "";
   errorElement.hidden = !error;
+  scheduleSave();
+}
+
+function scheduleSave() {
+  clearTimeout(saveTimer);
+  state.saveError = null;
+  notice("");
   updateState();
+  if (isDirty() && !state.errors.size) saveTimer = setTimeout(() => void saveConfig(), 500);
 }
 
 function valueField(key, value, path) {
@@ -214,7 +226,7 @@ function valueField(key, value, path) {
     input.addEventListener("change", () => {
       setValue(path, input.checked);
       status.textContent = input.checked ? "开启 · true" : "关闭 · false";
-      updateState();
+      scheduleSave();
     });
     wrapper.append(input, status);
     field.append(wrapper);
@@ -366,27 +378,39 @@ function switchView(view) {
 }
 
 async function saveConfig() {
+  clearTimeout(saveTimer);
+  if (savePromise) return savePromise;
   if (!isDirty() || state.errors.size) return;
-  state.busy = true;
+  state.saving = true;
+  state.saveError = null;
   updateState();
   notice("");
-  try {
-    const result = await request(`/api/configs/${encodeURIComponent(state.active.id)}`, {
-      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data: state.data })
-    });
-    state.data = result.data;
-    state.saved = json(result.data);
-    $("raw-json").value = state.saved;
-    notice(`已保存到 ${result.filename}`);
-  } catch (error) { notice(`保存失败：${error.message}`, true); }
-  finally { state.busy = false; updateState(); }
+  savePromise = (async () => {
+    try {
+      while (isDirty() && !state.errors.size) {
+        const configId = state.active.id;
+        const snapshot = json(state.data);
+        await request(`/api/configs/${encodeURIComponent(configId)}`, {
+          method: "PUT", headers: { "Content-Type": "application/json" }, body: `{"data":${snapshot}}`
+        });
+        state.saved = snapshot;
+      }
+    } catch (error) {
+      state.saveError = error.message;
+      notice(`自动保存失败：${error.message}`, true);
+    } finally {
+      state.saving = false;
+      savePromise = null;
+      updateState();
+    }
+  })();
+  return savePromise;
 }
 
 $("form-editor").addEventListener("submit", (event) => { event.preventDefault(); saveConfig(); });
 $("field-search").addEventListener("input", applySearch);
 $("form-view-button").addEventListener("click", () => switchView("form"));
 $("json-view-button").addEventListener("click", () => switchView("json"));
-$("save-button").addEventListener("click", saveConfig);
 $("reload-button").addEventListener("click", () => loadConfig(state.active.id));
 $("raw-json").addEventListener("input", () => {
   try {
@@ -402,7 +426,7 @@ async function initialize() {
   updateState();
   try {
     const result = await request("/api/configs");
-    const order = ["pretrain", "sft", "dpo", "data_pipeline", "label"];
+    const order = ["model", "pretrain", "sft", "dpo", "build_bin", "data_pipeline"];
     state.configs = result.configs.sort((a, b) => {
       const rank = (id) => order.includes(id) ? order.indexOf(id) : order.length;
       return rank(a.id) - rank(b.id);

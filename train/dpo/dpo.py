@@ -13,7 +13,7 @@ sys.path = [
 ]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from config_loader import Config, resolve_recorded_path
+from configs.config_loader import Config, resolve_recorded_path
 
 # 当前 Windows 环境里先 import torch 再 import datasets/pyarrow 会崩。
 from train.dpo.datasets.wenbopan_chinese_dpo import (
@@ -415,7 +415,9 @@ def prepare_run_dir(config: Config):
         "run_%Y%m%d_%H%M%S"
     )
     run_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(config.config_path, run_dir / "config.json")
+    (run_dir / "config.json").write_text(
+        json.dumps(config.data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     shutil.copy2(
         config.resolve_path("paths", "chat_template"), run_dir / "chat_template.jinja"
     )
@@ -508,6 +510,7 @@ def train(config: Config):
     policy_model, reference_model, model_args, base_path = build_policy_and_reference(
         config, device, resume_checkpoint
     )
+    config.data["model"] = dict(model_args)
     tokenizer = load_tokenizer(config)
     tokenizer_sha256 = file_sha256(config.resolve_path("paths", "tokenizer") / "tokenizer.json")
     dataset = load_or_build_dataset(config, tokenizer)

@@ -1,5 +1,6 @@
 {
   "paths": {
+    "model_config": "configs/model.json",
     "dataset": "wenbopan/Chinese-dpo-pairs",
     "tokenizer": "tokenizer/bpe_24576",
     "chat_template": "train/sft/chat_template.jinja",

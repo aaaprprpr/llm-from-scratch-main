@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>训练 bin 构建说明</title>
+<style>
+body{max-width:840px;margin:30px auto;padding:0 20px;color:#20303b;background:#fff;font:16px/1.85 system-ui,"Microsoft YaHei",sans-serif}
+h1{font-size:25px}h2{font-size:20px;margin-top:28px}p{margin:12px 0}
+code,.formula{font-family:Consolas,monospace;font-size:14px}
+table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:9px;text-align:left;border-bottom:1px solid #ddd}
+.record{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:12px 0}.text{min-width:120px}
+select{font:inherit;padding:3px 8px}.strip{display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin:8px 0}
+.token{padding:3px 10px;border:1px solid #ccd9df;border-radius:3px;background:#f4f7f9;font:14px/1.8 Consolas,monospace}
+.eos{background:#fff3d5;border-color:#dabd77}.doc0{border-bottom:3px solid #247f72}.doc1{border-bottom:3px solid #567bb0}.doc2{border-bottom:3px solid #b07043}
+.formula{overflow-wrap:anywhere}.demo{border-top:1px solid #ddd;border-bottom:1px solid #ddd;padding:12px 0}.muted{color:#657582;font-size:14px}
+</style>
+<h1>训练 bin 构建说明</h1>
+<p><code>dataset/data_pipeline/build_bin.py</code> 把统一本地 Dataset/Arrow 中间格式编码成训练使用的连续 token ID 文件。它不识别 MiniMind 或其他来源，不下载、不清洗、不做字段适配；上游交付的正文在这里被直接编码。</p>
+<h2>中间格式与编码边界</h2>
+<p>输入是一个本地 Dataset 目录，包含字符串 <code>text</code> 列，每条记录是一篇完整正文。可以附带 <code>doc_id</code>、来源和修订等信息；bin 只读取 <code>text</code>，这些信息不混进训练正文。</p>
+<table><thead><tr><th>text</th><th>doc_id（可选）</th></tr></thead><tbody>
+<tr><td>你好。</td><td>doc-1</td></tr><tr><td>今天下雨。</td><td>doc-2</td></tr><tr><td>明天见。</td><td>doc-3</td></tr>
+</tbody></table>
+<p>参数集中在 <code>configs/build_bin.json</code>。<code>build_bin.input</code> 直接填目录路径；默认输入目录为 <code>dataset/data_pipeline/data/intermediate/</code>，输出到 <code>dataset/data_pipeline/data/bins/</code>。输入目录是上游成品的位置，不由构建器自行生成。</p>
+<p><code>dataset/storage.py</code> 提供通用读取器，兼容 HF 的 <code>save_to_disk</code> 目录与已有 <code>dataset.json</code> + Arrow 分片目录，返回同一种 Dataset 接口。构建器不导入清洗台后台，也不读取下载来源注册表。</p>
+<p>旧 <code>preprocess.py</code> 已删除，MiniMind 原始 JSONL、来源名和旧预处理别名不再接入 bin。清洗台目前导出的 <code>effective_cleaned.jsonl</code> 需由上游统一成中间 Dataset；上游下载与存储规范会另行整理。编码器的输入约定由文本记录决定，与数据来自哪个网站或哪个清洗器无关。</p>
+<h2>实际执行的处理</h2>
+<p>首先读取独立的 bin 配置和本地目录。Dataset/Arrow 按批次访问 <code>text</code>，无需将全部正文变成常驻内存的字符串列表。读取器保留中间 Dataset 的指纹，元数据记录的是这份输入的身份。</p>
+<p>接着用固定 seed=42 选择整条记录属于训练还是验证。脚本把记录分为每块 1,000 条，打乱块顺序，再打乱每块内部顺序。这是分块打乱，不能等同于把全部记录一次做完全随机排列。</p>
+<p>正文按每批 512 条交给分词器。编码不截断，也不补齐；每条记录末尾追加一个 <code>&lt;|endoftext|&gt;</code>。训练记录与验证记录分别拼接，再顺序写入各自的 bin。长文不会在这里切成 2,048 或 4,096 的固定窗口，训练阶段才从连续 token 流中取窗口。</p>
+<p>当前词表的 token ID 用 <code>uint16</code> 存，每个 ID 占 2 字节。bin 只有这些整数，不保存 JSON 字段名、正文或文档标题。文档末尾的 EOS 同样是一个整数。</p>
+<div class="formula">bin 文件字节数 = token 数 × 2（当前 uint16）</div>
+<h2>一条记录怎样进入文件</h2>
+<p>下面使用当前 24K 分词器的真实结果，EOS 的 ID 为 0。小例子只演示文档归属与拼接：改变某条记录的归属，可以看到它的全部 token 连同 EOS 移到另一份文件。正式构建的 95%/5% 是在整个数据集上选择记录。</p>
+<div class="demo">
+<div id="records"></div>
+<strong>train.bin</strong><div id="train" class="strip"></div>
+<p id="train-formula" class="formula"></p>
+<strong>val.bin</strong><div id="val" class="strip"></div>
+<p id="val-formula" class="formula"></p>
+<p id="sizes"></p>
+</div>
+<p>初始示例的训练流包含文档 1 和 3，共 7 个 token、14 字节；验证流包含文档 2，共 5 个 token、10 字节。EOS 只标记文档边界，编码后的 bin 没有按模型上下文长度补零或截断。</p>
+<h2>代码怎样组织</h2>
+<table>
+<thead><tr><th>部分</th><th>职责</th></tr></thead>
+<tbody>
+<tr><td>输入</td><td>只读取统一本地 Dataset/Arrow 目录的 text 列。</td></tr>
+<tr><td>划分与打乱</td><td>精确选择记录归属、分块读取、随机顺序及批次生成。</td></tr>
+<tr><td>并行调度</td><td>单进程与多进程两种路径，初始化分词器；最多保留 worker 数两倍的待处理任务，并按提交顺序取结果。</td></tr>
+<tr><td>写文件与元数据</td><td>统计记录和 token，先写临时文件，完成后替换输出；另写 dtype、Dataset 与词表指纹、划分参数等信息。</td></tr>
+<tr><td>检查与失败清理</td><td>保留现有输出覆盖约定，异常时删除临时产物。</td></tr>
+</tbody>
+</table>
+<p>文件按输入与文件信息、记录划分、编码与并行、写入与元数据、配置入口五段组织。训练和验证共用写入与统计逻辑，随机调用顺序、EOS、bin 格式及元数据字段保持原有约定。</p>
+<p>单进程入口或进程池 initializer 初始化分词器。bin 模块的依赖只包含通用配置、Dataset 读取、分词器和编码组件，下载、清洗与格式适配留在上游。</p>
+<p class="muted">本文依据 2026-10-06 的代码与配置整理。构建行为使用临时小样本对照，不重建正式语料 bin。</p>
+<script>
+const demo = {"eos":0,"records":[{"text":"你好。","ids":[16802,267]},{"text":"今天下雨。","ids":[2247,405,1948,267]},{"text":"明天见。","ids":[7888,832,267]}]};
+const targets = ["train","val","train"];
+const records = document.getElementById("records");
+demo.records.forEach((record, index) => {
+  const row = document.createElement("div"); row.className = "record";
+  const text = document.createElement("span"); text.className = "text"; text.textContent = "文档" + (index+1) + "：" + record.text;
+  const select = document.createElement("select"); select.setAttribute("aria-label","文档"+(index+1)+"的归属");
+  ["train","val"].forEach(target => {const option=document.createElement("option");option.value=target;option.textContent=target;select.append(option);});
+  select.value=targets[index]; select.addEventListener("change",()=>{targets[index]=select.value;draw();});
+  row.append(text,select); records.append(row);
+});
+function draw(){
+  const counts={train:0,val:0};
+  ["train","val"].forEach(target=>{
+    const strip=document.getElementById(target);strip.replaceChildren();const terms=[];
+    demo.records.forEach((record,index)=>{
+      if(targets[index]!==target)return;
+      terms.push("T(文档"+(index+1)+") + [EOS=0]");
+      [...record.ids,demo.eos].forEach((id,position)=>{
+        const box=document.createElement("span");box.className="token doc"+index+(position===record.ids.length?" eos":"");
+        box.textContent=position===record.ids.length?"EOS · "+id:String(id);strip.append(box);counts[target]++;
+      });
+    });
+    if(!counts[target])strip.textContent="空";
+    document.getElementById(target+"-formula").textContent=target+".bin = "+(terms.join(" + ")||"空");
+  });
+  document.getElementById("sizes").textContent="训练："+counts.train+" token，"+(counts.train*2)+" 字节；验证："+counts.val+" token，"+(counts.val*2)+" 字节。";
+}
+draw();
+</script>
+</html>

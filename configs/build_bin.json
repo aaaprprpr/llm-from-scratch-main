@@ -1,0 +1,12 @@
+{
+  "build_bin": {
+    "input": "dataset/data_pipeline/data/intermediate",
+    "tokenizer": "tokenizer/bpe_24576",
+    "train_bin": "dataset/data_pipeline/data/bins/train.bin",
+    "val_bin": "dataset/data_pipeline/data/bins/val.bin",
+    "train_ratio": 0.95,
+    "seed": 42,
+    "workers": "auto",
+    "overwrite": false
+  }
+}

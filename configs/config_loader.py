@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _MISSING = object()
 
 
@@ -14,6 +14,9 @@ class Config:
 
         self.config_path = config_path
         self.data = json.loads(config_path.read_text(encoding="utf-8"))
+        model_path = self.optional_path("paths", "model_config")
+        if model_path is not None and "model" not in self.data:
+            self.data["model"] = json.loads(model_path.read_text(encoding="utf-8"))["model"]
 
     def get(self, *keys: str, default: Any = None) -> Any:
         value = self.data

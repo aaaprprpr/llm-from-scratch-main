@@ -7,13 +7,17 @@ from pydantic import BaseModel
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CONFIG_FILES = {path.stem: path for path in sorted((PROJECT_ROOT / "configs").glob("*.json"))}
+CONFIG_FILES = {
+    config_id: PROJECT_ROOT / "configs" / f"{config_id}.json"
+    for config_id in ("model", "pretrain", "sft", "dpo", "build_bin", "data_pipeline")
+}
 LABELS = {
+    "model": "模型结构",
     "pretrain": "预训练",
     "sft": "监督微调 SFT",
     "dpo": "偏好训练 DPO",
-    "data_pipeline": "数据流水线",
-    "label": "语料清洗",
+    "build_bin": "构建 bin",
+    "data_pipeline": "数据下载",
 }
 
 app = FastAPI(title="训练配置面板")

@@ -1,4 +1,4 @@
-"""Split complete text records and encode them into flat token-id binaries."""
+"""把完整文本记录划分、编码并写成连续的 token bin。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import os
 import random
 import sys
 from collections import deque
-from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -18,13 +18,13 @@ from tqdm import tqdm
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path = [
-    path for path in sys.path if Path(path or Path.cwd()).resolve() != SCRIPT_DIR
-]
+sys.path = [path for path in sys.path if Path(path or Path.cwd()).resolve() != SCRIPT_DIR]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from dataset.data_pipeline.config import load_config, project_path, resolve_bin_input
-from dataset.data_pipeline.jsonl import JsonlTextDataset
+from configs.config_loader import Config
+from dataset.storage import load_dataset
+
+CONFIG_PATH = PROJECT_ROOT / "configs" / "build_bin.json"
 
 EOS_TOKEN = "<|endoftext|>"
 SHUFFLE_BLOCK_RECORDS = 1000
@@ -36,6 +36,7 @@ _worker_eos_id: int | None = None
 _worker_dtype: np.dtype | None = None
 
 
+# 1. 输入与文件信息
 def tokenizer_fingerprint(path: Path) -> str:
     target = path / "tokenizer.json" if path.is_dir() else path
     digest = hashlib.sha256()
@@ -47,196 +48,13 @@ def tokenizer_fingerprint(path: Path) -> str:
 
 def choose_dtype(requested: str, tokenizer_size: int) -> np.dtype:
     if requested == "auto":
-        requested = (
-            "uint16"
-            if tokenizer_size <= np.iinfo(np.uint16).max + 1
-            else "uint32"
-        )
+        requested = "uint16" if tokenizer_size <= 65536 else "uint32"
     if requested not in {"uint16", "uint32"}:
         raise ValueError("dtype must be one of: auto, uint16, uint32.")
-
     dtype = np.dtype(requested)
     if tokenizer_size - 1 > np.iinfo(dtype).max:
         raise ValueError(f"Tokenizer size {tokenizer_size} does not fit in {dtype}.")
     return dtype
-
-
-def split_sizes(total_records: int, train_ratio: float) -> tuple[int, int]:
-    if total_records < 2:
-        raise ValueError("At least two records are required for train/val splitting.")
-    train_records = int(total_records * train_ratio + 0.5)
-    train_records = min(max(train_records, 1), total_records - 1)
-    return train_records, total_records - train_records
-
-
-def init_worker(
-    tokenizer_path: str,
-    eos_id: int,
-    dtype_name: str,
-    tokenizer_threads: int,
-) -> None:
-    os.environ["RAYON_NUM_THREADS"] = str(tokenizer_threads)
-    os.environ["TOKENIZERS_PARALLELISM"] = "true"
-
-    from tokenizer import Tokenizer
-
-    global _worker_tokenizer, _worker_eos_id, _worker_dtype
-    _worker_tokenizer = Tokenizer(tokenizer_path)
-    _worker_eos_id = eos_id
-    _worker_dtype = np.dtype(dtype_name)
-
-
-def encode_batch(
-    payload: tuple[list[str], list[bool]],
-) -> tuple[np.ndarray, np.ndarray, int, int]:
-    texts, validation_flags = payload
-    if _worker_tokenizer is None or _worker_eos_id is None:
-        raise RuntimeError("Tokenizer worker was not initialized.")
-    if _worker_dtype is None:
-        raise RuntimeError("Tokenizer worker dtype was not initialized.")
-
-    train_chunks = []
-    validation_chunks = []
-
-    encoded_records = _worker_tokenizer.tokenizer(
-        texts,
-        add_special_tokens=False,
-        padding=False,
-        truncation=False,
-        return_attention_mask=False,
-        return_token_type_ids=False,
-    )["input_ids"]
-    for token_ids, is_validation in zip(
-        encoded_records,
-        validation_flags,
-        strict=True,
-    ):
-        token_ids.append(_worker_eos_id)
-        encoded = np.asarray(token_ids, dtype=_worker_dtype)
-        if is_validation:
-            validation_chunks.append(encoded)
-        else:
-            train_chunks.append(encoded)
-
-    empty = np.empty(0, dtype=_worker_dtype)
-    train_tokens = np.concatenate(train_chunks) if train_chunks else empty
-    validation_tokens = (
-        np.concatenate(validation_chunks) if validation_chunks else empty
-    )
-    validation_records = len(validation_chunks)
-    return (
-        train_tokens,
-        validation_tokens,
-        len(texts) - validation_records,
-        validation_records,
-    )
-
-
-def iter_shuffled_record_batches(
-    dataset: Any,
-    train_ratio: float,
-    seed: int,
-    shuffle_block_records: int,
-    batch_records: int,
-) -> Iterator[tuple[list[str], list[bool]]]:
-    total_records = len(dataset)
-    target_train_records, target_validation_records = split_sizes(
-        total_records,
-        train_ratio,
-    )
-
-    if target_validation_records <= target_train_records:
-        validation_mask = bytearray(total_records)
-        sampled_indices = random.Random(seed).sample(
-            range(total_records),
-            target_validation_records,
-        )
-        for index in sampled_indices:
-            validation_mask[index] = 1
-    else:
-        validation_mask = bytearray(b"\x01") * total_records
-        sampled_indices = random.Random(seed).sample(
-            range(total_records),
-            target_train_records,
-        )
-        for index in sampled_indices:
-            validation_mask[index] = 0
-    del sampled_indices
-
-    shuffle_rng = random.Random(seed ^ 0x9E3779B97F4A7C15)
-    block_starts = list(range(0, total_records, shuffle_block_records))
-    shuffle_rng.shuffle(block_starts)
-
-    texts = []
-    validation_flags = []
-    emitted_validation_records = 0
-    for block_start in block_starts:
-        block_end = min(block_start + shuffle_block_records, total_records)
-        block_texts = list(dataset[block_start:block_end]["text"])
-        block_offsets = list(range(len(block_texts)))
-        shuffle_rng.shuffle(block_offsets)
-
-        for offset in block_offsets:
-            text = block_texts[offset]
-            if not isinstance(text, str) or not text:
-                raise ValueError(
-                    "The preprocessed dataset must contain nonempty strings only."
-                )
-
-            is_validation = bool(validation_mask[block_start + offset])
-            emitted_validation_records += is_validation
-            texts.append(text)
-            validation_flags.append(is_validation)
-
-            if len(texts) == batch_records:
-                yield texts, validation_flags
-                texts = []
-                validation_flags = []
-
-    if texts:
-        yield texts, validation_flags
-    if emitted_validation_records != target_validation_records:
-        raise RuntimeError("Train/validation split did not emit the expected records.")
-
-
-def iter_encoded_batches(
-    payloads: Iterator[tuple[list[str], list[bool]]],
-    tokenizer_path: Path,
-    eos_id: int,
-    dtype: np.dtype,
-    workers: int,
-    tokenizer_threads: int,
-) -> Iterator[tuple[np.ndarray, np.ndarray, int, int]]:
-    if workers == 1:
-        init_worker(
-            str(tokenizer_path),
-            eos_id,
-            dtype.name,
-            tokenizer_threads,
-        )
-        yield from map(encode_batch, payloads)
-        return
-
-    pending: deque[Future] = deque()
-    max_pending = workers * 2
-    # The parent may already have tokenizer or PyTorch threads; fork can deadlock.
-    with ProcessPoolExecutor(
-        max_workers=workers,
-        mp_context=multiprocessing.get_context("spawn"),
-        initializer=init_worker,
-        initargs=(
-            str(tokenizer_path),
-            eos_id,
-            dtype.name,
-            tokenizer_threads,
-        ),
-    ) as executor:
-        for payload in payloads:
-            pending.append(executor.submit(encode_batch, payload))
-            if len(pending) >= max_pending:
-                yield pending.popleft().result()
-        while pending:
-            yield pending.popleft().result()
 
 
 def metadata_path(output_bin: Path) -> Path:
@@ -248,132 +66,178 @@ def temporary_path(path: Path) -> Path:
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
-    path.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def check_output_files(train_bin: Path, validation_bin: Path, overwrite: bool) -> None:
+    outputs = (train_bin, validation_bin, metadata_path(train_bin), metadata_path(validation_bin))
+    existing = [path for path in outputs if path.exists()]
+    if existing and not overwrite:
+        raise FileExistsError(
+            "Build-bin output already exists. Set overwrite=true in "
+            "configs/build_bin.json to replace it: " + ", ".join(map(str, existing))
+        )
+
+
+def load_input_dataset(input_dataset: Path):
+    """读取统一中间格式；编码阶段只使用其中的 text 列。"""
+    return load_dataset(input_dataset)
+
+
+# 2. 按记录划分，再打乱块顺序和块内顺序
+def split_sizes(total_records: int, train_ratio: float) -> tuple[int, int]:
+    if total_records < 2:
+        raise ValueError("At least two records are required for train/val splitting.")
+    train_records = int(total_records * train_ratio + 0.5)
+    train_records = min(max(train_records, 1), total_records - 1)
+    return train_records, total_records - train_records
+
+
+def iter_shuffled_record_batches(
+    dataset: Any, train_ratio: float, seed: int,
+    shuffle_block_records: int, batch_records: int,
+) -> Iterator[tuple[list[str], list[bool]]]:
+    total_records = len(dataset)
+    train_records, validation_records = split_sizes(total_records, train_ratio)
+
+    # 只抽取较小的一组；mask 中 1 表示验证，0 表示训练。
+    sample_validation = validation_records <= train_records
+    validation_mask = bytearray(total_records) if sample_validation else bytearray([1]) * total_records
+    for index in random.Random(seed).sample(range(total_records), min(train_records, validation_records)):
+        validation_mask[index] = int(sample_validation)
+
+    # 划分和打乱使用独立 RNG，保持原有随机调用顺序。
+    shuffle_rng = random.Random(seed ^ 0x9E3779B97F4A7C15)
+    block_starts = list(range(0, total_records, shuffle_block_records))
+    shuffle_rng.shuffle(block_starts)
+    texts, validation_flags = [], []
+    for block_start in block_starts:
+        block_end = min(block_start + shuffle_block_records, total_records)
+        block_texts = list(dataset[block_start:block_end]["text"])
+        block_offsets = list(range(len(block_texts)))
+        shuffle_rng.shuffle(block_offsets)
+        for offset in block_offsets:
+            text = block_texts[offset]
+            if not isinstance(text, str) or not text:
+                raise ValueError("The intermediate dataset must contain nonempty strings only.")
+            texts.append(text)
+            validation_flags.append(bool(validation_mask[block_start + offset]))
+            if len(texts) == batch_records:
+                yield texts, validation_flags
+                texts, validation_flags = [], []
+    if texts:
+        yield texts, validation_flags
+
+
+# 3. 每批分词，追加 EOS，分别拼接训练与验证 token
+def init_worker(tokenizer_path: str, eos_id: int, dtype_name: str, tokenizer_threads: int) -> None:
+    os.environ["RAYON_NUM_THREADS"] = str(tokenizer_threads)
+    os.environ["TOKENIZERS_PARALLELISM"] = "true"
+    from tokenizer import Tokenizer
+
+    global _worker_tokenizer, _worker_eos_id, _worker_dtype
+    _worker_tokenizer = Tokenizer(tokenizer_path)
+    _worker_eos_id = eos_id
+    _worker_dtype = np.dtype(dtype_name)
+
+
+def encode_batch(payload: tuple[list[str], list[bool]]) -> tuple[np.ndarray, np.ndarray, int, int]:
+    texts, validation_flags = payload
+    encoded_records = _worker_tokenizer.tokenizer(
+        texts, add_special_tokens=False, padding=False, truncation=False,
+        return_attention_mask=False, return_token_type_ids=False,
+    )["input_ids"]
+    train_chunks, validation_chunks = [], []
+    for token_ids, is_validation in zip(encoded_records, validation_flags, strict=True):
+        token_ids.append(_worker_eos_id)
+        chunks = validation_chunks if is_validation else train_chunks
+        chunks.append(np.asarray(token_ids, dtype=_worker_dtype))
+
+    empty = np.empty(0, dtype=_worker_dtype)
+    return (
+        np.concatenate(train_chunks) if train_chunks else empty,
+        np.concatenate(validation_chunks) if validation_chunks else empty,
+        len(train_chunks),
+        len(validation_chunks),
     )
 
 
+def iter_encoded_batches(
+    payloads: Iterator[tuple[list[str], list[bool]]],
+    tokenizer_path: Path, eos_id: int, dtype: np.dtype,
+    workers: int, tokenizer_threads: int,
+) -> Iterator[tuple[np.ndarray, np.ndarray, int, int]]:
+    worker_args = (str(tokenizer_path), eos_id, dtype.name, tokenizer_threads)
+    if workers == 1:
+        init_worker(*worker_args)
+        yield from map(encode_batch, payloads)
+        return
+
+    # spawn 避免继承分词器/PyTorch 线程；按提交顺序取回，输出不受完成先后影响。
+    pending = deque()
+    with ProcessPoolExecutor(
+        max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
+        initializer=init_worker, initargs=worker_args,
+    ) as executor:
+        for payload in payloads:
+            pending.append(executor.submit(encode_batch, payload))
+            if len(pending) >= workers * 2:
+                yield pending.popleft().result()
+        while pending:
+            yield pending.popleft().result()
+
+
+# 4. 两份 bin 共用写入、统计、元数据和临时文件处理
 def build_bins(
-    dataset: Any,
-    input_dataset: Path,
-    train_bin: Path,
-    validation_bin: Path,
-    tokenizer_path: Path,
-    tokenizer_size: int,
-    tokenizer_sha256: str,
-    eos_token: str,
-    eos_id: int,
-    dtype: np.dtype,
-    train_ratio: float,
-    seed: int,
-    shuffle_block_records: int,
-    batch_records: int,
-    workers: int,
-    tokenizer_threads: int,
-    overwrite: bool,
+    dataset: Any, input_dataset: Path,
+    train_bin: Path, validation_bin: Path,
+    tokenizer_path: Path, tokenizer_size: int, tokenizer_sha256: str,
+    eos_token: str, eos_id: int, dtype: np.dtype,
+    train_ratio: float, seed: int, shuffle_block_records: int, batch_records: int,
+    workers: int, tokenizer_threads: int, overwrite: bool,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if train_bin.resolve() == validation_bin.resolve():
         raise ValueError("train_bin and val_bin must be different paths.")
     if workers < 1 or tokenizer_threads < 1:
         raise ValueError("workers and tokenizer_threads must be positive.")
-    train_meta_path = metadata_path(train_bin)
-    validation_meta_path = metadata_path(validation_bin)
-    final_outputs = (
-        train_bin,
-        validation_bin,
-        train_meta_path,
-        validation_meta_path,
-    )
-    existing_outputs = [path for path in final_outputs if path.exists()]
-    if existing_outputs and not overwrite:
-        raise FileExistsError(
-            "Build-bin output already exists. Set overwrite=true in "
-            "configs/data_pipeline.json to replace it: "
-            + ", ".join(map(str, existing_outputs))
-        )
+    check_output_files(train_bin, validation_bin, overwrite)
 
-    for output_bin in (train_bin, validation_bin):
-        output_bin.parent.mkdir(parents=True, exist_ok=True)
+    bin_paths = (train_bin, validation_bin)
+    final_paths = (*bin_paths, *(metadata_path(path) for path in bin_paths))
+    temporary_paths = tuple(temporary_path(path) for path in final_paths)
+    for path in bin_paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    for path in temporary_paths:
+        path.unlink(missing_ok=True)
 
-    temporary_train = temporary_path(train_bin)
-    temporary_validation = temporary_path(validation_bin)
-    temporary_train_meta = temporary_path(train_meta_path)
-    temporary_validation_meta = temporary_path(validation_meta_path)
-    temporary_outputs = (
-        temporary_train,
-        temporary_validation,
-        temporary_train_meta,
-        temporary_validation_meta,
-    )
-    for path in temporary_outputs:
-        if path.exists():
-            path.unlink()
-
-    total_records = len(dataset)
-    target_train_records, target_validation_records = split_sizes(
-        total_records,
-        train_ratio,
-    )
-    train_records = 0
-    validation_records = 0
-    train_tokens = 0
-    validation_tokens = 0
-
+    totals = [{"records": 0, "tokens": 0}, {"records": 0, "tokens": 0}]
     payloads = iter_shuffled_record_batches(
-        dataset,
-        train_ratio,
-        seed,
-        shuffle_block_records,
-        batch_records,
+        dataset, train_ratio, seed, shuffle_block_records, batch_records,
     )
     results = iter_encoded_batches(
-        payloads,
-        tokenizer_path,
-        eos_id,
-        dtype,
-        workers,
-        tokenizer_threads,
+        payloads, tokenizer_path, eos_id, dtype, workers, tokenizer_threads,
     )
-
     try:
         with (
-            temporary_train.open("wb") as train_stream,
-            temporary_validation.open("wb") as validation_stream,
-            tqdm(
-                total=total_records,
-                unit=" records",
-                desc="Encoding text records",
-            ) as progress,
+            temporary_paths[0].open("wb") as train_stream,
+            temporary_paths[1].open("wb") as validation_stream,
+            tqdm(total=len(dataset), unit=" records", desc="Encoding text records") as progress,
         ):
-            for (
-                train_array,
-                validation_array,
-                batch_train_records,
-                batch_validation_records,
-            ) in results:
-                train_array.tofile(train_stream)
-                validation_array.tofile(validation_stream)
-                train_records += batch_train_records
-                validation_records += batch_validation_records
-                train_tokens += int(train_array.size)
-                validation_tokens += int(validation_array.size)
-                progress.update(batch_train_records + batch_validation_records)
-
-        if (train_records, validation_records) != (
-            target_train_records,
-            target_validation_records,
-        ):
-            raise RuntimeError(
-                "Train/validation record counts do not match the requested split."
-            )
-        if train_tokens == 0 or validation_tokens == 0:
-            raise ValueError("Both train and validation outputs must contain tokens.")
+            streams = (train_stream, validation_stream)
+            for train_array, validation_array, train_count, validation_count in results:
+                for stream, array, count, total in zip(
+                    streams, (train_array, validation_array),
+                    (train_count, validation_count), totals,
+                ):
+                    array.tofile(stream)
+                    total["records"] += count
+                    total["tokens"] += int(array.size)
+                progress.update(train_count + validation_count)
 
         common_metadata = {
             "input_dataset": str(input_dataset.resolve()),
             "dataset_fingerprint": getattr(dataset, "_fingerprint", None),
-            "input_records": total_records,
+            "input_records": len(dataset),
             "train_ratio": train_ratio,
             "validation_ratio": round(1.0 - train_ratio, 15),
             "seed": seed,
@@ -390,92 +254,50 @@ def build_bins(
             "eos_token": eos_token,
             "eos_id": eos_id,
         }
-        train_metadata = {
-            **common_metadata,
-            "split": "train",
-            "output_bin": str(train_bin.resolve()),
-            "records": train_records,
-            "tokens": train_tokens,
-        }
-        validation_metadata = {
-            **common_metadata,
-            "split": "validation",
-            "output_bin": str(validation_bin.resolve()),
-            "records": validation_records,
-            "tokens": validation_tokens,
-        }
-        write_json(temporary_train_meta, train_metadata)
-        write_json(temporary_validation_meta, validation_metadata)
+        metadata = []
+        for split, path, total, temporary_meta in zip(
+            ("train", "validation"), bin_paths, totals, temporary_paths[2:],
+        ):
+            value = {
+                **common_metadata, "split": split, "output_bin": str(path.resolve()),
+                "records": total["records"], "tokens": total["tokens"],
+            }
+            write_json(temporary_meta, value)
+            metadata.append(value)
 
-        temporary_train.replace(train_bin)
-        temporary_validation.replace(validation_bin)
-        temporary_train_meta.replace(train_meta_path)
-        temporary_validation_meta.replace(validation_meta_path)
+        # 顺序保持为 train.bin、val.bin、train.meta、val.meta。
+        for temporary, final in zip(temporary_paths, final_paths):
+            temporary.replace(final)
     except BaseException:
-        for path in temporary_outputs:
-            if path.exists():
-                path.unlink()
+        for path in temporary_paths:
+            path.unlink(missing_ok=True)
         raise
 
-    print(
-        f"Wrote {train_tokens:,} train tokens from {train_records:,} records "
-        f"to {train_bin.resolve()} ({dtype.name})"
-    )
-    print(
-        f"Wrote {validation_tokens:,} validation tokens from "
-        f"{validation_records:,} records to {validation_bin.resolve()} "
-        f"({dtype.name})"
-    )
-    return train_metadata, validation_metadata
-
-
-def load_input_dataset(input_dataset: Path, expected_sha256: str | None = None):
-    """Load text JSONL, cleaned Arrow data, or a labeled materialization."""
-
-    if input_dataset.suffix == ".jsonl":
-        return JsonlTextDataset(input_dataset, expected_sha256=expected_sha256)
-
-    label_dataset_descriptor = input_dataset / "dataset.json"
-    if label_dataset_descriptor.is_file():
-        from dataset.label.backend.dataset_store import load_dataset
-
-        dataset = load_dataset(input_dataset)
-        if "text" not in getattr(dataset, "column_names", []):
-            raise ValueError(
-                "The label materialization must contain a text column."
-            )
-        return dataset
-
-    from datasets import load_from_disk
-
-    dataset = load_from_disk(str(input_dataset))
-    if getattr(dataset, "column_names", None) != ["text"]:
-        raise ValueError(
-            "The preprocessed dataset must be a Dataset with only a text column."
+    for path, value in zip(bin_paths, metadata):
+        print(
+            f"Wrote {value['tokens']:,} {value['split']} tokens from "
+            f"{value['records']:,} records to {path.resolve()} ({dtype.name})"
         )
-    return dataset
+    return metadata[0], metadata[1]
 
 
-def main() -> None:
-    root_config = load_config()
+# 5. 配置入口：定位输入，加载分词器，调用构建
+def main() -> tuple[dict[str, Any], dict[str, Any]]:
+    root_config = Config(CONFIG_PATH)
     config = root_config.require("build_bin")
-    input_dataset, source = resolve_bin_input(root_config)
-    tokenizer_path = project_path(config["tokenizer"])
-    train_bin = project_path(config["train_bin"])
-    validation_bin = project_path(config["val_bin"])
-    train_ratio = config["train_ratio"]
-    seed = config["seed"]
-    workers = config["workers"]
-    overwrite = config["overwrite"]
+    input_dataset = root_config.resolve_path("build_bin", "input")
+    tokenizer_path = root_config.resolve_path("build_bin", "tokenizer")
+    train_bin = root_config.resolve_path("build_bin", "train_bin")
+    validation_bin = root_config.resolve_path("build_bin", "val_bin")
+    train_ratio, seed = config["train_ratio"], config["seed"]
+    workers, overwrite = config["workers"], config["overwrite"]
 
-    # For a multi-gigabyte JSONL file, fail before scanning its SHA256.
-    if not overwrite:
-        outputs = (train_bin, validation_bin, metadata_path(train_bin), metadata_path(validation_bin))
-        existing = [path for path in outputs if path.exists()]
-        if existing:
-            raise FileExistsError(f"Bin output already exists: {existing}; set build_bin.overwrite=true to replace it")
+    # 已有输出时先退出，避免无谓加载数据。
+    check_output_files(train_bin, validation_bin, overwrite)
     if not input_dataset.exists():
-        raise FileNotFoundError(f"Input dataset does not exist: {input_dataset}; run dataset.data_pipeline.download first")
+        raise FileNotFoundError(
+            f"Intermediate dataset does not exist: {input_dataset}"
+        )
     if not tokenizer_path.exists():
         raise FileNotFoundError(f"Tokenizer does not exist: {tokenizer_path}")
     if not 0.0 < train_ratio < 1.0:
@@ -489,8 +311,7 @@ def main() -> None:
 
     from tokenizer import Tokenizer
 
-    expected_sha = source.get("sha256") if source is not None else None
-    dataset = load_input_dataset(input_dataset, expected_sha256=expected_sha)
+    dataset = load_input_dataset(input_dataset)
     tokenizer = Tokenizer(str(tokenizer_path))
     tokenizer_size = len(tokenizer.tokenizer)
     eos_id = tokenizer.special_token_to_id.get(EOS_TOKEN)
@@ -498,23 +319,14 @@ def main() -> None:
         raise ValueError(f"Tokenizer has no special token {EOS_TOKEN!r}")
 
     return build_bins(
-        dataset=dataset,
-        input_dataset=input_dataset,
-        train_bin=train_bin,
-        validation_bin=validation_bin,
-        tokenizer_path=tokenizer_path,
-        tokenizer_size=tokenizer_size,
+        dataset=dataset, input_dataset=input_dataset,
+        train_bin=train_bin, validation_bin=validation_bin,
+        tokenizer_path=tokenizer_path, tokenizer_size=tokenizer_size,
         tokenizer_sha256=tokenizer_fingerprint(tokenizer_path),
-        eos_token=EOS_TOKEN,
-        eos_id=eos_id,
-        dtype=choose_dtype("auto", tokenizer_size),
-        train_ratio=train_ratio,
-        seed=seed,
-        shuffle_block_records=SHUFFLE_BLOCK_RECORDS,
-        batch_records=BATCH_RECORDS,
-        workers=workers,
-        tokenizer_threads=TOKENIZER_THREADS,
-        overwrite=overwrite,
+        eos_token=EOS_TOKEN, eos_id=eos_id, dtype=choose_dtype("auto", tokenizer_size),
+        train_ratio=train_ratio, seed=seed,
+        shuffle_block_records=SHUFFLE_BLOCK_RECORDS, batch_records=BATCH_RECORDS,
+        workers=workers, tokenizer_threads=TOKENIZER_THREADS, overwrite=overwrite,
     )
 
 

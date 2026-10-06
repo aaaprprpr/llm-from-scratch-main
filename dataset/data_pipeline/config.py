@@ -1,4 +1,4 @@
-"""Shared configuration and source lookup for the data pipeline."""
+"""下载阶段的配置与来源选择；不参与 bin 输入解析。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from config_loader import Config
+from configs.config_loader import Config
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = PROJECT_ROOT / "configs" / "data_pipeline.json"
@@ -29,7 +29,7 @@ def _check_keys(value: dict, required: set[str], optional: set[str], where: str)
 
 
 def validate_config(data: dict[str, Any]) -> None:
-    _check_keys(data, {"sources", "download", "preprocess", "build_bin"}, set(), "pipeline")
+    _check_keys(data, {"sources", "download"}, set(), "download pipeline")
     if not isinstance(data["sources"], dict) or not data["sources"]:
         raise ValueError("sources must be a nonempty object")
     for name, source in data["sources"].items():
@@ -54,23 +54,12 @@ def validate_config(data: dict[str, Any]) -> None:
             _check_keys(source, {"kind", "repo", "split", "path", "adapter"},
                         {"config", "data_files", "revision"}, f"sources.{name}")
     _check_keys(data["download"], {"sources", "cleanup_cache"}, set(), "download")
-    _check_keys(data["preprocess"], {"sources", "output", "fix_text", "max_repetition_ratio",
-                                      "workers", "batch_size", "overwrite"}, set(), "preprocess")
-    _check_keys(data["build_bin"], {"input", "tokenizer", "train_bin", "val_bin",
-                                       "train_ratio", "seed", "workers", "overwrite"}, set(), "build_bin")
-    for stage in ("download", "preprocess"):
-        names = data[stage]["sources"]
-        if not isinstance(names, list) or any(not isinstance(name, str) for name in names) or len(names) != len(set(names)):
-            raise ValueError(f"{stage}.sources must be a list without duplicates")
-        for name in names:
-            if name not in data["sources"]:
-                raise KeyError(f"Unknown source {name!r} in {stage}.sources")
-            if stage == "preprocess" and data["sources"][name]["kind"] != "hf_dataset":
-                raise ValueError(f"preprocess.sources only accepts hf_dataset sources: {name}")
-    if not isinstance(data["build_bin"]["input"], str) or not data["build_bin"]["input"]:
-        raise ValueError("build_bin.input must be a nonempty string")
-    if data["build_bin"]["input"] == "preprocess" and not data["preprocess"]["sources"]:
-        raise ValueError("build_bin.input='preprocess' requires preprocess.sources")
+    names = data["download"]["sources"]
+    if not isinstance(names, list) or any(not isinstance(name, str) for name in names) or len(names) != len(set(names)):
+        raise ValueError("download.sources must be a list without duplicates")
+    for name in names:
+        if name not in data["sources"]:
+            raise KeyError(f"Unknown source {name!r} in download.sources")
 
 
 def load_config() -> Config:
@@ -82,15 +71,3 @@ def load_config() -> Config:
 def selected_sources(config: Config, stage: str) -> list[dict[str, Any]]:
     catalog = config.require("sources")
     return [{"source_id": name, **catalog[name]} for name in config.require(stage, "sources")]
-
-
-def resolve_bin_input(config: Config) -> tuple[Path, dict[str, Any] | None]:
-    value = config.require("build_bin", "input")
-    if value == "preprocess":
-        return project_path(config.require("preprocess", "output")), None
-    catalog = config.require("sources")
-    if value in catalog:
-        return project_path(catalog[value]["path"]), catalog[value]
-    if Path(value).parent == Path("."):
-        raise KeyError(f"Unknown build_bin input source {value!r}")
-    return project_path(value), None

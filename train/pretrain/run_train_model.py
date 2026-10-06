@@ -14,7 +14,7 @@ sys.path = [
 ]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from config_loader import Config
+from configs.config_loader import Config
 from tokenizer import Tokenizer
 from train.pretrain.train_model import (
     attention_kernel_context,
