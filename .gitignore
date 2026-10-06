@@ -18,7 +18,8 @@ env/
 .qwen-web-auth.json.lock
 .deepseek-session.json
 .qwen-session.json
-.aws/
+.aws
+/deepseek-web-api/
 
 # Python tooling
 .pytest_cache/
