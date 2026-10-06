@@ -1,5 +1,6 @@
 {
   "paths": {
+    "model_config": "configs/model.json",
     "dataset": "train/sft/data/coig_cqia",
     "tokenizer": "tokenizer/bpe_24576",
     "chat_template": "train/sft/chat_template.jinja",

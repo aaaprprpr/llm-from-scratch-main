@@ -1,20 +1,11 @@
 {
   "paths": {
+    "model_config": "configs/model.json",
     "train_data": "dataset/data_pipeline/data/minimind_full/train.bin",
     "val_data": "dataset/data_pipeline/data/minimind_full/val.bin",
     "tokenizer_vocab": "tokenizer/bpe_24576",
     "out_root": "output/train_logs",
     "resume": null
-  },
-  "model": {
-    "vocab_size": 24576,
-    "context_length": 4096,
-    "n_head": 9,
-    "theta": 10000.0,
-    "num_layers": 12,
-    "d_model": 576,
-    "d_ff": 1536,
-    "tie_word_embeddings": true
   },
   "train": {
     "device": "auto",

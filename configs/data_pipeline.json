@@ -50,24 +50,5 @@
       "minimind"
     ],
     "cleanup_cache": true
-  },
-  "preprocess": {
-    "sources": [],
-    "output": "dataset/data_pipeline/data/preprocessed",
-    "fix_text": true,
-    "max_repetition_ratio": 0.8,
-    "workers": "auto",
-    "batch_size": 1000,
-    "overwrite": false
-  },
-  "build_bin": {
-    "input": "minimind",
-    "tokenizer": "tokenizer/bpe_24576",
-    "train_bin": "dataset/data_pipeline/data/minimind_full/train.bin",
-    "val_bin": "dataset/data_pipeline/data/minimind_full/val.bin",
-    "train_ratio": 0.95,
-    "seed": 42,
-    "workers": "auto",
-    "overwrite": false
   }
 }

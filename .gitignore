@@ -37,7 +37,6 @@ htmlcov/
 /tokenizer/data/*.txt
 /dataset/data_pipeline/dataset_samples/*.sample.json
 /dataset/data_pipeline/data/*
-!/dataset/data_pipeline/data/README.md
 *.bin
 *.arrow
 *.pt

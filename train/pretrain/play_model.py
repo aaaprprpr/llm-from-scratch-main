@@ -11,7 +11,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import torch
 
 from checkpoint_io import load_checkpoint
-from config_loader import Config
+from configs.config_loader import Config
 from models.model import Transformer
 from tokenizer import Tokenizer
 

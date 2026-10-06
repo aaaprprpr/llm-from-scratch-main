@@ -14,7 +14,7 @@ sys.path = [
 ]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from config_loader import Config
+from configs.config_loader import Config
 
 # 当前 Windows 环境里先 import torch 再 import datasets/pyarrow 会崩。
 from train.sft.datasets import load_chat_dataset
@@ -440,7 +440,9 @@ def prepare_run_dir(config: Config):
         "run_%Y%m%d_%H%M%S"
     )
     run_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(config.config_path, run_dir / "config.json")
+    (run_dir / "config.json").write_text(
+        json.dumps(config.data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     shutil.copy2(config.resolve_path("paths", "chat_template"), run_dir / "chat_template.jinja")
     return run_dir, None
 
@@ -544,6 +546,7 @@ def train(config: Config):
     )
 
     model, model_args = build_model(config, device, checkpoint)
+    config.data["model"] = dict(model_args)
     if train_config.get("activation_checkpointing", False):
         model.gradient_checkpointing_enable()
     optimizer = torch.optim.AdamW(

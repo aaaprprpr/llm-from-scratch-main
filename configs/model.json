@@ -1,0 +1,12 @@
+{
+  "model": {
+    "vocab_size": 24576,
+    "context_length": 4096,
+    "n_head": 9,
+    "theta": 10000.0,
+    "num_layers": 12,
+    "d_model": 576,
+    "d_ff": 1536,
+    "tie_word_embeddings": true
+  }
+}

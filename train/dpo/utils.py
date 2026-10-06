@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from config_loader import Config
+from configs.config_loader import Config
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = PROJECT_ROOT / "configs" / "dpo.json"
