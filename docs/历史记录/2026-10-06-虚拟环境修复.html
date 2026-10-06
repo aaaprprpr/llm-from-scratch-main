@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>虚拟环境链接修复 · 2026-10-06</title>
+<style>
+body{max-width:780px;margin:40px auto;padding:0 20px;font:16px/1.8 "Microsoft YaHei",sans-serif;color:#202124}
+h1{font-size:25px}code{font:14px/1.7 monospace;overflow-wrap:anywhere}table{border-collapse:collapse;width:100%;margin:20px 0}th,td{text-align:left;border-bottom:1px solid #ddd;padding:9px 12px}th{font-weight:600}
+</style>
+<main>
+<h1>虚拟环境为什么突然不能运行</h1>
+<p>本次故障的直接原因是 Python 入口的符号链接无法解析。运行 <code>.venv/bin/python</code> 时，Shell 返回“没有那个文件或目录”；但链接本身存在，它在当前挂载方式下显示的目标却是 <code>unsupported reparse tag 0xa000000c</code>。系统因此找不到要执行的解释器，pip 和清洗脚本也会一起失效。</p>
+<p>项目所在 NTFS 分区当前使用 <code>fuseblk</code> 挂载。全量检查发现 <code>.venv/bin/python</code> 与 <code>.venv/lib64</code> 两个链接有相同问题。原始 Conda Python 3.12.13 仍可运行，已安装的包也仍在。这些证据支持“当前挂载方式无法解释这两个 NTFS 链接”；本次检查无法确定链接此前是否被 Windows 改写，或是否由挂载驱动切换触发。</p>
+<p>修复时将原基座 <code>/home/tdt/anaconda3/envs/torch/bin/python3.12</code> 复制为 <code>.venv/bin/python</code> 普通可执行文件，让 Python 入口不再依赖这个损坏的链接；同时重新建立 <code>lib64 → lib</code>。原链接保存在 <code>.venv/repair-backup-20261006/</code>，虚拟环境配置和已安装依赖继续使用原文件。</p>
+<table>
+<thead><tr><th>验证项</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td>Python / pip / 激活脚本</td><td>Python 3.12.13、pip 25.0.1 均正常，激活后指向项目 .venv。</td></tr>
+<tr><td>依赖一致性</td><td><code>pip check</code> 通过。</td></tr>
+<tr><td>主要依赖导入</td><td>torch、transformers、datasets、tokenizers、FastAPI、Uvicorn、OpenCC、TileLang 等均通过。</td></tr>
+<tr><td>项目模块</td><td>config_loader、chat_schema、models.model 导入通过。</td></tr>
+<tr><td>主机 CUDA</td><td>PyTorch 2.13.0+cu132 能识别 RTX 5070 Ti，CUDA 可用；NVIDIA 驱动 595.84。</td></tr>
+</tbody>
+</table>
+<p>NTFS 上的 Linux 符号链接跨挂载方式使用时需要留意兼容性。当前解释器入口已经改成普通文件；如之后再次出现同类错误，先查看链接目标和挂载方式，再决定是否需要处理环境依赖。</p>
+<h2>清洗工具的数据路径复核</h2>
+<p>随后针对“清洗工具扫不到数据集”复核了当前正在运行的 8000 端口服务。数据根目录仍是项目中的 <code>dataset/label/data</code>；两个来源 manifest、三个 review manifest 及数据库保存的来源路径均存在，没有发现路径漂移。四个 Arrow 下载集和已导入 raw/review 数据的全部分片引用也均存在；原始下载集首末行与两个队列当前查看条目可以实际读取。</p>
+<table>
+<thead><tr><th>正在运行的接口</th><th>实际结果</th></tr></thead>
+<tbody>
+<tr><td>下载目录</td><td>返回 MiniMind、FineWiki、Tiger 三个未导入来源。</td></tr>
+<tr><td>已导入目录</td><td>返回 FineWeb、Wiki 两个来源及其清洗副本。</td></tr>
+<tr><td>批量进度</td><td>正常返回；FineWeb 已处理 2,750,698 条、完成 2,750,697 条，任务暂停。</td></tr>
+<tr><td>逐条读取</td><td>Wiki 保存的第 98,014 条与 FineWeb 保存的第 265 条均正常读取，已有清洗结果可见。</td></tr>
+</tbody>
+</table>
+<p>下载列表与已导入列表按当前界面设计互斥：已导入的 FineWeb、Wiki 会从下载列表隐藏，而不是被判定为数据丢失。这次复核没有复现数据集路径故障；如果某个页面仍为空，需要用该页面的具体报错继续定位，不能仅凭先前的解释器链接故障断定整个磁盘数据损坏。</p>
+</main>
+</html>
