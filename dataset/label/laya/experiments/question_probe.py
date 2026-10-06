@@ -12,11 +12,11 @@ import random
 import time
 from pathlib import Path
 
-from dataset.label.backend.laya_cleaning import LayaCleaner, QUESTION
+from dataset.label.backend.laya_cleaning import QUESTION
 from dataset.label.backend.llm_cleaning import split_units
+from dataset.label.laya import BASE_MODEL_DIRECTORY, LABEL_ROOT
 
-ROOT = Path(__file__).resolve().parents[3]
-REPORTS = ROOT / "dataset/label/data/llm_suggestions/cache"
+REPORTS = LABEL_ROOT / "data/llm_suggestions/cache"
 
 
 def sample(per_class: int = 160):
@@ -111,8 +111,11 @@ def evaluate(agent, rows, *, context: bool, name: str, question: dict, mapping: 
 
 
 def main():
+    import torch
+    from dataset.label.laya.runtime import load
+
     dev, holdout = sample()
-    agent = LayaCleaner._model()
+    agent = load(str(BASE_MODEL_DIRECTORY), device="cuda" if torch.cuda.is_available() else "cpu")
     variants = questions()
     print("development: 160 reference keep + 160 reference drop", flush=True)
     results = []
@@ -128,6 +131,7 @@ def main():
         question, mapping = variants[name]
         evaluate(agent, holdout, context=context, name=name + ("+context" if context else ""),
                  question=question, mapping=mapping)
+    compare_granularity(agent)
 
 
 def sample_blocks(per_class: int = 160):
@@ -217,4 +221,3 @@ def compare_granularity(agent):
 
 if __name__ == "__main__":
     main()
-    compare_granularity(LayaCleaner._model())

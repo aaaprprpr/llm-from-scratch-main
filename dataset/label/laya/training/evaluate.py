@@ -119,7 +119,7 @@ def main() -> None:
     args = parser.parse_args()
     if args.output.exists():
         parser.error(f"output already exists: {args.output}")
-    from laya import load
+    from dataset.label.laya.runtime import load
     import torch
     rows = load_rows(args.dataset, args.max_docs)
     model = load(str(args.model_dir.resolve()),

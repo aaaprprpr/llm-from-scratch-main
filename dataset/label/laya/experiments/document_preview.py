@@ -17,10 +17,10 @@ from pathlib import Path
 from dataset.label.backend.blocks import parse_blocks
 from dataset.label.backend.dataset_store import load_dataset
 from dataset.label.backend.laya_cleaning import LayaCleaner, QUESTION
+from dataset.label.laya import LABEL_ROOT
 
-ROOT = Path(__file__).resolve().parents[3]
-DATABASE = ROOT / "dataset/label/data/curation.sqlite3"
-REPORTS = ROOT / "dataset/label/data/llm_suggestions/cache"
+DATABASE = LABEL_ROOT / "data/curation.sqlite3"
+REPORTS = LABEL_ROOT / "data/llm_suggestions/cache"
 
 
 def line_score(candidate: str, human: str) -> dict:
@@ -113,7 +113,7 @@ def main() -> None:
         "SELECT doc_id, source_row, edited_text FROM document_reviews"
     ) if doc_id in doc_ids}
     import torch
-    from laya import load
+    from dataset.label.laya.runtime import load
     model = load(str(args.model_dir.resolve()), device="cuda" if torch.cuda.is_available() else "cpu")
     args.output.mkdir(parents=True)
     summary = []

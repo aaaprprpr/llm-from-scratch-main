@@ -224,7 +224,7 @@ def _library_version() -> Optional[str]:
     already scored every row.
     """
     try:
-        import laya
+        from .. import runtime as laya
     except Exception:  # pragma: no cover - identity only
         return None
     return getattr(laya, "__version__", None)

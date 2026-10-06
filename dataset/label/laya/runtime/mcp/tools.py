@@ -46,7 +46,7 @@ def get_available_presets() -> dict[str, dict[str, Any]]:
     about. Builders are resolved through ``laya`` at call time, the way ``laya.mcp.server`` resolves
     them, so a preset added in a newer version shows up here as soon as it is importable.
     """
-    import laya
+    from ... import runtime as laya
 
     aliases: dict[str, list[str]] = {}
     for alias, target in PRESET_ALIASES.items():
@@ -230,7 +230,7 @@ def validate_model(model: Any) -> str:
         return AUTO
     if isinstance(model, str) and model.strip().lower() == AUTO:
         return AUTO
-    from laya.router import normalise_name
+    from ..router import normalise_name
 
     try:
         return normalise_name(model)
@@ -250,7 +250,7 @@ def validate_task(task: Any) -> str | None:
     """
     if task is None:
         return None
-    from laya.router import normalise_name
+    from ..router import normalise_name
 
     # The remap is core's own expression, copied rather than relied upon through the alias table:
     # `Router._route` turns task="typed_decisions" (the underscore form the CLI and the question ids
@@ -609,7 +609,7 @@ def laya_shortlist(
     flags a kept-label answer the checkpoint is unsure of.
     """
     # Lazy: keeps numpy/shortlist out of module import for laya.mcp.tools.
-    from laya.shortlist import (
+    from ..shortlist import (
         DEFAULT_SHORTLIST_K,
         cached_embed_fn,
         embed_fn_from_agent,
@@ -762,18 +762,20 @@ def laya_preset(
 
 
 def laya_status(*, router: Any = None, loaded: list[str] | None = None, preload: bool = True) -> dict:
+    from ... import runtime as laya
+
     report = device_report()
     versions: dict[str, str | None] = {
-        "laya": None,
+        "laya": getattr(laya, "__version__", "unknown"),
         "torch": report.get("torch_version"),
         "transformers": None,
     }
-    for pkg in ("laya", "transformers"):
-        try:
-            mod = __import__(pkg)
-            versions[pkg] = getattr(mod, "__version__", "unknown")
-        except Exception:
-            versions[pkg] = None
+    try:
+        import transformers
+
+        versions["transformers"] = getattr(transformers, "__version__", "unknown")
+    except Exception:
+        versions["transformers"] = None
 
     if loaded is None and router is not None:
         try:
@@ -1029,7 +1031,7 @@ def laya_decide(
     """
     # Lazy: keeps laya.structured (pure Python, but a module import is still a
     # module import) out of this module's import-time surface.
-    from laya.structured import SchemaError, decide
+    from ..structured import SchemaError, decide
 
     state_d = validate_state(state)
     model_name = validate_model(model)

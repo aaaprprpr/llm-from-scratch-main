@@ -37,7 +37,7 @@ except ImportError as exc:  # mcp extra not installed
 
 # laya.serve only imports os/typing at module level, so reusing its helpers
 # keeps one meaning for LAYA_PRELOAD / LAYA_THREADS across the package.
-from laya.serve import _apply_thread_limit, _env_bool
+from ..serve import _apply_thread_limit, _env_bool
 
 from .device import env_device
 from .tools import (
@@ -57,7 +57,7 @@ from .tools import (
 try:
     _LAYA_VERSION = _metadata.version("laya")
 except Exception:  # running from a source checkout without install metadata
-    import laya as _laya
+    from ... import runtime as _laya
 
     _LAYA_VERSION = getattr(_laya, "__version__", "")
 
@@ -138,7 +138,7 @@ def _ensure_router() -> Any:
         if _ROUTER is not None:
             return _ROUTER
         try:
-            from laya import Router
+            from .. import Router
         except Exception as exc:
             raise ToolError("internal_error", f"cannot import laya: {exc}") from exc
         try:
@@ -166,7 +166,7 @@ def _router_or_error() -> Any:
 
 
 def _preset_builder(attr_name: str) -> dict:
-    import laya
+    from ... import runtime as laya
 
     builder = getattr(laya, attr_name, None)
     if builder is None:

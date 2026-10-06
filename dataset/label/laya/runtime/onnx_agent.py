@@ -7,12 +7,12 @@ from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 
-from laya.hooks import (
+from .hooks import (
     HookRegistry, PredictContext, aggregate_usage, compose_hooks, dispatch, normalise_hooks,
     validate_timeout,
 )
-from laya.revisions import resolve_revision, snapshot_revision, verify_digests
-from laya.common import (
+from .revisions import resolve_revision, snapshot_revision, verify_digests
+from .common import (
     QTYPES,
     answer_confidence,
     build_sequence,
@@ -30,7 +30,7 @@ from laya.common import (
     TEMP_MAX,
     clamp_temperature,
 )
-from laya.confidence import check_min_confidence, flag_low_confidence
+from .confidence import check_min_confidence, flag_low_confidence
 
 
 class ONNXAgent(HookRegistry):
@@ -763,7 +763,7 @@ class ONNXAgent(HookRegistry):
         See `laya.structured`. Pass exactly one of `schema` or `questions`; extra keyword arguments
         are forwarded to `predict` / `system_one`.
         """
-        from laya.structured import decide as _decide
+        from .structured import decide as _decide
         return _decide(self, state, schema, questions=questions,
                        return_details=return_details, min_confidence=min_confidence, **predict_kwargs)
 
@@ -772,7 +772,7 @@ class ONNXAgent(HookRegistry):
                      return_details: bool = False, min_confidence: Optional[float] = None,
                      **predict_kwargs) -> List[Any]:
         """Answer many states against one schema through `predict_batch`; see `laya.structured`."""
-        from laya.structured import decide_batch as _decide_batch
+        from .structured import decide_batch as _decide_batch
         return _decide_batch(self, states, schema, questions=questions,
                              return_details=return_details, min_confidence=min_confidence,
                              **predict_kwargs)

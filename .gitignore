@@ -46,7 +46,8 @@ htmlcov/
 *.safetensors
 *.gguf
 *.onnx
-/dataset/label/models/
+/dataset/label/laya/models/
+/dataset/label/laya/data/
 
 # Runtime outputs and caches
 output/

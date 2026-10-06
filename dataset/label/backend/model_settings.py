@@ -9,6 +9,7 @@ from typing import Literal
 
 from dotenv import dotenv_values
 
+from ..laya import CLEANING_MODEL_DIRECTORY
 from .llm_cleaning import CleaningConfig
 from .deepseek_web import WEB_AUTH_SOURCES
 
@@ -112,6 +113,6 @@ class ModelSettings:
             config = self.config(source)
             available[source] = {"model": config.model,
                                  "configured": (source == "local" or (source == "laya" and
-                                                (self.project_root / "dataset/label/models/laya_wiki_cleaning_v1/model.safetensors").is_file())
+                                                (CLEANING_MODEL_DIRECTORY / "model.safetensors").is_file())
                                                 or bool(config.api_key))}
         return available

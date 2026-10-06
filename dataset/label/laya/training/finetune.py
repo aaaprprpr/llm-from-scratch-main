@@ -12,26 +12,24 @@ where questions use the choice / score / noul primitives and gold carries the
 teacher probabilities plus a label, matching the schema in docs/finetune.md.
 
 Usage:
-  python research/scripts/finetune_single_device.py \
-      --data dataset.jsonl --model-dir /path/to/multilingual --output-dir out/
+  python -m dataset.label.laya.training.finetune \
+      --data dataset/label/laya/data/laya_rebuild/train_plain.jsonl \
+      --output-dir dataset/label/laya/data/laya_rebuild/checkpoint_plain
 """
 
 import argparse
 import json
 import os
 import random
-import sys
-
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-sys.path.insert(0, ROOT)
 
 import torch
 from huggingface_hub import snapshot_download
 from safetensors.torch import load_file, save_file
 from transformers import AutoTokenizer
 
-from laya.agent import _fix_tokenizer_config
-from laya.common import (
+from dataset.label.laya import BASE_MODEL_DIRECTORY, DATA_DIRECTORY
+from dataset.label.laya.runtime.agent import _fix_tokenizer_config
+from dataset.label.laya.runtime.common import (
     QTYPES,
     build_model,
     build_sequence,
@@ -163,12 +161,17 @@ def main():
     parser.add_argument(
         "--data", required=True, help="JSONL dataset of {state, questions, gold} cases."
     )
-    parser.add_argument(
+    model_source = parser.add_mutually_exclusive_group()
+    model_source.add_argument(
         "--model-dir",
-        default=None,
-        help="Checkpoint directory; defaults to the multilingual subfolder.",
+        default=str(BASE_MODEL_DIRECTORY),
+        help="Checkpoint directory; defaults to the local multilingual base model.",
     )
-    parser.add_argument("--output-dir", default="laya_finetuned")
+    model_source.add_argument(
+        "--download-base", action="store_true",
+        help="Download the official multilingual base model instead of using the local copy.",
+    )
+    parser.add_argument("--output-dir", default=str(DATA_DIRECTORY / "laya_finetuned"))
     parser.add_argument(
         "--device", default="auto", choices=["auto", "cpu", "cuda", "mps"]
     )
@@ -190,9 +193,7 @@ def main():
     torch.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", os.cpu_count() or 1)))
     print("Device:", device)
 
-    if args.model_dir:
-        model_dir = args.model_dir
-    else:
+    if args.download_base:
         model_dir = os.path.join(
             snapshot_download(
                 "convaiinnovations/laya",
@@ -200,6 +201,8 @@ def main():
             ),
             "multilingual",
         )
+    else:
+        model_dir = args.model_dir
     _fix_tokenizer_config(model_dir)
 
     with open(os.path.join(model_dir, "rl_agent_config.json")) as f:

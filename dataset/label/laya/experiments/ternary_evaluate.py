@@ -8,8 +8,8 @@ import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from dataset.label.experiments.laya_evaluate import load_rows
-from dataset.label.experiments.laya_ternary_dataset import QUESTION_TERNARY
+from dataset.label.laya.training.evaluate import load_rows
+from dataset.label.laya.experiments.ternary_dataset import QUESTION_TERNARY
 
 
 def main():
@@ -23,7 +23,7 @@ def main():
     if args.output.exists():
         parser.error(f"output already exists: {args.output}")
     import torch
-    from laya import load
+    from dataset.label.laya.runtime import load
     rows = load_rows(args.dataset, args.max_docs)
     model = load(str(args.model_dir.resolve()), device="cuda" if torch.cuda.is_available() else "cpu")
     confusion = Counter()

@@ -35,11 +35,11 @@ class LayaCleaningTests(unittest.TestCase):
             (model_path / "model.safetensors").touch()
             agent = SimpleNamespace(device=SimpleNamespace(type="cuda"), cfg={"max_len": 1024},
                                     accelerate=Mock())
-            fake_laya = ModuleType("laya")
+            fake_laya = ModuleType("dataset.label.laya.runtime")
             fake_laya.load = Mock(return_value=agent)
             with (patch.object(LayaCleaner, "_agent", None),
                   patch("dataset.label.backend.laya_cleaning.MODEL_DIRECTORY", model_path),
-                  patch.dict(sys.modules, {"laya": fake_laya}),
+                  patch.dict(sys.modules, {"dataset.label.laya.runtime": fake_laya}),
                   patch("torch.cuda.is_available", return_value=True)):
                 self.assertIs(LayaCleaner._model(), agent)
             self.assertEqual(agent.cfg["max_len"], 2048)
@@ -47,7 +47,7 @@ class LayaCleaningTests(unittest.TestCase):
 
     def test_cpu_fallback_restores_fast_path_without_cuda_graphs(self):
         import torch
-        from laya.agent import Agent
+        from dataset.label.laya.runtime.agent import Agent
 
         agent = Agent.__new__(Agent)
         agent.model = SimpleNamespace(to=Mock())

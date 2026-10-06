@@ -13,8 +13,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from dataset.label.backend.identity import sha256_text, stable_json
-from dataset.label.experiments.laya_dataset import (
-    DATABASE, REPORTS, ROOT, human_rows, partition, row_for, usable, write_jsonl,
+from dataset.label.laya.training.dataset import (
+    DATABASE, REPORTS, human_rows, partition, row_for, usable, write_jsonl,
 )
 
 QUESTION_TERNARY = {

@@ -273,7 +273,7 @@ def _cmd_run(args) -> int:
                           revision=revision)
         runner: Any = OnnxRunner(agent)
     else:
-        import laya
+        from .. import runtime as laya
         try:
             pins: Dict[str, Any] = {}
             if revision is not None:

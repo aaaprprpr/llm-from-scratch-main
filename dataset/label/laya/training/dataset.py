@@ -20,10 +20,10 @@ from dataset.label.backend.blocks import parse_blocks
 from dataset.label.backend.dataset_store import load_dataset
 from dataset.label.backend.identity import sha256_text, stable_json
 from dataset.label.backend.laya_cleaning import QUESTION
+from dataset.label.laya import LABEL_ROOT
 
-ROOT = Path(__file__).resolve().parents[3]
-REPORTS = ROOT / "dataset/label/data/llm_suggestions/cache"
-DATABASE = ROOT / "dataset/label/data/curation.sqlite3"
+REPORTS = LABEL_ROOT / "data/llm_suggestions/cache"
+DATABASE = LABEL_ROOT / "data/curation.sqlite3"
 VERSION = "laya_block_dataset_v1"
 
 

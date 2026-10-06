@@ -6,9 +6,9 @@ import hashlib
 import json
 from pathlib import Path
 
-from dataset.label.experiments.laya_dataset import write_jsonl
+from dataset.label.laya.training.dataset import write_jsonl
 
-LABELS = Path(__file__).with_name("laya_audit_labels.json")
+LABELS = Path(__file__).with_name("audit_labels.json")
 
 
 def main():

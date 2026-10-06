@@ -26,7 +26,7 @@ import argparse
 import json
 import sys
 
-import laya
+from .. import runtime as laya
 
 # Ready-made question presets a prediction can run instead of router_questions().
 PRESETS = {
@@ -61,7 +61,7 @@ def model_name(value):
     """
     if value.strip().lower() == "auto":
         return None
-    from laya.router import normalise_name
+    from .router import normalise_name
 
     try:
         return normalise_name(value)

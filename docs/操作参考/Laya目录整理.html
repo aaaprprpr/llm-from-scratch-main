@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Laya 目录整理</title>
+  <style>
+    :root { color-scheme: light; }
+    body { max-width: 850px; margin: 36px auto; padding: 0 20px 40px; font-family: "Microsoft YaHei", sans-serif; color: #202a31; line-height: 1.8; }
+    h1 { font-size: 27px; line-height: 1.4; }
+    h2 { font-size: 20px; margin-top: 32px; }
+    p { margin: 14px 0; }
+    a { color: #17664e; }
+    code { font-family: monospace; overflow-wrap: anywhere; }
+    pre { padding: 14px; background: #f4f6f5; line-height: 1.6; overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; margin: 18px 0; }
+    th, td { padding: 10px 12px; border: 1px solid #dce1de; text-align: left; vertical-align: top; }
+    th { background: #f4f6f5; }
+    figure { margin: 22px 0; }
+    svg { width: 100%; height: auto; }
+    figcaption { font-size: 14px; color: #4c5d54; }
+    .date { font-size: 14px; color: #59675e; }
+  </style>
+</head>
+<body>
+  <h1>Laya 目录整理</h1>
+  <p class="date">2026-10-06</p>
+  <p>Laya 的运行时、训练脚本、权重和实验快照现在统一放在 <code>dataset/label/laya/</code>。这次整理让本地分类模型的开发材料有一个明确入口，也便于区分训练试验与清洗台正在使用的数据。清洗台仍从 <code>dataset/label/backend/laya_cleaning.py</code> 接入模型，原有来源 ID、分类问题和保留/删除算法继续使用。</p>
+
+  <h2>当前清洗权重从哪里来</h2>
+  <p><code>models/laya_multilingual/</code> 保存公开的 multilingual 基础权重。它提供 Laya 的分类能力，但没有直接学习本项目对预训练正文的保留标准。项目随后以已有 DeepSeek 清洗记录构造保留与删除的教师标签，在基础权重上微调出二分类清洗器。当前采用的是 4,000 个保留块与 4,000 个删除块组成的 8,000 块版本，训练两轮，成品放在 <code>models/laya_wiki_cleaning_v1/</code>。</p>
+  <figure>
+    <svg viewBox="0 0 830 160" role="img" aria-labelledby="weight-chain-title weight-chain-desc">
+      <title id="weight-chain-title">基础权重到当前清洗权重的关系</title>
+      <desc id="weight-chain-desc">multilingual 基础权重，经 8000 个保留删除训练块两轮微调，得到清洗台当前采用的 wiki cleaning v1 权重。</desc>
+      <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8" fill="#56695e"/></marker></defs>
+      <rect x="1" y="20" width="235" height="110" fill="#f4f6f5" stroke="#b9c6bd"/>
+      <text x="118" y="50" text-anchor="middle" font-size="18" fill="#202a31">公开基础权重</text>
+      <text x="118" y="81" text-anchor="middle" font-size="14" fill="#202a31">models/</text>
+      <text x="118" y="105" text-anchor="middle" font-size="14" fill="#202a31">laya_multilingual/</text>
+      <line x1="242" y1="75" x2="285" y2="75" stroke="#56695e" stroke-width="2" marker-end="url(#arrow)"/>
+      <rect x="292" y="20" width="220" height="110" fill="#f4f6f5" stroke="#b9c6bd"/>
+      <text x="402" y="50" text-anchor="middle" font-size="18" fill="#202a31">清洗任务微调</text>
+      <text x="402" y="82" text-anchor="middle" font-size="15" fill="#202a31">4,000 保留 + 4,000 删除</text>
+      <text x="402" y="106" text-anchor="middle" font-size="15" fill="#202a31">训练两轮 · 整块二分类</text>
+      <line x1="519" y1="75" x2="561" y2="75" stroke="#56695e" stroke-width="2" marker-end="url(#arrow)"/>
+      <rect x="568" y="20" width="261" height="110" fill="#ecf4ee" stroke="#8cac96"/>
+      <text x="698" y="50" text-anchor="middle" font-size="18" fill="#202a31">清洗台当前权重</text>
+      <text x="698" y="81" text-anchor="middle" font-size="14" fill="#202a31">models/</text>
+      <text x="698" y="105" text-anchor="middle" font-size="14" fill="#202a31">laya_wiki_cleaning_v1/</text>
+    </svg>
+    <figcaption>图中路径都相对于 <code>dataset/label/laya/</code>。训练脚本与实验数据不由目录迁移自动执行。</figcaption>
+  </figure>
+  <p>这是逐块判断的分类器：输入一个清洗块，输出保留或删除。它不能裁掉块中的半句话，也不能生成修补后的正文。历史微调评测记录了这一能力边界及其他数据源的适用限制；目录整理不改变这些结论。</p>
+
+  <h2>五个目录分别保存什么</h2>
+  <pre>dataset/label/laya/
+├── runtime/       Laya 0.3.22 运行时与 LICENSE
+├── training/      数据构建、微调、二分类评测、固定核看标签
+├── experiments/   提问探针、整篇预览、三分类试验
+├── models/        基础权重与当前采用的清洗权重
+└── data/          训练输入、候选 checkpoint 与评测快照</pre>
+  <table>
+    <thead><tr><th>目录</th><th>读取时机与用途</th></tr></thead>
+    <tbody>
+      <tr><td><code>runtime/</code></td><td>清洗或实验推理时调用的模型运行代码；来源提交为 <code>6d942c9</code>，许可证在该目录内。</td></tr>
+      <tr><td><code>training/</code></td><td>重建教师数据、训练候选模型、评测二分类结果。固定核看标签保存在 <code>audit_labels.json</code>。</td></tr>
+      <tr><td><code>experiments/</code></td><td>比较提问方式、重组全文预览，以及探索需局部编辑的第三类。</td></tr>
+      <tr><td><code>models/</code></td><td>清洗台读取 <code>laya_wiki_cleaning_v1/</code>；重新训练时读取 <code>laya_multilingual/</code>。两份权重本地保存。</td></tr>
+      <tr><td><code>data/</code></td><td>保存已有试验的 JSONL、manifest、checkpoint 和评测结果，便于复查。数据与权重不随 Git 同步。</td></tr>
+    </tbody>
+  </table>
+
+  <h2>v1 到 v5 表示什么</h2>
+  <p><code>laya_experiment_v1/</code> 到 <code>laya_experiment_v4/</code> 共用同一份 8,000 块训练数据。目录后缀记录的是试验与评测推进的阶段，其中 v4 保存完整评测快照；它们不能被理解成四份互不相关的训练集或四次独立训练。保留原来的目录名字，是为了能继续对照历史 manifest、哈希和评测数值。</p>
+  <table>
+    <thead><tr><th><code>data/</code> 内的目录</th><th>内容</th><th>采用情况</th></tr></thead>
+    <tbody>
+      <tr><td><code>laya_experiment_v1/</code>～<code>laya_experiment_v4/</code></td><td>相同 8,000 块训练数据的阶段产物，v4 汇总完整评测。</td><td>当前二分类权重来自 8,000 块方案。</td></tr>
+      <tr><td><code>laya_experiment_v5/</code></td><td>20,000 块二分类扩展试验。</td><td>未采用。</td></tr>
+      <tr><td><code>laya_ternary_v1/</code></td><td>保留、删除、需局部编辑三分类试验。</td><td>未接入当前清洗调度。</td></tr>
+    </tbody>
+  </table>
+  <p>正式审核、队列和清洗进度继续在 <code>dataset/label/data/</code> 中保存：包括 <code>curation.sqlite3</code>、<code>sources/</code>、<code>batch_cleaned/</code> 和 <code>llm_suggestions/</code>。Laya 子目录下的 <code>data/</code> 是模型训练与实验材料，两者职责不同，因此迁移实验快照不会丢弃已经完成的清洗记录。</p>
+
+  <h2>查看与复现入口</h2>
+  <p>训练模块统一用 <code>python -m dataset.label.laya.training.dataset</code>、<code>python -m dataset.label.laya.training.finetune</code> 和 <code>python -m dataset.label.laya.training.evaluate</code> 执行。微调参数仍为 <code>--data</code>、<code>--model-dir</code>、<code>--output-dir</code>，复现时把它们指向整理后的数据和权重路径。探针位于 <code>dataset.label.laya.experiments</code>，同样通过 <code>python -m</code> 调用。</p>
+  <p>具体命令见 <a href="../../dataset/label/laya/README.md">Laya README</a>；历史结果见 <a href="../历史记录/2026-09-30-Laya基础分类权重评测.md">基础权重评测</a> 和 <a href="../历史记录/2026-09-30-Laya语料清洗微调评测.md">微调评测</a>；清洗台操作约定见 <a href="语料清洗台.md">语料清洗台操作参考</a>。</p>
+</body>
+</html>

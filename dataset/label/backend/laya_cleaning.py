@@ -6,13 +6,13 @@ import logging
 import threading
 import time
 from concurrent.futures import Future
-from pathlib import Path
 from queue import Empty, Queue
 
+from ..laya import CLEANING_MODEL_DIRECTORY
 from .llm_cleaning import (ChunkAssessment, LlmCleaner, LlmCleaningError, Removal,
                            SourceUnavailableError, TextUnit, split_units)
 
-MODEL_DIRECTORY = Path(__file__).resolve().parents[1] / "models" / "laya_wiki_cleaning_v1"
+MODEL_DIRECTORY = CLEANING_MODEL_DIRECTORY
 # TileLang can flip choices very close to 0.5; recheck those with the stock forward.
 FAST_RECHECK_CONFIDENCE = 0.55
 logger = logging.getLogger(__name__)
@@ -137,7 +137,7 @@ class LayaCleaner(LlmCleaner):
                     raise LlmCleaningError(f"缺少本地 Laya 权重：{MODEL_DIRECTORY}")
                 try:
                     import torch
-                    from laya import load
+                    from ..laya.runtime import load
                     agent = load(str(MODEL_DIRECTORY), device="cuda" if torch.cuda.is_available() else "cpu")
                     if agent.device.type == "cuda":
                         agent.cfg["max_len"] = max(int(agent.cfg.get("max_len", 0)), 2048)

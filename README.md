@@ -24,7 +24,7 @@ python -m pip install -r requirements.txt
 | `dataset/label/` | 语料清洗台及独立清洗实验 |
 | `train/pretrain/`、`train/sft/`、`train/dpo/` | 各阶段训练、试玩和项目格式导出 |
 | `export/hf/`、`export/vllm/` | 标准 HF 转换与推理 |
-| `laya/` | 本地分类运行时 |
+| `dataset/label/laya/` | Laya 分类运行时、清洗微调与实验 |
 | `pipeline_audit/` | 从 bin 到 checkpoint 的链路审查 |
 | `docs/` | 学习笔记、操作参考和历史记录 |
 | `output/` | 训练日志、checkpoint 和评测产物 |
@@ -172,4 +172,4 @@ python pipeline_audit/run_audit.py
 
 `dataset/label/experiments/` 保存独立清洗探针：`eval_prose_cleaning.py` / `prose_extraction_v4/` 是人工对照，`history_cleaning_debug.py` / `history-cleaning-debug/` 是单篇调用记录；`fragment_editing_v3/`、`llm_cleaning_integration/` 和 `llamacpp_probe_20260913_013551/` 保存片段编辑、API 联调与本地模型探针。它们不参与训练入口，服务、队列和样本路径描述的是当时环境。
 
-`laya/` 随项目保存 Laya 0.3.22 运行时，来源提交 `6d942c9`，许可证见 [laya/LICENSE](laya/LICENSE)。清洗台实验选项使用 `dataset/label/models/laya_wiki_cleaning_v1/`；基础权重目录为 `laya_multilingual/`，两者均不纳入 Git。任务效果与局限见文档目录里的 Laya 评测。
+Laya 集中在 [dataset/label/laya/](dataset/label/laya/README.md)：`runtime/` 保存 Laya 0.3.22 运行时，来源提交 `6d942c9`，许可证见 [runtime/LICENSE](dataset/label/laya/runtime/LICENSE)；`training/` 保存数据构建、微调与评测脚本，`experiments/` 保存提问与三分类探针。基础权重在 `models/laya_multilingual/`，清洗台当前使用的 8,000 块二分类权重在 `models/laya_wiki_cleaning_v1/`；权重和 `data/` 下的实验快照均不纳入 Git。v1～v4 是同一份 8,000 块训练数据的不同实验阶段，v4 保留完整评测，不能当成四版独立训练。目录用途见 [Laya 目录说明](docs/操作参考/Laya目录整理.html)，任务效果与局限见文档目录里的历史评测。
